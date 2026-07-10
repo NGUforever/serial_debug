@@ -40,7 +40,7 @@ class SerialBackend:
             self._status('error', f'打开串口失败: {e}')
             self.ser = None
             return False
-        # 打开后立刻清空硬件缓冲，避免上次残留数据或启动时的积压数据涌入显示
+        # 打开后立刻清空硬件缓冲，避免上次残留数据或启动时的积压数据涌入界面
         try:
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
@@ -84,7 +84,7 @@ class SerialBackend:
                 break
             if chunk:
                 buf.extend(chunk)
-                # 按 \n 切行（兼容 \r\n），有 \n 的就即时发出
+                # 按 \n 切行（兼容 \r\n），有 \n 的行即时切分发出
                 while True:
                     idx = buf.find(b'\n')
                     if idx < 0:
@@ -100,8 +100,8 @@ class SerialBackend:
                         text = repr(line)
                     self.rx_queue.put(('line', text))
             else:
-                # 读超时（≥100ms 无新数据）：把缓冲里残行按 \n 拆分后发出
-                # （等不到 \n 的残行也一并发出，避免无终止符的帧被卡住）
+                # 读超时（>=100ms 无新数据）：缓冲里残行按 \n 拆分后发出
+                # 等不到 \n 的残行也一并发出，避免无终止符的短帧被卡住
                 if buf:
                     for piece in bytes(buf).split(b'\n'):
                         piece = piece.rstrip(b'\r')

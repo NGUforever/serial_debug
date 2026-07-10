@@ -187,7 +187,7 @@ class SerialDebugApp:
         txt.configure(state='disabled')
         if self.auto_scroll['log'] if txt is self.log_txt else self.auto_scroll['at']:
             txt.see('end')
-        # 日志写入器：非阻塞入队，不拖慢显示
+        # 日志写入：非阻塞入队，不拖慢显示
         if self.log_writer is not None:
             self.log_writer.put(text)
 
@@ -201,27 +201,6 @@ class SerialDebugApp:
     def _now() -> str:
         t = time.localtime()
         return time.strftime('%H:%M:%S', t) + f'.{int((time.time() % 1)*1000):03d}'
-
-    # ---- 连接 ----------------------------------------------------------
-    def _toggle(self):
-        if self.backend.is_open:
-            self.backend.close()
-            self.connect_btn.config(text='连接')
-            self.status_var.set('未连接')
-            self.status_lbl.config(fg='#888')
-        else:
-            port = self.port_var.get().strip()
-            if not port:
-                messagebox.showwarning('提示', '请选择或输入串口')
-                return
-            try:
-                baud = int(self.baud_var.get())
-            except Exception:
-                baud = 115200
-            if self.backend.open(port, baud):
-                self.connect_btn.config(text='断开')
-                self.status_var.set(f'已连接 {port}@{baud}')
-                self.status_lbl.config(fg='#5fe08a')
 
     # ---- 日志存储 -------------------------------------------------------
     def _choose_log(self):
@@ -243,6 +222,27 @@ class SerialDebugApp:
         self.log_writer = w
         self.log_path = path
         self.log_lbl.config(text=f'存储中: {path}', fg='#9fb0c8')
+
+    # ---- 连接 ----------------------------------------------------------
+    def _toggle(self):
+        if self.backend.is_open:
+            self.backend.close()
+            self.connect_btn.config(text='连接')
+            self.status_var.set('未连接')
+            self.status_lbl.config(fg='#888')
+        else:
+            port = self.port_var.get().strip()
+            if not port:
+                messagebox.showwarning('提示', '请选择或输入串口')
+                return
+            try:
+                baud = int(self.baud_var.get())
+            except Exception:
+                baud = 115200
+            if self.backend.open(port, baud):
+                self.connect_btn.config(text='断开')
+                self.status_var.set(f'已连接 {port}@{baud}')
+                self.status_lbl.config(fg='#5fe08a')
 
     # ---- 发送 ----------------------------------------------------------
     def _send_entry(self):
