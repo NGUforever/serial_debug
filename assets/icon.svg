@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- 背景：圆角矩形 VSCode 深色 -->
+  <rect width="256" height="256" rx="40" ry="40" fill="#1e1e1e"/>
+  <!-- 顶部 accent 条 -->
+  <rect x="40" y="44" width="176" height="8" rx="4" fill="#0e639c"/>
+  <!-- 波形 1：信号曲线 -->
+  <path d="M 30 130 Q 60 90 90 130 T 150 130 T 210 130 T 226 130"
+        stroke="#4ec9b0" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <!-- 波形 2：辅助线 -->
+  <path d="M 30 160 L 60 160 L 70 140 L 90 180 L 110 140 L 130 180 L 150 140 L 170 180 L 190 160 L 226 160"
+        stroke="#569cd6" stroke-width="4" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- "AT" 文字 -->
+  <text x="128" y="220" font-family="DejaVu Sans Mono, monospace" font-size="44"
+        font-weight="bold" fill="#dcdcaa" text-anchor="middle">AT</text>
+</svg>

@@ -1,0 +1,30 @@
+[
+  {
+    "cmd": "AT+ELOG=0%",
+    "desc": "关闭周期日志"
+  },
+  {
+    "cmd": "AT+ELOG=1%",
+    "desc": "开启周期日志"
+  },
+  {
+    "cmd": "AT+EENFAC%",
+    "desc": "ECU进入工厂模式"
+  },
+  {
+    "cmd": "AT+EEXFAC%",
+    "desc": "ECU退出工厂模式"
+  },
+  {
+    "cmd": "AT+EMOTORRPM=6,30000,1%",
+    "desc": "ECU速度模式控制点击"
+  },
+  {
+    "cmd": "AT+EMOTORDIRECT=500,900,-900,30000,30000,0%",
+    "desc": "ECU直接速度控制所有电机"
+  },
+  {
+    "cmd": "AT+EMOTORREAD=6%",
+    "desc": "ECU读取电机转速"
+  }
+]

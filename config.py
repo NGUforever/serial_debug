@@ -1,0 +1,71 @@
+"""应用配置持久化。
+
+存到 ~/.config/serial_debug/config.json，包含：
+  port, baudrate, append_crlf, auto_scroll, log_path, theme_pref,
+  at_commands, filter_pattern, filter_enabled, ts_convert_enabled,
+  at_window_mode, geometry, at_geometry
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+
+CONFIG_DIR = os.path.expanduser('~/.config/serial_debug')
+CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
+
+# 默认值，新装机或首次启动用
+DEFAULTS = {
+    'port': '',
+    'baudrate': 115200,
+    'append_crlf': False,
+    'auto_scroll': True,
+    'log_path': '',
+    'theme_pref': 'auto',
+    'at_commands': [],
+    'filter_pattern': '',
+    'filter_enabled': False,
+    'ts_convert_enabled': False,
+    'at_window_mode': 'detached',     # detached / embedded / hidden
+    'geometry': '1100x680',
+    'at_geometry': '720x520',
+    'font_size': 10,
+    # 串口参数
+    'bytesize': 8,
+    'parity': 'none',     # none / even / odd
+    'stopbits': 1,        # 1 / 2
+    'flow_control': 'none',   # none / rtscts
+}
+
+
+def load() -> dict:
+    """读配置，合并默认值；读失败返回 DEFAULTS 副本。"""
+    cfg = dict(DEFAULTS)
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if k in cfg:
+                    cfg[k] = v
+    except Exception:
+        pass
+    return cfg
+
+
+_save_lock = threading.Lock()
+
+
+def save(cfg: dict) -> None:
+    """原子写配置（临时文件 + rename）。非阻塞，失败静默。"""
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        # 只存 DEFAULTS 里已有的字段，避免脏数据
+        cleaned = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS}
+        tmp = CONFIG_FILE + '.tmp'
+        with _save_lock:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(cleaned, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CONFIG_FILE)
+    except Exception:
+        pass

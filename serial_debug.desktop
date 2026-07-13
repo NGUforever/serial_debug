@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=串口调试助手
+GenericName=Serial Debug Tool
+Comment=Linux 本地串口调试工具：CH343 实时收发 / AT 命令管理 / 日志存储
+Comment[zh_CN]=Linux 本地串口调试工具：CH343 实时收发 / AT 命令管理 / 日志存储
+Exec=/home/ninebot/tools/common_py_env/bin/python3 /home/ninebot/projects/serial_debug/app.py
+Path=/home/ninebot/projects/serial_debug
+Icon=/home/ninebot/projects/serial_debug/assets/icon.png
+Terminal=false
+Categories=Development;Utility;Electronics;
+Keywords=serial;uart;AT;debug;ch343;
+StartupNotify=true
+StartupWMClass=串口调试助手
