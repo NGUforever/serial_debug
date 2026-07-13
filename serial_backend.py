@@ -16,6 +16,8 @@ class SerialBackend:
         self._reader: threading.Thread | None = None
         self._stop_evt = threading.Event()
         self._write_lock = threading.Lock()
+        self._buf_lock = threading.Lock()
+        self._buf = bytearray()
         self.rx_queue: queue.Queue = queue.Queue()
         self.on_status = on_status  # 回调: (level, msg)  level in {'info','error'}
 
@@ -46,6 +48,12 @@ class SerialBackend:
             self.ser.reset_output_buffer()
         except Exception:
             pass
+        # 清空上次会话残留的队列项
+        while not self.rx_queue.empty():
+            try:
+                self.rx_queue.get_nowait()
+            except Exception:
+                break
         self._stop_evt.clear()
         self._reader = threading.Thread(
             target=self._read_loop, name='serial-reader', daemon=True)
@@ -72,7 +80,6 @@ class SerialBackend:
 
     # ---- 读线程 ---------------------------------------------------------
     def _read_loop(self):
-        buf = bytearray()
         ser = self.ser
         while not self._stop_evt.is_set():
             try:
@@ -82,15 +89,28 @@ class SerialBackend:
             except Exception as e:
                 self.rx_queue.put(('error', f'读取异常: {e}'))
                 break
-            if chunk:
-                buf.extend(chunk)
-                # 按 \n 切行（兼容 \r\n），有 \n 的行即时切分发出
+            if not chunk:
+                # 读超时：残行不再卡 buf，立即入队，避免设备停发后 OK 响应被拼到残行末尾
+                with self._buf_lock:
+                    if self._buf:
+                        piece = bytes(self._buf).rstrip(b'\r')
+                        self._buf.clear()
+                        if piece:
+                            try:
+                                text = piece.decode('utf-8', errors='replace')
+                            except Exception:
+                                text = repr(piece)
+                            self.rx_queue.put(('line', text))
+                continue
+            # 累积到共享 buf，按 \n 切完整行发出
+            with self._buf_lock:
+                self._buf.extend(chunk)
                 while True:
-                    idx = buf.find(b'\n')
+                    idx = self._buf.find(b'\n')
                     if idx < 0:
                         break
-                    line = bytes(buf[:idx])
-                    del buf[:idx + 1]
+                    line = bytes(self._buf[:idx])
+                    del self._buf[:idx + 1]
                     line = line.rstrip(b'\r')
                     if not line:
                         continue  # 跳过纯空行
@@ -99,34 +119,43 @@ class SerialBackend:
                     except Exception:
                         text = repr(line)
                     self.rx_queue.put(('line', text))
-            else:
-                # 读超时（>=100ms 无新数据）：缓冲里残行按 \n 拆分后发出
-                # 等不到 \n 的残行也一并发出，避免无终止符的短帧被卡住
-                if buf:
-                    for piece in bytes(buf).split(b'\n'):
-                        piece = piece.rstrip(b'\r')
-                        if not piece:
-                            continue
-                        try:
-                            text = piece.decode('utf-8', errors='replace')
-                        except Exception:
-                            text = repr(piece)
-                        self.rx_queue.put(('line', text))
-                    buf.clear()
-        # 线程退出：清空缓冲
-        if buf:
-            for piece in bytes(buf).split(b'\n'):
-                piece = piece.rstrip(b'\r')
-                if not piece:
-                    continue
-                try:
-                    text = piece.decode('utf-8', errors='replace')
-                except Exception:
-                    text = repr(piece)
-                self.rx_queue.put(('line', text))
+        # 线程退出：残行入队，清空 buf
+        with self._buf_lock:
+            if self._buf:
+                piece = bytes(self._buf).rstrip(b'\r')
+                self._buf.clear()
+                if piece:
+                    try:
+                        text = piece.decode('utf-8', errors='replace')
+                    except Exception:
+                        text = repr(piece)
+                    self.rx_queue.put(('line', text))
         self.rx_queue.put(('closed', None))
 
     # ---- 发送 -----------------------------------------------------------
+    def flush_input(self):
+        """清空 OS 接收缓冲、reader 线程的 buf、rx_queue 残留行。
+
+        发送 AT 命令前调用，确保响应不被旧周期日志淹没。
+        响应是命令发出后才到，不会误清。
+        """
+        if self.ser is not None and self.ser.is_open:
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+        # 清掉 reader 线程累积的半行 buf，防止 OK,0% 被拼到旧日志行末尾
+        with self._buf_lock:
+            self._buf.clear()
+        while not self.rx_queue.empty():
+            try:
+                kind, _payload = self.rx_queue.get_nowait()
+                # 保留 status/error/closed 控制消息，只丢弃 line
+                if kind != 'line':
+                    self.rx_queue.put((kind, _payload))
+            except Exception:
+                break
+
     def send(self, text: str, append_crlf: bool = False) -> bool:
         if self.ser is None or not self.ser.is_open:
             self._status('error', '串口未连接，无法发送')

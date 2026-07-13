@@ -2,16 +2,18 @@
 
 布局：
   顶栏  串口 / 波特率 / 连接 / 状态灯
-  中部  左「周期日志」 | 右「AT 交互」(→发送 / ←响应 成对)
+  中部  单一日志窗口（发送 / 响应 / 周期日志，按时间顺序，颜色区分）
   底栏  命令输入 + 发送 + 日志开/关快捷 + 自动滚动/追加换行/清空
 
-行路由：命中响应正则 (^OK,) 的行进右栏并配对 pending_cmd，其余进左栏。
+行路由：命中响应正则 (^OK,) 的行配对 pending_cmd，其余为周期日志。
+所有内容显示在同一 Text 控件，用 tag 颜色区分类型。
 所有控件写入在主线程，经 root.after(30) 排空 rx_queue。
 """
 from __future__ import annotations
 
 import re
 import time
+import queue
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -19,7 +21,7 @@ from serial_backend import SerialBackend
 import log_writer
 
 RESP_RE = re.compile(r'^(OK,|ERROR|\+)')   # 响应行判定
-MAX_LINES = 5000                            # 每栏最多保留行数
+MAX_LINES = 5000                            # 最多保留行数
 DRAIN_MS = 30                               # 刷新间隔
 RESP_TIMEOUT = 2.0                          # 等待响应超时(秒)
 
@@ -34,12 +36,12 @@ class SerialDebugApp:
         self.backend = SerialBackend()
         self.pending_cmd: str | None = None
         self.pending_ts: float = 0.0
-        self.auto_scroll = {'log': True, 'at': True}
+        self.auto_scroll = True
         self.log_writer: log_writer.LogWriter | None = None
         self.log_path: str | None = None
 
         self._build_topbar()
-        self._build_panels()
+        self._build_panel()
         self._build_bottombar()
         self._apply_tags()
         self._drain()
@@ -80,48 +82,28 @@ class SerialDebugApp:
             bar, textvariable=self.status_var, fg='#888', width=30, anchor='w')
         self.status_lbl.pack(side='left', padx=(12, 0))
 
-    # ---- 中部分栏 ------------------------------------------------------
-    def _build_panels(self):
-        pane = ttk.PanedWindow(self.root, orient='horizontal')
-        pane.pack(fill='both', expand=True, padx=8, pady=4)
-
-        # 左：周期日志
-        left = ttk.Frame(pane)
-        ttk.Label(left, text='周期日志').pack(anchor='w')
-        self.log_txt = tk.Text(left, wrap='none', undo=False,
+    # ---- 中部单窗口 ----------------------------------------------------
+    def _build_panel(self):
+        frame = ttk.Frame(self.root)
+        frame.pack(fill='both', expand=True, padx=8, pady=4)
+        ttk.Label(frame, text='日志窗口').pack(anchor='w')
+        self.log_txt = tk.Text(frame, wrap='none', undo=False,
                                bg='#101418', fg='#cdd6e0',
                                insertbackground='#cdd6e0',
                                font=('Courier', 10))
-        self.log_txt.pack(fill='both', expand=True)
+        self.log_txt.pack(side='left', fill='both', expand=True)
         self.log_txt.configure(state='disabled')
-        self.log_scroll = ttk.Scrollbar(left, command=self.log_txt.yview)
+        self.log_scroll = ttk.Scrollbar(frame, command=self.log_txt.yview)
         self.log_scroll.pack(side='right', fill='y')
         self.log_txt.configure(yscrollcommand=self.log_scroll.set)
-        self.log_txt.bind('<Button-1>', lambda _e: self._check_scroll('log'))
-        pane.add(left, weight=3)
-
-        # 右：AT 交互
-        right = ttk.Frame(pane)
-        ttk.Label(right, text='AT 交互').pack(anchor='w')
-        self.at_txt = tk.Text(right, wrap='none', undo=False,
-                              bg='#0d1a12', fg='#cdd6e0',
-                              insertbackground='#cdd6e0',
-                              font=('Courier', 10))
-        self.at_txt.pack(fill='both', expand=True)
-        self.at_txt.configure(state='disabled')
-        self.at_scroll = ttk.Scrollbar(right, command=self.at_txt.yview)
-        self.at_scroll.pack(side='right', fill='y')
-        self.at_txt.configure(yscrollcommand=self.at_scroll.set)
-        self.at_txt.bind('<Button-1>', lambda _e: self._check_scroll('at'))
-        pane.add(right, weight=2)
+        self.log_txt.bind('<Button-1>', lambda _e: self._check_scroll())
 
     def _apply_tags(self):
         self.log_txt.tag_config('log', foreground='#9fb0c8')
         self.log_txt.tag_config('ts', foreground='#5b6b80')
-        self.at_txt.tag_config('send', foreground='#5aa9ff')
-        self.at_txt.tag_config('resp', foreground='#5fe08a')
-        self.at_txt.tag_config('ts', foreground='#4a6552')
-        self.at_txt.tag_config('note', foreground='#e0c45f')
+        self.log_txt.tag_config('send', foreground='#5aa9ff')
+        self.log_txt.tag_config('resp', foreground='#5fe08a')
+        self.log_txt.tag_config('note', foreground='#e0c45f')
 
     # ---- 底栏 ----------------------------------------------------------
     def _build_bottombar(self):
@@ -152,50 +134,45 @@ class SerialDebugApp:
         ttk.Checkbutton(bar, text='自动滚动',
                         variable=self.autoscroll_var,
                         command=self._on_autoscroll_toggle).pack(side='left')
-        ttk.Button(bar, text='清空日志', command=self._clear_log).pack(
+        ttk.Button(bar, text='清空', command=self._clear_log).pack(
             side='left', padx=(8, 2))
-        ttk.Button(bar, text='清空AT', command=self._clear_at).pack(
-            side='left')
 
     # ---- 行为 ----------------------------------------------------------
     def _on_autoscroll_toggle(self):
-        v = self.autoscroll_var.get()
-        self.auto_scroll['log'] = v
-        self.auto_scroll['at'] = v
+        self.auto_scroll = self.autoscroll_var.get()
 
-    def _check_scroll(self, which: str):
+    def _check_scroll(self):
         """用户点滚动条/拖选时暂停跟随。"""
-        txt = self.log_txt if which == 'log' else self.at_txt
         try:
-            top, bottom = txt.yview()
+            _top, bottom = self.log_txt.yview()
             if bottom < 0.98:
-                self.auto_scroll[which] = False
+                self.auto_scroll = False
         except Exception:
             pass
 
-    def _is_at_bottom(self, txt) -> bool:
+    def _is_at_bottom(self) -> bool:
         try:
-            _top, bottom = txt.yview()
+            _top, bottom = self.log_txt.yview()
             return bottom >= 0.98
         except Exception:
             return True
 
-    def _append(self, txt, text, tag):
-        txt.configure(state='normal')
-        txt.insert('end', text, tag)
-        self._trim(txt)
-        txt.configure(state='disabled')
-        if self.auto_scroll['log'] if txt is self.log_txt else self.auto_scroll['at']:
-            txt.see('end')
+    def _append(self, text, tag):
+        self.log_txt.configure(state='normal')
+        self.log_txt.insert('end', text, tag)
+        self._trim()
+        self.log_txt.configure(state='disabled')
+        if self.auto_scroll:
+            self.log_txt.see('end')
         # 日志写入：非阻塞入队，不拖慢显示
         if self.log_writer is not None:
             self.log_writer.put(text)
 
-    def _trim(self, txt):
-        line_cnt = int(txt.index('end-1c').split('.')[0])
+    def _trim(self):
+        line_cnt = int(self.log_txt.index('end-1c').split('.')[0])
         if line_cnt > MAX_LINES:
             drop = line_cnt - MAX_LINES
-            txt.delete('1.0', f'{drop + 1}.0')
+            self.log_txt.delete('1.0', f'{drop + 1}.0')
 
     @staticmethod
     def _now() -> str:
@@ -240,6 +217,8 @@ class SerialDebugApp:
             except Exception:
                 baud = 115200
             if self.backend.open(port, baud):
+                # 连接成功后清空显示，从头开始
+                self._clear_log()
                 self.connect_btn.config(text='断开')
                 self.status_var.set(f'已连接 {port}@{baud}')
                 self.status_lbl.config(fg='#5fe08a')
@@ -256,63 +235,95 @@ class SerialDebugApp:
             self.status_var.set('未连接，无法发送')
             self.status_lbl.config(fg='#e0c45f')
             return
+        # 发送前清空接收缓冲和队列中的旧日志行，确保响应不被淹没
+        self.backend.flush_input()
         ts = self._now()
-        self._append(self.at_txt, f'[{ts}] → {cmd}\n', 'send')
+        self._append(f'[{ts}] → {cmd}\n', 'send')
         self.pending_cmd = cmd
         self.pending_ts = time.time()
         self.backend.send(cmd, append_crlf=self.crlf_var.get())
 
     # ---- 队列排空 + 路由 ----------------------------------------------
     def _drain(self):
+        batch: list[tuple[str, str]] = []
+        status_update = None
+        error_msg = None
+        closed = False
         try:
             while True:
                 kind, payload = self.backend.rx_queue.get_nowait()
                 if kind == 'line':
-                    self._route_line(payload)
+                    batch.append(self._route_line(payload))
                 elif kind == 'status':
-                    level, msg = payload
-                    self.status_var.set(msg)
-                    self.status_lbl.config(
-                        fg='#5fe08a' if level == 'info' else '#e0554f')
+                    status_update = payload
                 elif kind == 'error':
-                    self.status_var.set(payload)
-                    self.status_lbl.config(fg='#e0554f')
+                    error_msg = payload
                 elif kind == 'closed':
-                    self.connect_btn.config(text='连接')
-                    self.status_var.set('连接已断开')
-                    self.status_lbl.config(fg='#888')
+                    closed = True
+        except queue.Empty:
+            pass
         except Exception:
             pass
 
+        # 批量插入：一次 state 切换 + 一次 insert，避免逐行开销
+        if batch:
+            self._append_batch(batch)
+
+        if error_msg is not None:
+            self.status_var.set(error_msg)
+            self.status_lbl.config(fg='#e0554f')
+        elif status_update is not None:
+            level, msg = status_update
+            self.status_var.set(msg)
+            self.status_lbl.config(
+                fg='#5fe08a' if level == 'info' else '#e0554f')
+        if closed:
+            self.connect_btn.config(text='连接')
+            self.status_var.set('连接已断开')
+            self.status_lbl.config(fg='#888')
+
         # 响应超时检查
         if self.pending_cmd and (time.time() - self.pending_ts) > RESP_TIMEOUT:
-            self._append(self.at_txt, '         ← (无响应)\n', 'note')
+            self._append_batch([('         ← (无响应)\n', 'note')])
             self.pending_cmd = None
 
         self.root.after(DRAIN_MS, self._drain)
 
-    def _route_line(self, line: str):
+    def _route_line(self, line: str) -> tuple[str, str]:
+        """返回 (text, tag) 供批量插入；同时处理 pending_cmd 配对。"""
         ts = self._now()
         if RESP_RE.match(line):
-            # 响应：配对 pending_cmd
             if self.pending_cmd:
-                self._append(self.at_txt, f'[{ts}] ← {line}\n', 'resp')
                 self.pending_cmd = None
-            else:
-                self._append(self.at_txt, f'[{ts}] ← {line} (未配对)\n', 'resp')
-        else:
-            self._append(self.log_txt, f'[{ts}] {line}\n', 'log')
+                return (f'[{ts}] ← {line}\n', 'resp')
+            return (f'[{ts}] ← {line} (未配对)\n', 'resp')
+        return (f'[{ts}] {line}\n', 'log')
+
+    def _append_batch(self, batch: list[tuple[str, str]]):
+        """批量插入多行，单次 state 切换 + 单次多段 insert，降低逐行开销。"""
+        if not batch:
+            return
+        txt = self.log_txt
+        txt.configure(state='normal')
+        # Tk insert 支持 (index, chars, tag, chars, tag, ...) 多段一次插入
+        args = []
+        for text, tag in batch:
+            args.append(text)
+            args.append(tag)
+        txt.insert('end', *args)
+        if self.log_writer is not None:
+            for text, _tag in batch:
+                self.log_writer.put(text)
+        self._trim()
+        txt.configure(state='disabled')
+        if self.auto_scroll:
+            txt.see('end')
 
     # ---- 清空 / 关闭 ---------------------------------------------------
     def _clear_log(self):
         self.log_txt.configure(state='normal')
         self.log_txt.delete('1.0', 'end')
         self.log_txt.configure(state='disabled')
-
-    def _clear_at(self):
-        self.at_txt.configure(state='normal')
-        self.at_txt.delete('1.0', 'end')
-        self.at_txt.configure(state='disabled')
 
     def _on_close(self):
         try:
