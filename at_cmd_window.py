@@ -28,13 +28,14 @@ def _norm(item: dict) -> dict:
     }
 
 
-_COLS = ('cmd', 'desc', 'seq', 'period_ms')
+_COLS = ('cmd', 'desc', 'seq', 'period_ms', 'op')
+_EDITABLE_COLS = ('cmd', 'desc', 'seq', 'period_ms')  # 'op' 不可编辑
 _COL_LABELS = {
     'cmd': '命令', 'desc': '功能描述',
-    'seq': '顺序', 'period_ms': '间隔(ms)',
+    'seq': '顺序', 'period_ms': '间隔(ms)', 'op': '操作',
 }
-_COL_WIDTHS = {'cmd': 200, 'desc': 220, 'seq': 60, 'period_ms': 80}
-_COL_MINS = {'cmd': 80, 'desc': 60, 'seq': 40, 'period_ms': 50}
+_COL_WIDTHS = {'cmd': 200, 'desc': 220, 'seq': 60, 'period_ms': 80, 'op': 60}
+_COL_MINS = {'cmd': 80, 'desc': 60, 'seq': 40, 'period_ms': 50, 'op': 40}
 
 
 class AtCmdPanel(ttk.Frame):
@@ -77,8 +78,6 @@ class AtCmdPanel(ttk.Frame):
                    command=self._clear_all).pack(side='left')
         ttk.Separator(bar, orient='vertical').pack(
             side='left', fill='y', padx=6)
-        ttk.Button(bar, text='发送选中', style='Primary.TButton',
-                   command=self._send_selected).pack(side='left')
         self._batch_btn = ttk.Button(bar, text='批量执行',
                                      command=self._toggle_batch)
         self._batch_btn.pack(side='left', padx=4)
@@ -97,6 +96,7 @@ class AtCmdPanel(ttk.Frame):
                             minwidth=_COL_MINS[col], stretch=True)
         self.tree.column('seq', anchor='center')
         self.tree.column('period_ms', anchor='center')
+        self.tree.column('op', anchor='center', stretch=False)
 
         vsb = ttk.Scrollbar(outer, orient='vertical',
                             command=self.tree.yview)
@@ -105,24 +105,44 @@ class AtCmdPanel(ttk.Frame):
         vsb.pack(side='right', fill='y')
 
         self.tree.bind('<Double-1>', self._on_double_click)
-        self.tree.bind('<Return>', lambda _e: self._send_selected())
+        self.tree.bind('<Button-1>', self._on_tree_click)
         self.tree.bind('<Button-3>', self._on_context_menu)
 
         self._ctx_menu = tk.Menu(self.tree, tearoff=False)
-        self._ctx_menu.add_command(label='发送此命令',
-                                   command=self._send_selected)
         self._ctx_menu.add_command(label='编辑单元格',
                                    command=self._edit_focused_cell)
         self._ctx_menu.add_separator()
         self._ctx_menu.add_command(label='删除此行',
                                    command=self._delete_selected)
 
+    def _on_tree_click(self, event):
+        """点击 Treeview：如果点的是'操作'列，发送该行命令。"""
+        row_id = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if not row_id or not col:
+            return
+        col_idx = int(col.replace('#', '')) - 1
+        if col_idx < 0 or col_idx >= len(_COLS):
+            return
+        if _COLS[col_idx] == 'op':
+            cmd = self.tree.set(row_id, 'cmd')
+            cmd = (cmd or '').strip()
+            if cmd:
+                self.send_callback(cmd)
+
     def _refresh_tree(self):
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         for cmd in self.commands:
             self.tree.insert('', 'end', values=(
-                cmd['cmd'], cmd['desc'], cmd['seq'], cmd['period_ms']))
+                cmd['cmd'], cmd['desc'], cmd['seq'], cmd['period_ms'], '发送'))
+
+    def _notify_change(self):
+        if self.on_change:
+            try:
+                self.on_change(list(self.commands))
+            except Exception:
+                pass
 
     # ---- 行内编辑 --------------------------------------------------------
     def _on_double_click(self, event):
@@ -131,9 +151,9 @@ class AtCmdPanel(ttk.Frame):
         if not row_id or not col:
             return
         col_idx = int(col.replace('#', '')) - 1
-        if col_idx < 0 or col_idx >= len(_COLS):
-            return
-        self._start_edit(row_id, _COLS[col_idx])
+        if col_idx < 0 or col_idx >= len(_EDITABLE_COLS):
+            return  # 'op' 列不可编辑
+        self._start_edit(row_id, _EDITABLE_COLS[col_idx])
 
     def _edit_focused_cell(self):
         sel = self.tree.selection()
@@ -372,13 +392,20 @@ class AtCmdWindow(tk.Toplevel):
         self.title('AT 命令列表')
         self.geometry('720x520')
         self.minsize(560, 360)
+        self.resizable(True, True)
         self.send_callback = send_callback
 
         self.panel = AtCmdPanel(self, send_callback, initial_cmds, on_change)
         self.panel.pack(fill='both', expand=True)
 
         self.protocol('WM_DELETE_WINDOW', self._on_close)
-        self.transient(parent)
+        # 不调用 transient：GNOME/Mutter 把 transient 窗口当对话框，
+        # 禁用最大化。改用 lift+focus 保持层级。
+        try:
+            self.lift(parent)
+            self.focus_force()
+        except Exception:
+            pass
 
     @property
     def commands(self):

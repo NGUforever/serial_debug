@@ -35,6 +35,19 @@ DEFAULTS = {
     'parity': 'none',     # none / even / odd
     'stopbits': 1,        # 1 / 2
     'flow_control': 'none',   # none / rtscts
+    # 监视窗口变量（电机 / BMS / IMU）
+    'motor_vars': [],
+    'bms_vars': [],
+    'imu_vars': [],
+    'motor_plots': [],
+    'bms_plots': [],
+    'imu_plots': [],
+    'motor_monitor_geometry': '',
+    'bms_monitor_geometry': '',
+    'imu_monitor_geometry': '',
+    'motor_monitor_mode': 'detached',   # detached / embedded / hidden
+    'bms_monitor_mode': 'detached',
+    'imu_monitor_mode': 'detached',
 }
 
 

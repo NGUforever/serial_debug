@@ -198,6 +198,15 @@ def apply_theme(root: tk.Tk, theme_name: str):
               fieldbackground=[('readonly', t['panel_bg'])],
               foreground=[('readonly', t['panel_fg'])],
               background=[('active', t['btn_hover'])])
+    # Combobox 下拉弹出列表配色（深色主题下不显示白色下拉框）
+    style.configure('TCombobox.Listbox',
+                    background=t['panel_bg'], foreground=t['panel_fg'],
+                    selectbackground=t['select_bg'],
+                    selectforeground='#ffffff',
+                    borderwidth=0, highlightthickness=0,
+                    font=_font())
+    style.configure('TCombobox.Popdown',
+                    background=t['panel_bg'], borderwidth=0)
     style.configure('TScrollbar', background=t['btn_bg'],
                     troughcolor=t['bg'], arrowcolor=t['fg'],
                     bordercolor=t['bg'], gripcount=0)
@@ -205,6 +214,10 @@ def apply_theme(root: tk.Tk, theme_name: str):
                     troughcolor=t['bg'], arrowcolor=t['fg'],
                     bordercolor=t['bg'], gripcount=0, width=12)
     style.configure('TSeparator', background=t['border'])
+    # PanedWindow sash（窗格分隔条）颜色跟主题一致，不显示白色
+    style.configure('TPanedwindow', background=t['bg'])
+    style.configure('TPanedwindow.Sash', sashrelief='flat',
+                    background=t['border'])
     style.configure('TLabel', background=t['bg'], foreground=t['fg'],
                     font=_font())
     style.configure('TCheckbutton', background=t['bg'], foreground=t['fg'],
@@ -251,6 +264,9 @@ def apply_theme(root: tk.Tk, theme_name: str):
 def apply_menu_theme(menubar, theme: dict):
     """递归给 tk.Menu 及所有子 menu 配色（VSCode 风格）。
     主窗口 _apply_theme 和 _build_menubar 都调用。
+
+    tk.Menu 无原生 padding，靠给子菜单项 label 前加 2 空格模拟左边距，
+    让所有弹出菜单文字和左边缘留有空间，视觉一致。menubar 顶层项不加。
     """
     if menubar is None:
         return
@@ -259,7 +275,29 @@ def apply_menu_theme(menubar, theme: dict):
         'active_bg': theme['select_bg'], 'active_fg': '#ffffff',
         'border': theme['border'], 'disabled': theme['muted'],
     }
-    def _style_menu(menu):
+
+    def _pad_labels(menu):
+        """给子菜单项 label 前加 2 空格，模拟左边距。已加则跳过。"""
+        try:
+            last = menu.index('end')
+            if last is None:
+                return
+            for i in range(last + 1):
+                try:
+                    t = menu.type(i)
+                except Exception:
+                    continue
+                if t in ('command', 'radiobutton', 'checkbutton', 'cascade'):
+                    try:
+                        label = menu.entrycget(i, 'label')
+                        if not label.startswith('  '):
+                            menu.entryconfigure(i, label='  ' + label)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _style_menu(menu, is_menubar=False):
         try:
             menu.configure(
                 bg=c['bg'], fg=c['fg'],
@@ -281,6 +319,9 @@ def apply_menu_theme(menubar, theme: dict):
                     menu.configure(**{k: v})
                 except Exception:
                     pass
+        # 子菜单项加左边距（menubar 顶层不加）
+        if not is_menubar:
+            _pad_labels(menu)
         # 递归子菜单
         try:
             last = menu.index('end')
@@ -291,7 +332,7 @@ def apply_menu_theme(menubar, theme: dict):
                     except Exception:
                         sub = None
                     if sub is not None:
-                        _style_menu(sub)
+                        _style_menu(sub, is_menubar=False)
         except Exception:
             pass
-    _style_menu(menubar)
+    _style_menu(menubar, is_menubar=True)

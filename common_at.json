@@ -1,30 +1,68 @@
 [
   {
     "cmd": "AT+ELOG=0%",
-    "desc": "关闭周期日志"
+    "desc": "关闭周期日志",
+    "seq": 0,
+    "period_ms": 10
   },
   {
     "cmd": "AT+ELOG=1%",
-    "desc": "开启周期日志"
+    "desc": "开启周期日志",
+    "seq": 0,
+    "period_ms": 0
   },
   {
     "cmd": "AT+EENFAC%",
-    "desc": "ECU进入工厂模式"
+    "desc": "ECU进入工厂模式",
+    "seq": 2,
+    "period_ms": 100
   },
   {
     "cmd": "AT+EEXFAC%",
-    "desc": "ECU退出工厂模式"
+    "desc": "ECU退出工厂模式",
+    "seq": 0,
+    "period_ms": 0
   },
   {
-    "cmd": "AT+EMOTORRPM=6,30000,1%",
-    "desc": "ECU速度模式控制点击"
-  },
-  {
-    "cmd": "AT+EMOTORDIRECT=500,900,-900,30000,30000,0%",
-    "desc": "ECU直接速度控制所有电机"
+    "cmd": "AT+EMOTORRPM=0,450,1%",
+    "desc": "ECU速度模式控制点击",
+    "seq": 3,
+    "period_ms": 5000
   },
   {
     "cmd": "AT+EMOTORREAD=6%",
-    "desc": "ECU读取电机转速"
+    "desc": "ECU直接速度控制所有电机",
+    "seq": 4,
+    "period_ms": 1000
+  },
+  {
+    "cmd": "AT+EMOTORRPM=6,0,1%",
+    "desc": "ECU读取电机转速",
+    "seq": 5,
+    "period_ms": 2000
+  },
+  {
+    "cmd": "AT+EMOTORDIRECT=500,900,-900,30000,30000,0%",
+    "desc": "ECU控制整机速度",
+    "seq": 6,
+    "period_ms": 100
+  },
+  {
+    "cmd": "AT+VFAC=3,1%",
+    "desc": "VCU进入工厂模式",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VENCCALIB=3,1%",
+    "desc": "VCU舵轮自动标定",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VRESET=3,1%",
+    "desc": "VCU重启",
+    "seq": 0,
+    "period_ms": 0
   }
 ]

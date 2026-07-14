@@ -29,11 +29,13 @@ class SerialBackend:
     def __init__(self, on_status=None):
         self.ser: serial.Serial | None = None
         self._reader: threading.Thread | None = None
+        self._writer: threading.Thread | None = None
         self._stop_evt = threading.Event()
         self._write_lock = threading.Lock()
         self._buf_lock = threading.Lock()
         self._buf = bytearray()
         self.rx_queue: queue.Queue = queue.Queue()
+        self._write_queue: queue.Queue = queue.Queue()
         self.on_status = on_status  # 回调: (level, msg)  level in {'info','error'}
 
     # ---- 端口枚举 -------------------------------------------------------
@@ -88,11 +90,17 @@ class SerialBackend:
         self._reader = threading.Thread(
             target=self._read_loop, name='serial-reader', daemon=True)
         self._reader.start()
+        # writer 线程：异步处理 ser.write+flush，避免主线程因 TX 阻塞而卡 UI
+        self._writer = threading.Thread(
+            target=self._write_loop, name='serial-writer', daemon=True)
+        self._writer.start()
         self._status('info', f'已连接 {port} @ {baudrate}')
         return True
 
     def close(self):
         self._stop_evt.set()
+        # 唤醒 writer 线程退出
+        self._write_queue.put(None)
         # 先关 fd，解除 reader 阻塞在 read(1) 上的等待
         if self.ser is not None:
             try:
@@ -102,6 +110,9 @@ class SerialBackend:
         if self._reader is not None:
             self._reader.join(timeout=1.0)
             self._reader = None
+        if self._writer is not None:
+            self._writer.join(timeout=1.0)
+            self._writer = None
         if self.ser is not None:
             self.ser = None
         self._status('info', '已断开')
@@ -201,6 +212,10 @@ class SerialBackend:
         _dbg(f'flush_input done, dropped {dropped} line items')
 
     def send(self, text: str, append_crlf: bool = False) -> bool:
+        """非阻塞发送：编码后入 write_queue，由 writer 线程异步写入。
+
+        主线程立即返回，TX 阻塞（设备 RX 满 / write_timeout）不影响 UI。
+        """
         _dbg(f'send: {text!r} append_crlf={append_crlf}')
         if self.ser is None or not self.ser.is_open:
             self._status('error', '串口未连接，无法发送')
@@ -208,19 +223,36 @@ class SerialBackend:
         data = text.encode('utf-8')
         if append_crlf:
             data += b'\r\n'
-        try:
-            with self._write_lock:
-                n = self.ser.write(data)
-                try:
-                    self.ser.flush()
-                except Exception:
-                    pass
-        except Exception as e:
-            self._status('error', f'发送失败: {e}')
-            return False
-        _dbg(f'send wrote {n} bytes, in_waiting={self.ser.in_waiting}')
-        self._status('info', f'已发送 {n} 字节')
+        self._write_queue.put(data)
         return True
+
+    def _write_loop(self):
+        """writer 线程：从 write_queue 取数据，执行 ser.write+flush。
+
+        阻塞在 write/flush 时只阻塞本线程，主线程继续响应 UI。
+        None 是退出哨兵。
+        """
+        while not self._stop_evt.is_set():
+            try:
+                data = self._write_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if data is None:
+                break
+            ser = self.ser
+            if ser is None or not ser.is_open:
+                continue
+            try:
+                with self._write_lock:
+                    n = ser.write(data)
+                    try:
+                        ser.flush()
+                    except Exception:
+                        pass
+                _dbg(f'writer wrote {n} bytes')
+                self._status('info', f'已发送 {n} 字节')
+            except Exception as e:
+                self._status('error', f'发送失败: {e}')
 
     def _try_set_low_latency(self):
         """尝试设置 ASYNC_LOW_LATENCY，让内核低延迟处理 USB 数据。

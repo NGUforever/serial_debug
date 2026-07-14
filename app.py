@@ -20,6 +20,11 @@ from tkinter import ttk, messagebox, filedialog
 from serial_backend import SerialBackend
 import log_writer
 from at_cmd_window import AtCmdWindow
+from monitor_window import (MotorMonitorWindow, BmsMonitorWindow,
+                            ImuMonitorWindow,
+                            MotorMonitorPanel, BmsMonitorPanel,
+                            ImuMonitorPanel, FillCheck)
+from auto_combobox import AutoCombobox
 import themes
 import config
 
@@ -52,6 +57,18 @@ class SerialDebugApp:
         self.at_window: AtCmdWindow | None = None
         self._at_embedded = None   # AtCmdPanel 嵌入式实例
         self._at_window_mode: str = 'detached'
+        self._motor_monitor: MotorMonitorWindow | None = None
+        self._bms_monitor: BmsMonitorWindow | None = None
+        self._imu_monitor: ImuMonitorWindow | None = None
+        self._motor_embedded: MotorMonitorPanel | None = None
+        self._bms_embedded: BmsMonitorPanel | None = None
+        self._imu_embedded: ImuMonitorPanel | None = None
+        self._motor_frame: ttk.Frame | None = None
+        self._bms_frame: ttk.Frame | None = None
+        self._imu_frame: ttk.Frame | None = None
+        self._motor_mode: str = 'detached'
+        self._bms_mode: str = 'detached'
+        self._imu_mode: str = 'detached'
         self._connected_label: str = '未连接'
         self._dot_state: str = 'idle'
         self._save_after_id: str | None = None
@@ -90,6 +107,16 @@ class SerialDebugApp:
         self._on_filter_change()
         # 嵌入式 AT 面板按上次状态加载
         self._apply_at_window_mode(self.cfg.get('at_window_mode', 'detached'))
+        # 电机/BMS/IMU 监视按上次模式加载（只恢复 embedded，detached 等用户点开）
+        self._motor_mode = self.cfg.get('motor_monitor_mode', 'detached')
+        self._bms_mode = self.cfg.get('bms_monitor_mode', 'detached')
+        self._imu_mode = self.cfg.get('imu_monitor_mode', 'detached')
+        if self._motor_mode == 'embedded':
+            self._apply_motor_mode('embedded')
+        if self._bms_mode == 'embedded':
+            self._apply_bms_mode('embedded')
+        if self._imu_mode == 'embedded':
+            self._apply_imu_mode('embedded')
         # 启动时恢复日志写入器
         self._restore_log_writer()
         self._drain()
@@ -119,7 +146,7 @@ class SerialDebugApp:
 
         # 文件
         m_file = tk.Menu(menubar, tearoff=False)
-        menubar.add_cascade(label='文件(F)', menu=m_file, underline=0)
+        menubar.add_cascade(label='文件(F)', menu=m_file)
         m_file.add_command(label='导入 AT 命令 JSON…', command=self._menu_import_at)
         m_file.add_command(label='导出 AT 命令 JSON…', command=self._menu_export_at)
         m_file.add_separator()
@@ -129,7 +156,7 @@ class SerialDebugApp:
 
         # 视图
         m_view = tk.Menu(menubar, tearoff=False)
-        menubar.add_cascade(label='视图(V)', menu=m_view, underline=0)
+        menubar.add_cascade(label='视图(V)', menu=m_view)
 
         # 主题子菜单
         m_theme = tk.Menu(m_view, tearoff=False)
@@ -155,6 +182,50 @@ class SerialDebugApp:
                                variable=self._at_mode_var,
                                command=lambda: self._set_at_mode('hidden'))
         m_view.add_separator()
+        # 电机监视模式
+        _mode_label = {'detached': '独立窗口', 'embedded': '嵌入侧栏',
+                       'hidden': '隐藏'}
+        self._motor_mode_var = tk.StringVar(
+            value=_mode_label.get(self.cfg.get('motor_monitor_mode', 'detached'),
+                                   '独立窗口'))
+        m_view.add_radiobutton(label='电机监视：独立窗口', value='独立窗口',
+                               variable=self._motor_mode_var,
+                               command=lambda: self._set_motor_mode('detached'))
+        m_view.add_radiobutton(label='电机监视：嵌入侧栏', value='嵌入侧栏',
+                               variable=self._motor_mode_var,
+                               command=lambda: self._set_motor_mode('embedded'))
+        m_view.add_radiobutton(label='电机监视：隐藏', value='隐藏',
+                               variable=self._motor_mode_var,
+                               command=lambda: self._set_motor_mode('hidden'))
+        m_view.add_separator()
+        # BMS 监视模式
+        self._bms_mode_var = tk.StringVar(
+            value=_mode_label.get(self.cfg.get('bms_monitor_mode', 'detached'),
+                                   '独立窗口'))
+        m_view.add_radiobutton(label='BMS 监视：独立窗口', value='独立窗口',
+                               variable=self._bms_mode_var,
+                               command=lambda: self._set_bms_mode('detached'))
+        m_view.add_radiobutton(label='BMS 监视：嵌入侧栏', value='嵌入侧栏',
+                               variable=self._bms_mode_var,
+                               command=lambda: self._set_bms_mode('embedded'))
+        m_view.add_radiobutton(label='BMS 监视：隐藏', value='隐藏',
+                               variable=self._bms_mode_var,
+                               command=lambda: self._set_bms_mode('hidden'))
+        m_view.add_separator()
+        # IMU 监视模式
+        self._imu_mode_var = tk.StringVar(
+            value=_mode_label.get(self.cfg.get('imu_monitor_mode', 'detached'),
+                                   '独立窗口'))
+        m_view.add_radiobutton(label='IMU 监视：独立窗口', value='独立窗口',
+                               variable=self._imu_mode_var,
+                               command=lambda: self._set_imu_mode('detached'))
+        m_view.add_radiobutton(label='IMU 监视：嵌入侧栏', value='嵌入侧栏',
+                               variable=self._imu_mode_var,
+                               command=lambda: self._set_imu_mode('embedded'))
+        m_view.add_radiobutton(label='IMU 监视：隐藏', value='隐藏',
+                               variable=self._imu_mode_var,
+                               command=lambda: self._set_imu_mode('hidden'))
+        m_view.add_separator()
         # 时间戳转换
         self._ts_convert_var = tk.BooleanVar(
             value=self.cfg.get('ts_convert_enabled', False))
@@ -170,7 +241,7 @@ class SerialDebugApp:
 
         # 工具
         m_tools = tk.Menu(menubar, tearoff=False)
-        menubar.add_cascade(label='工具(T)', menu=m_tools, underline=0)
+        menubar.add_cascade(label='工具(T)', menu=m_tools)
         m_tools.add_command(label='连接/断开', command=self._toggle,
                             accelerator='Ctrl+D')
         m_tools.add_separator()
@@ -186,17 +257,20 @@ class SerialDebugApp:
         m_tools.add_separator()
         m_tools.add_command(label='清空日志窗口',
                             command=self._clear_log, accelerator='Ctrl+L')
-        m_tools.add_command(label='关闭周期日志 (AT+ELOG=0%)',
-                            command=lambda: self._send_cmd('AT+ELOG=0%'))
-        m_tools.add_command(label='开启周期日志 (AT+ELOG=1%)',
-                            command=lambda: self._send_cmd('AT+ELOG=1%'))
         m_tools.add_separator()
         m_tools.add_command(label='AT 命令列表…',
                             command=self._open_at_window)
+        m_tools.add_separator()
+        m_tools.add_command(label='电机数据监视…',
+                            command=self._open_motor_monitor)
+        m_tools.add_command(label='BMS 数据监视…',
+                            command=self._open_bms_monitor)
+        m_tools.add_command(label='IMU 数据监视…',
+                            command=self._open_imu_monitor)
 
         # 帮助
         m_help = tk.Menu(menubar, tearoff=False)
-        menubar.add_cascade(label='帮助(H)', menu=m_help, underline=0)
+        menubar.add_cascade(label='帮助(H)', menu=m_help)
         m_help.add_command(label='关于', command=self._show_about)
 
         # 快捷键
@@ -267,12 +341,13 @@ class SerialDebugApp:
         # 连接组：串口 + 波特率 + 连接按钮
         ttk.Label(bar, text='串口').pack(side='left', padx=(0, 4))
         self.port_var = tk.StringVar(value=self.cfg.get('port', ''))
-        self.port_box = ttk.Combobox(
-            bar, textvariable=self.port_var, values=SerialBackend.list_ports(),
-            width=22)
+        self.port_box = AutoCombobox(
+            bar, values=SerialBackend.list_ports(), state='normal',
+            width=22, font=themes._font(), textvariable=self.port_var)
         self.port_box.pack(side='left', padx=(0, 8))
-        self.port_box.bind('<FocusIn>', lambda _e: self.port_box.configure(
-            values=SerialBackend.list_ports()))
+        # FocusIn 时刷新串口列表
+        self.port_box.bind_entry('<FocusIn>',
+            lambda _e: self.port_box.configure(values=SerialBackend.list_ports()))
         self.port_var.trace_add('write', lambda *_: self._schedule_save())
 
         ttk.Label(bar, text='波特率').pack(side='left', padx=(0, 4))
@@ -280,11 +355,13 @@ class SerialDebugApp:
             baud_init = int(self.cfg.get('baudrate', 115200))
         except Exception:
             baud_init = 115200
-        self.baud_var = tk.IntVar(value=baud_init)
-        self.baud_box = ttk.Combobox(
-            bar, textvariable=self.baud_var, width=8,
-            values=['9600', '19200', '38400', '57600', '115200', '230400',
-                    '460800', '921600'])
+        self.baud_var = tk.StringVar(value=str(baud_init))
+        self.baud_box = AutoCombobox(
+            bar, values=['9600', '19200', '38400', '57600', '115200', '230400',
+                        '460800', '921600', '1000000', '2000000', '3000000'],
+            state='normal', width=10, font=themes._font(),
+            textvariable=self.baud_var)
+        self.baud_box.set(str(baud_init))
         self.baud_box.pack(side='left', padx=(0, 8))
         self.baud_var.trace_add('write', lambda *_: self._schedule_save())
 
@@ -349,10 +426,11 @@ class SerialDebugApp:
         self._filter_var.trace_add('write', lambda *_: self._on_filter_change())
         self._filter_enabled_var = tk.BooleanVar(
             value=self.cfg.get('filter_enabled', False))
-        ttk.Checkbutton(filter_bar, text='启用（正则）',
-                        variable=self._filter_enabled_var,
-                        command=self._on_filter_change
-                        ).pack(side='left', padx=(0, 6))
+        # FillCheck 取代 ttk.Checkbutton（填充色块代替对勾）
+        self._filter_check = FillCheck(filter_bar, text='启用（正则）',
+                                       variable=self._filter_enabled_var,
+                                       command=self._on_filter_change)
+        self._filter_check.pack(side='left', padx=(0, 6))
         ttk.Label(filter_bar, text='（不匹配行隐藏）',
                   foreground=self._theme['muted']
                   ).pack(side='left', padx=(0, 6))
@@ -426,6 +504,23 @@ class SerialDebugApp:
             themes.apply_menu_theme(self._menubar, t)
         except Exception:
             pass
+        # FillCheck 跟随主题
+        for attr in ('_filter_check', '_crlf_check', '_autoscroll_check'):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.apply_theme(t)
+                except Exception:
+                    pass
+        # AutoCombobox 跟随主题（弹出下拉配色）
+        for attr in ('port_box', 'baud_box', 'bytesize_box',
+                     'parity_box', 'stopbits_box', 'flow_box'):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.apply_theme(t)
+                except Exception:
+                    pass
         # 嵌入式 AT 面板 Canvas 跟随
         if self._at_embedded is not None:
             try:
@@ -461,6 +556,37 @@ class SerialDebugApp:
                 self._at_embedded.apply_theme(self._theme)
             except Exception:
                 pass
+        # 监视窗口跟随主题
+        if self._motor_monitor is not None and self._motor_monitor.winfo_exists():
+            try:
+                self._motor_monitor.update_theme()
+            except Exception:
+                pass
+        if self._bms_monitor is not None and self._bms_monitor.winfo_exists():
+            try:
+                self._bms_monitor.update_theme()
+            except Exception:
+                pass
+        if self._imu_monitor is not None and self._imu_monitor.winfo_exists():
+            try:
+                self._imu_monitor.update_theme()
+            except Exception:
+                pass
+        if self._motor_embedded is not None:
+            try:
+                self._motor_embedded.apply_theme(self._theme)
+            except Exception:
+                pass
+        if self._bms_embedded is not None:
+            try:
+                self._bms_embedded.apply_theme(self._theme)
+            except Exception:
+                pass
+        if self._imu_embedded is not None:
+            try:
+                self._imu_embedded.apply_theme(self._theme)
+            except Exception:
+                pass
 
     # ---- 底栏 ----------------------------------------------------------
     def _build_bottombar(self):
@@ -490,65 +616,69 @@ class SerialDebugApp:
         ttk.Separator(bar, orient='vertical').pack(
             side='left', fill='y', padx=8)
 
-        # 选项组
+        # 选项组（FillCheck 填充色块复选框）
         self.crlf_var = tk.BooleanVar(value=self.cfg.get('append_crlf', False))
-        ttk.Checkbutton(bar, text='追加 \\r\\n',
-                        variable=self.crlf_var,
-                        command=lambda: self._schedule_save()
-                        ).pack(side='left', padx=4)
+        self._crlf_check = FillCheck(bar, text='追加 \\r\\n',
+                                      variable=self.crlf_var,
+                                      command=lambda: self._schedule_save())
+        self._crlf_check.pack(side='left', padx=4)
         self.autoscroll_var = tk.BooleanVar(
             value=self.cfg.get('auto_scroll', True))
-        ttk.Checkbutton(bar, text='自动滚动',
-                        variable=self.autoscroll_var,
-                        command=self._on_autoscroll_toggle).pack(
-            side='left', padx=4)
+        self._autoscroll_check = FillCheck(
+            bar, text='自动滚动',
+            variable=self.autoscroll_var,
+            command=self._on_autoscroll_toggle)
+        self._autoscroll_check.pack(side='left', padx=4)
         ttk.Button(bar, text='清空',
                    command=self._clear_log).pack(side='left', padx=4)
 
     def _build_serial_bar(self):
-        """最下方串口参数栏：数据位 / 校验 / 停止位 / 流控。"""
+        """最下方串口参数栏：数据位 / 校验 / 停止位 / 流控。
+
+        用 AutoCombobox：下拉方向自适应，最大化窗口时下方空间不足会向上弹出。
+        """
         bar = ttk.Frame(self.root, padding=(10, 4))
         bar.pack(fill='x')
 
         ttk.Label(bar, text='数据位').pack(side='left', padx=(0, 4))
-        self.bytesize_var = tk.IntVar(value=self._bytesize)
-        self.bytesize_box = ttk.Combobox(
-            bar, textvariable=self.bytesize_var, width=4, state='readonly',
-            values=['5', '6', '7', '8'])
+        self.bytesize_box = AutoCombobox(
+            bar, values=['5', '6', '7', '8'], state='normal',
+            width=4, font=themes._font())
+        self.bytesize_box.set(str(self._bytesize))
         self.bytesize_box.pack(side='left', padx=(0, 12))
-        self.bytesize_var.trace_add('write', lambda *_: self._on_serial_param_change())
+        self.bytesize_box.trace_add('write', lambda *_: self._on_serial_param_change())
 
         ttk.Label(bar, text='校验位').pack(side='left', padx=(0, 4))
         parity_map = {'无': 'none', '偶校验': 'even', '奇校验': 'odd'}
         self._parity_label = next((k for k, v in parity_map.items()
                                    if v == self._parity), '无')
-        self.parity_var = tk.StringVar(value=self._parity_label)
-        self.parity_box = ttk.Combobox(
-            bar, textvariable=self.parity_var, width=8, state='readonly',
-            values=list(parity_map.keys()))
+        self.parity_box = AutoCombobox(
+            bar, values=list(parity_map.keys()), state='normal',
+            width=8, font=themes._font())
+        self.parity_box.set(self._parity_label)
         self.parity_box.pack(side='left', padx=(0, 12))
         self._parity_map = parity_map
-        self.parity_var.trace_add('write', lambda *_: self._on_serial_param_change())
+        self.parity_box.trace_add('write', lambda *_: self._on_serial_param_change())
 
         ttk.Label(bar, text='停止位').pack(side='left', padx=(0, 4))
-        self.stopbits_var = tk.IntVar(value=self._stopbits)
-        self.stopbits_box = ttk.Combobox(
-            bar, textvariable=self.stopbits_var, width=4, state='readonly',
-            values=['1', '2'])
+        self.stopbits_box = AutoCombobox(
+            bar, values=['1', '2'], state='normal',
+            width=4, font=themes._font())
+        self.stopbits_box.set(str(self._stopbits))
         self.stopbits_box.pack(side='left', padx=(0, 12))
-        self.stopbits_var.trace_add('write', lambda *_: self._on_serial_param_change())
+        self.stopbits_box.trace_add('write', lambda *_: self._on_serial_param_change())
 
         ttk.Label(bar, text='流控').pack(side='left', padx=(0, 4))
         fc_map = {'无': 'none', 'RTS/CTS': 'rtscts'}
         self._fc_label = next((k for k, v in fc_map.items()
                                if v == self._flow_control), '无')
-        self.flow_var = tk.StringVar(value=self._fc_label)
-        self.flow_box = ttk.Combobox(
-            bar, textvariable=self.flow_var, width=10, state='readonly',
-            values=list(fc_map.keys()))
+        self.flow_box = AutoCombobox(
+            bar, values=list(fc_map.keys()), state='normal',
+            width=10, font=themes._font())
+        self.flow_box.set(self._fc_label)
         self.flow_box.pack(side='left', padx=(0, 12))
         self._fc_map = fc_map
-        self.flow_var.trace_add('write', lambda *_: self._on_serial_param_change())
+        self.flow_box.trace_add('write', lambda *_: self._on_serial_param_change())
 
         ttk.Separator(bar, orient='vertical').pack(
             side='left', fill='y', padx=8)
@@ -561,15 +691,15 @@ class SerialDebugApp:
     def _on_serial_param_change(self):
         """串口参数变化：更新内部状态，持久化。已连接则提示重连生效。"""
         try:
-            self._bytesize = int(self.bytesize_var.get())
+            self._bytesize = int(self.bytesize_box.get())
         except Exception:
             pass
-        self._parity = self._parity_map.get(self.parity_var.get(), 'none')
+        self._parity = self._parity_map.get(self.parity_box.get(), 'none')
         try:
-            self._stopbits = int(self.stopbits_var.get())
+            self._stopbits = int(self.stopbits_box.get())
         except Exception:
             pass
-        self._flow_control = self._fc_map.get(self.flow_var.get(), 'none')
+        self._flow_control = self._fc_map.get(self.flow_box.get(), 'none')
         self.cfg['bytesize'] = self._bytesize
         self.cfg['parity'] = self._parity
         self.cfg['stopbits'] = self._stopbits
@@ -635,6 +765,49 @@ class SerialDebugApp:
                     self.cfg['at_geometry'] = self.at_window.geometry()
                     if hasattr(self.at_window, 'commands'):
                         self.cfg['at_commands'] = self.at_window.commands
+                except Exception:
+                    pass
+            # 监视窗口几何 + 模式
+            self.cfg['motor_monitor_mode'] = self._motor_mode
+            self.cfg['bms_monitor_mode'] = self._bms_mode
+            self.cfg['imu_monitor_mode'] = self._imu_mode
+            if self._motor_monitor is not None and self._motor_monitor.winfo_exists():
+                try:
+                    self.cfg['motor_monitor_geometry'] = self._motor_monitor.geometry()
+                    self.cfg['motor_vars'] = self._motor_monitor.variables
+                    self.cfg['motor_plots'] = self._motor_monitor.plots
+                except Exception:
+                    pass
+            elif self._motor_embedded is not None:
+                try:
+                    self.cfg['motor_vars'] = self._motor_embedded.variables
+                    self.cfg['motor_plots'] = self._motor_embedded.plots
+                except Exception:
+                    pass
+            if self._bms_monitor is not None and self._bms_monitor.winfo_exists():
+                try:
+                    self.cfg['bms_monitor_geometry'] = self._bms_monitor.geometry()
+                    self.cfg['bms_vars'] = self._bms_monitor.variables
+                    self.cfg['bms_plots'] = self._bms_monitor.plots
+                except Exception:
+                    pass
+            elif self._bms_embedded is not None:
+                try:
+                    self.cfg['bms_vars'] = self._bms_embedded.variables
+                    self.cfg['bms_plots'] = self._bms_embedded.plots
+                except Exception:
+                    pass
+            if self._imu_monitor is not None and self._imu_monitor.winfo_exists():
+                try:
+                    self.cfg['imu_monitor_geometry'] = self._imu_monitor.geometry()
+                    self.cfg['imu_vars'] = self._imu_monitor.variables
+                    self.cfg['imu_plots'] = self._imu_monitor.plots
+                except Exception:
+                    pass
+            elif self._imu_embedded is not None:
+                try:
+                    self.cfg['imu_vars'] = self._imu_embedded.variables
+                    self.cfg['imu_plots'] = self._imu_embedded.plots
                 except Exception:
                     pass
             config.save(self.cfg)
@@ -742,6 +915,263 @@ class SerialDebugApp:
         """AT 命令窗口内容变化回调，持久化。"""
         self.cfg['at_commands'] = cmds
         self._schedule_save()
+
+    # ---- 监视窗口（电机 / BMS） ----------------------------------------
+    # 独立/嵌入/隐藏三态：detached → Toplevel，embedded → PanedWindow 中的 Frame，
+    # hidden → 不创建。切换模式时变量列表迁移。
+    def _set_motor_mode(self, mode: str):
+        self._apply_motor_mode(mode)
+        self._schedule_save()
+        if mode == 'detached':
+            self._open_motor_monitor()
+
+    def _set_bms_mode(self, mode: str):
+        self._apply_bms_mode(mode)
+        self._schedule_save()
+        if mode == 'detached':
+            self._open_bms_monitor()
+
+    def _set_imu_mode(self, mode: str):
+        self._apply_imu_mode(mode)
+        self._schedule_save()
+        if mode == 'detached':
+            self._open_imu_monitor()
+
+    def _apply_motor_mode(self, mode: str):
+        """切换电机监视呈现模式：detached / embedded / hidden。"""
+        self._motor_mode = mode
+        self._motor_mode_var.set(
+            {'detached': '独立窗口', 'embedded': '嵌入侧栏',
+             'hidden': '隐藏'}.get(mode, '独立窗口'))
+        # 非 detached 模式下关闭独立窗口
+        if mode != 'detached' and self._motor_monitor is not None:
+            try:
+                self._motor_monitor.destroy()
+            except Exception:
+                pass
+            self._motor_monitor = None
+        # 销毁旧嵌入式面板
+        if self._motor_embedded is not None:
+            try:
+                self._main_pane.forget(self._motor_frame)
+                self._motor_frame.destroy()
+            except Exception:
+                pass
+            self._motor_embedded = None
+            self._motor_frame = None
+        if mode == 'embedded':
+            self._build_motor_embedded()
+        # hidden: 不创建
+
+    def _apply_bms_mode(self, mode: str):
+        """切换 BMS 监视呈现模式。"""
+        self._bms_mode = mode
+        self._bms_mode_var.set(
+            {'detached': '独立窗口', 'embedded': '嵌入侧栏',
+             'hidden': '隐藏'}.get(mode, '独立窗口'))
+        if mode != 'detached' and self._bms_monitor is not None:
+            try:
+                self._bms_monitor.destroy()
+            except Exception:
+                pass
+            self._bms_monitor = None
+        if self._bms_embedded is not None:
+            try:
+                self._main_pane.forget(self._bms_frame)
+                self._bms_frame.destroy()
+            except Exception:
+                pass
+            self._bms_embedded = None
+            self._bms_frame = None
+        if mode == 'embedded':
+            self._build_bms_embedded()
+
+    def _apply_imu_mode(self, mode: str):
+        """切换 IMU 监视呈现模式。"""
+        self._imu_mode = mode
+        self._imu_mode_var.set(
+            {'detached': '独立窗口', 'embedded': '嵌入侧栏',
+             'hidden': '隐藏'}.get(mode, '独立窗口'))
+        if mode != 'detached' and self._imu_monitor is not None:
+            try:
+                self._imu_monitor.destroy()
+            except Exception:
+                pass
+            self._imu_monitor = None
+        if self._imu_embedded is not None:
+            try:
+                self._main_pane.forget(self._imu_frame)
+                self._imu_frame.destroy()
+            except Exception:
+                pass
+            self._imu_embedded = None
+            self._imu_frame = None
+        if mode == 'embedded':
+            self._build_imu_embedded()
+
+    def _build_motor_embedded(self):
+        """在 PanedWindow 加入电机监视嵌入式面板。"""
+        if self._motor_embedded is not None:
+            return
+        self._motor_frame = ttk.Frame(self._main_pane, padding=2)
+        self._main_pane.add(self._motor_frame, weight=1)
+        self._motor_embedded = MotorMonitorPanel(
+            self._motor_frame,
+            variables=self.cfg.get('motor_vars', []),
+            plots=self.cfg.get('motor_plots', []),
+            on_change=lambda vs, plots=None: self._on_monitor_vars_changed(
+                'motor', vs, plots))
+        self._motor_embedded.pack(fill='both', expand=True)
+        self._motor_embedded.apply_theme(self._theme)
+
+    def _build_bms_embedded(self):
+        """在 PanedWindow 加入 BMS 监视嵌入式面板。"""
+        if self._bms_embedded is not None:
+            return
+        self._bms_frame = ttk.Frame(self._main_pane, padding=2)
+        self._main_pane.add(self._bms_frame, weight=1)
+        self._bms_embedded = BmsMonitorPanel(
+            self._bms_frame,
+            variables=self.cfg.get('bms_vars', []),
+            plots=self.cfg.get('bms_plots', []),
+            on_change=lambda vs, plots=None: self._on_monitor_vars_changed(
+                'bms', vs, plots))
+        self._bms_embedded.pack(fill='both', expand=True)
+        self._bms_embedded.apply_theme(self._theme)
+
+    def _build_imu_embedded(self):
+        """在 PanedWindow 加入 IMU 监视嵌入式面板。"""
+        if self._imu_embedded is not None:
+            return
+        self._imu_frame = ttk.Frame(self._main_pane, padding=2)
+        self._main_pane.add(self._imu_frame, weight=1)
+        self._imu_embedded = ImuMonitorPanel(
+            self._imu_frame,
+            variables=self.cfg.get('imu_vars', []),
+            plots=self.cfg.get('imu_plots', []),
+            on_change=lambda vs, plots=None: self._on_monitor_vars_changed(
+                'imu', vs, plots))
+        self._imu_embedded.pack(fill='both', expand=True)
+        self._imu_embedded.apply_theme(self._theme)
+
+    def _open_motor_monitor(self):
+        """打开电机监视独立窗口。当前若为嵌入/隐藏模式，先切到 detached。"""
+        if self._motor_mode != 'detached':
+            self._apply_motor_mode('detached')
+            self._schedule_save()
+        if self._motor_monitor is not None and self._motor_monitor.winfo_exists():
+            self._motor_monitor.lift()
+            self._motor_monitor.focus_force()
+            return
+        self._motor_monitor = MotorMonitorWindow(
+            self.root,
+            variables=self.cfg.get('motor_vars', []),
+            plots=self.cfg.get('motor_plots', []),
+            on_change=lambda vs, plots=None: self._on_monitor_vars_changed(
+                'motor', vs, plots))
+        try:
+            saved_geo = self.cfg.get('motor_monitor_geometry', '')
+            if saved_geo:
+                self._motor_monitor.geometry(saved_geo)
+        except Exception:
+            pass
+        self._motor_monitor.update_theme()
+
+    def _open_bms_monitor(self):
+        """打开 BMS 监视独立窗口。当前若为嵌入/隐藏模式，先切到 detached。"""
+        if self._bms_mode != 'detached':
+            self._apply_bms_mode('detached')
+            self._schedule_save()
+        if self._bms_monitor is not None and self._bms_monitor.winfo_exists():
+            self._bms_monitor.lift()
+            self._bms_monitor.focus_force()
+            return
+        self._bms_monitor = BmsMonitorWindow(
+            self.root,
+            variables=self.cfg.get('bms_vars', []),
+            plots=self.cfg.get('bms_plots', []),
+            on_change=lambda vs, plots=None: self._on_monitor_vars_changed(
+                'bms', vs, plots))
+        try:
+            saved_geo = self.cfg.get('bms_monitor_geometry', '')
+            if saved_geo:
+                self._bms_monitor.geometry(saved_geo)
+        except Exception:
+            pass
+        self._bms_monitor.update_theme()
+
+    def _open_imu_monitor(self):
+        """打开 IMU 监视独立窗口。当前若为嵌入/隐藏模式，先切到 detached。"""
+        if self._imu_mode != 'detached':
+            self._apply_imu_mode('detached')
+            self._schedule_save()
+        if self._imu_monitor is not None and self._imu_monitor.winfo_exists():
+            self._imu_monitor.lift()
+            self._imu_monitor.focus_force()
+            return
+        self._imu_monitor = ImuMonitorWindow(
+            self.root,
+            variables=self.cfg.get('imu_vars', []),
+            plots=self.cfg.get('imu_plots', []),
+            on_change=lambda vs, plots=None: self._on_monitor_vars_changed(
+                'imu', vs, plots))
+        try:
+            saved_geo = self.cfg.get('imu_monitor_geometry', '')
+            if saved_geo:
+                self._imu_monitor.geometry(saved_geo)
+        except Exception:
+            pass
+        self._imu_monitor.update_theme()
+
+    def _on_monitor_vars_changed(self, kind: str, variables: list,
+                                   plots: list | None = None):
+        """监视窗口变量/图表变化回调，持久化。kind: motor/bms/imu。"""
+        if kind == 'motor':
+            self.cfg['motor_vars'] = variables
+            if plots is not None:
+                self.cfg['motor_plots'] = plots
+        elif kind == 'bms':
+            self.cfg['bms_vars'] = variables
+            if plots is not None:
+                self.cfg['bms_plots'] = plots
+        else:  # imu
+            self.cfg['imu_vars'] = variables
+            if plots is not None:
+                self.cfg['imu_plots'] = plots
+        self._schedule_save()
+
+    def _feed_monitors(self, line: str):
+        """把日志行喂给所有打开的监视窗口（独立 + 嵌入）提取数据。"""
+        if self._motor_monitor is not None and self._motor_monitor.winfo_exists():
+            try:
+                self._motor_monitor.feed(line)
+            except Exception:
+                pass
+        if self._bms_monitor is not None and self._bms_monitor.winfo_exists():
+            try:
+                self._bms_monitor.feed(line)
+            except Exception:
+                pass
+        if self._imu_monitor is not None and self._imu_monitor.winfo_exists():
+            try:
+                self._imu_monitor.feed(line)
+            except Exception:
+                pass
+        if self._motor_embedded is not None:
+            try:
+                self._motor_embedded.feed(line)
+            except Exception:
+                pass
+        if self._bms_embedded is not None:
+            try:
+                self._bms_embedded.feed(line)
+            except Exception:
+                pass
+        if self._imu_embedded is not None:
+            try:
+                self._imu_embedded.feed(line)
+            except Exception:
+                pass
 
     def _apply_at_window_mode(self, mode: str):
         """根据模式呈现 AT 命令面板：embedded / detached / hidden。
@@ -874,6 +1304,8 @@ class SerialDebugApp:
             while True:
                 kind, payload = self.backend.rx_queue.get_nowait()
                 if kind == 'line':
+                    # 先喂监视窗口（用原始行，未经过时间戳转换/筛选）
+                    self._feed_monitors(payload)
                     r = self._route_line(payload)
                     if r is not None:
                         batch.append(r)
