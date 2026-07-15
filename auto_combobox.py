@@ -189,10 +189,25 @@ class AutoCombobox(ttk.Frame):
                 lb.see(i)
                 break
 
-        def _pick(_e=None):
-            sel = lb.curselection()
-            if sel:
-                self._var.set(self._values[sel[0]])
+        def _pick(event=None):
+            # 用 nearest 按 Y 坐标定位点击项，不依赖 curselection 状态
+            # （<Button-1> 用户绑定先于 Listbox class 绑定执行，
+            #  curselection() 此时返回的还是点击前的旧状态）
+            idx = None
+            if event is not None and hasattr(event, 'y'):
+                n = lb.nearest(event.y)
+                # 验证点击确实落在该 item 的 bbox 内（避免空白区误选）
+                if n is not None and n >= 0:
+                    try:
+                        x, y, w, h = lb.bbox(n)
+                        if y <= event.y <= y + h:
+                            idx = n
+                    except Exception:
+                        idx = n
+            elif lb.curselection():
+                idx = lb.curselection()[0]
+            if idx is not None and 0 <= idx < len(self._values):
+                self._var.set(self._values[idx])
                 self.event_generate('<<ComboboxSelected>>')
             self._close_popup()
 
