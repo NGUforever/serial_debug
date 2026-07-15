@@ -133,9 +133,21 @@ class AtCmdPanel(ttk.Frame):
     def _refresh_tree(self):
         for iid in self.tree.get_children():
             self.tree.delete(iid)
-        for cmd in self.commands:
+        for idx, cmd in enumerate(self.commands):
+            # 奇偶行交替色 tag（VSCode 风格）
+            tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
             self.tree.insert('', 'end', values=(
-                cmd['cmd'], cmd['desc'], cmd['seq'], cmd['period_ms'], '发送'))
+                cmd['cmd'], cmd['desc'], cmd['seq'], cmd['period_ms'], '发送'),
+                tags=(tag,))
+        # 配置交替行配色（首次调用时绑定）
+        try:
+            import themes
+            t = themes.THEMES.get(themes.resolve(themes.load_pref())) or \
+                themes.THEMES['dark']
+            self.tree.tag_configure('evenrow', background=t['panel_bg'])
+            self.tree.tag_configure('oddrow', background=t['bg'])
+        except Exception:
+            pass
 
     def _notify_change(self):
         if self.on_change:
@@ -354,7 +366,13 @@ class AtCmdPanel(ttk.Frame):
 
     # ---- 主题 ----------------------------------------------------------
     def apply_theme(self, theme: dict):
-        """ttk.Treeview 由全局 Style 接管；只更新右键菜单配色。"""
+        """ttk.Treeview 由全局 Style 接管；只更新右键菜单配色 + 交替行 tag。"""
+        # 更新交替行 tag 配色（跟随主题深/浅切换）
+        try:
+            self.tree.tag_configure('evenrow', background=theme['panel_bg'])
+            self.tree.tag_configure('oddrow', background=theme['bg'])
+        except Exception:
+            pass
         try:
             self._ctx_menu.configure(
                 bg=theme['bg'], fg=theme['fg'],

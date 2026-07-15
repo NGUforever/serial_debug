@@ -283,16 +283,26 @@ def apply_theme(root: tk.Tk, theme_name: str):
                               ('!selected', t['panel_bg'])])
 
     # Treeview（AT 命令表格）
+    # rowheight 36px：10pt 字体 + 上下 8px 留白，内容完整显示且不拥挤
     style.configure('Treeview',
                     background=t['panel_bg'], foreground=t['panel_fg'],
                     fieldbackground=t['panel_bg'], borderwidth=0,
-                    rowheight=26, font=_mono())
+                    rowheight=36, font=_mono(), padding=4)
     style.map('Treeview',
               background=[('selected', t['select_bg'])],
               foreground=[('selected', '#ffffff')])
+    # 奇偶行交替色（VSCode 风格，提升行可读性）
+    odd_bg = t['panel_bg']
+    even_bg = t['bg']   # 略深于 panel_bg，形成对比
+    style.configure('OddRow.Treeview', background=odd_bg,
+                    fieldbackground=odd_bg)
+    style.configure('EvenRow.Treeview', background=even_bg,
+                    fieldbackground=even_bg)
+    # 表头：略亮背景 + 加粗 + 增加上下 padding
     style.configure('Treeview.Heading',
                     background=t['btn_bg'], foreground=t['fg'],
-                    borderwidth=0, relief='flat', font=_font('bold'))
+                    borderwidth=0, relief='flat', font=_font('bold'),
+                    padding=(8, 8))
     style.map('Treeview.Heading',
               background=[('active', t['btn_hover'])])
 
