@@ -13,13 +13,39 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tkinter as tk
 from tkinter import ttk
 
-CONFIG_DIR = os.path.expanduser('~/.config/serial_debug')
+
+def _config_dir() -> str:
+    """返回平台适配的配置目录（与 config.py 保持一致）。"""
+    home = os.path.expanduser('~')
+    if sys.platform == 'win32':
+        base = os.environ.get('LOCALAPPDATA',
+                              os.path.join(home, 'AppData', 'Local'))
+        return os.path.join(base, 'serial_debug')
+    if sys.platform == 'darwin':
+        return os.path.join(home, 'Library', 'Application Support',
+                            'serial_debug')
+    xdg = os.environ.get('XDG_CONFIG_HOME',
+                         os.path.join(home, '.config'))
+    return os.path.join(xdg, 'serial_debug')
+
+
+CONFIG_DIR = _config_dir()
 THEME_FILE = os.path.join(CONFIG_DIR, 'theme.txt')   # auto / light / dark
-FONT_FAMILY = 'DejaVu Sans'        # 控件字体
-MONO_FAMILY = 'DejaVu Sans Mono'   # 等宽字体（日志）
+
+# 字体族按平台选择（Linux DejaVu / Windows Segoe UI / macOS Helvetica Neue）
+if sys.platform == 'win32':
+    FONT_FAMILY = 'Segoe UI'
+    MONO_FAMILY = 'Consolas'
+elif sys.platform == 'darwin':
+    FONT_FAMILY = 'Helvetica Neue'
+    MONO_FAMILY = 'Menlo'
+else:
+    FONT_FAMILY = 'DejaVu Sans'
+    MONO_FAMILY = 'DejaVu Sans Mono'
 DEFAULT_FONT_SIZE = 10
 
 # 全局字体大小（由 app 设置后覆盖到所有 style）
@@ -101,7 +127,33 @@ THEMES = {
 
 
 def detect_system_theme() -> str:
-    """Linux GNOME：读 gsettings color-scheme，dark → dark，否则 light。"""
+    """检测系统深/浅色主题。
+    Linux: gsettings（GNOME）；macOS: defaults；Windows: 注册表。
+    检测失败默认返回 'dark'。
+    """
+    if sys.platform == 'darwin':
+        try:
+            r = subprocess.run(
+                ['defaults', 'read', '-g', 'AppleInterfaceStyle'],
+                capture_output=True, text=True, timeout=2)
+            if 'Dark' in r.stdout:
+                return 'dark'
+            return 'light'
+        except Exception:
+            return 'dark'
+    if sys.platform == 'win32':
+        try:
+            r = subprocess.run(
+                ['reg', 'query',
+                 r'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
+                 '/v', 'AppsUseLightTheme'],
+                capture_output=True, text=True, timeout=2)
+            if '0x0' in r.stdout:
+                return 'dark'
+            return 'light'
+        except Exception:
+            return 'dark'
+    # Linux: gsettings（GNOME）；非 GNOME 环境会失败，降级 dark
     try:
         r = subprocess.run(
             ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],

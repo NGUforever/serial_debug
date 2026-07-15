@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
+import os
 import re
+import sys
 import time
 import queue
 import tkinter as tk
@@ -27,6 +29,18 @@ from monitor_window import (MotorMonitorWindow, BmsMonitorWindow,
 from auto_combobox import AutoCombobox
 import themes
 import config
+
+
+def resource_path(relative_path: str) -> str:
+    """返回资源文件绝对路径，兼容 PyInstaller 打包和开发模式。
+
+    PyInstaller 打包后资源解压到 sys._MEIPASS；开发模式用 __file__ 所在目录。
+    """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')   # 响应行判定：OK, / OK% / ERROR / +CMD
 TS_RE = re.compile(r'^(\d{13})\b')              # 设备时间戳：13 位毫秒
@@ -127,10 +141,7 @@ class SerialDebugApp:
     def _set_icon(self):
         """加载 assets/icon.png 作为窗口图标。"""
         try:
-            import os
-            icon_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                'assets', 'icon.png')
+            icon_path = resource_path(os.path.join('assets', 'icon.png'))
             if os.path.exists(icon_path):
                 img = tk.PhotoImage(file=icon_path)
                 self.root.iconphoto(True, img)
@@ -1441,9 +1452,18 @@ class SerialDebugApp:
 
 
 def main():
-    root = tk.Tk()
-    SerialDebugApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        SerialDebugApp(root)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        try:
+            from tkinter import messagebox as _mb
+            _mb.showerror('串口调试助手 - 启动错误',
+                          f'{e}\n\n{traceback.format_exc()}')
+        except Exception:
+            traceback.print_exc()
 
 
 if __name__ == '__main__':

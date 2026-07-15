@@ -1,6 +1,11 @@
 """应用配置持久化。
 
-存到 ~/.config/serial_debug/config.json，包含：
+存到平台适配的配置目录：
+  Linux:   ~/.config/serial_debug/config.json
+  macOS:   ~/Library/Application Support/serial_debug/config.json
+  Windows: %LOCALAPPDATA%/serial_debug/config.json
+
+包含：
   port, baudrate, append_crlf, auto_scroll, log_path, theme_pref,
   at_commands, filter_pattern, filter_enabled, ts_convert_enabled,
   at_window_mode, geometry, at_geometry
@@ -9,9 +14,26 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 
-CONFIG_DIR = os.path.expanduser('~/.config/serial_debug')
+
+def _config_dir() -> str:
+    """返回平台适配的配置目录。"""
+    home = os.path.expanduser('~')
+    if sys.platform == 'win32':
+        base = os.environ.get('LOCALAPPDATA',
+                              os.path.join(home, 'AppData', 'Local'))
+        return os.path.join(base, 'serial_debug')
+    if sys.platform == 'darwin':
+        return os.path.join(home, 'Library', 'Application Support',
+                            'serial_debug')
+    xdg = os.environ.get('XDG_CONFIG_HOME',
+                         os.path.join(home, '.config'))
+    return os.path.join(xdg, 'serial_debug')
+
+
+CONFIG_DIR = _config_dir()
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 # 默认值，新装机或首次启动用
