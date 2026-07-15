@@ -9,12 +9,32 @@
   Linux:   dist/serial_debug/        (onedir，后续用 build_linux.sh 转 AppImage)
   Windows: dist/serial_debug/       (onedir，可用 Inno Setup 打包成安装器)
   macOS:   dist/serial_debug.app     (app bundle)
+
+图标：
+  Linux:   .desktop 文件引用 assets/icon.png
+  Windows: 嵌入 assets/icon.ico
+  macOS:   嵌入 assets/icon.icns
 """
+import os
 import sys
 from PyInstaller.utils.hooks import collect_submodules
 
 # pyserial 延迟导入 list_ports 平台子模块，必须显式收集
 hiddenimports = collect_submodules('serial')
+
+# 图标路径：按平台选择
+_here = os.path.dirname(os.path.abspath(SPEC))
+_icon_path = None
+if sys.platform == 'win32':
+    _icon_path = os.path.join(_here, 'assets', 'icon.ico')
+    if not os.path.exists(_icon_path):
+        _icon_path = os.path.join(_here, 'assets', 'icon.png')
+elif sys.platform == 'darwin':
+    _icon_path = os.path.join(_here, 'assets', 'icon.icns')
+    if not os.path.exists(_icon_path):
+        _icon_path = os.path.join(_here, 'assets', 'icon.png')
+else:
+    _icon_path = os.path.join(_here, 'assets', 'icon.png')
 
 a = Analysis(
     ['app.py'],
@@ -47,7 +67,7 @@ if _platform == 'darwin':
         strip=False,
         upx=False,
         console=False,
-        icon='assets/icon.png',
+        icon=_icon_path,
         target_arch='universal2',
         codesign_identity=None,
         entitlements_file=None,
@@ -59,7 +79,7 @@ if _platform == 'darwin':
     app = BUNDLE(
         coll,
         name='serial_debug.app',
-        icon='assets/icon.png',
+        icon=_icon_path,
         bundle_identifier='com.serial-debug.app',
         info_plist={
             'CFBundleShortVersionString': '1.0.0',
@@ -77,7 +97,7 @@ elif _platform == 'win32':
         strip=False,
         upx=True,
         console=False,
-        icon='assets/icon.png',
+        icon=_icon_path,
         disable_windowed_traceback=False,
         target_arch=None,
         codesign_identity=None,
@@ -97,7 +117,7 @@ else:
         strip=False,
         upx=True,
         console=False,
-        icon='assets/icon.png',
+        icon=_icon_path,
     )
     coll = COLLECT(
         exe, a.binaries, a.zipfiles, a.datas,
