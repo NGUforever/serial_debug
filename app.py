@@ -22,6 +22,7 @@ from tkinter import ttk, messagebox, filedialog
 from serial_backend import SerialBackend
 import log_writer
 from at_cmd_window import AtCmdWindow
+from log_viewer_window import LogViewerWindow
 from monitor_window import (MotorMonitorWindow, BmsMonitorWindow,
                             ImuMonitorWindow,
                             MotorMonitorPanel, BmsMonitorPanel,
@@ -74,6 +75,7 @@ class SerialDebugApp:
         self._motor_monitor: MotorMonitorWindow | None = None
         self._bms_monitor: BmsMonitorWindow | None = None
         self._imu_monitor: ImuMonitorWindow | None = None
+        self._log_viewer = None  # LogViewerWindow 单例
         self._motor_embedded: MotorMonitorPanel | None = None
         self._bms_embedded: BmsMonitorPanel | None = None
         self._imu_embedded: ImuMonitorPanel | None = None
@@ -158,6 +160,10 @@ class SerialDebugApp:
         # 文件
         m_file = tk.Menu(menubar, tearoff=False)
         menubar.add_cascade(label='文件(F)', menu=m_file)
+        m_file.add_command(label='打开日志文件…',
+                           command=self._open_log_viewer,
+                           accelerator='Ctrl+O')
+        m_file.add_separator()
         m_file.add_command(label='导入 AT 命令 JSON…', command=self._menu_import_at)
         m_file.add_command(label='导出 AT 命令 JSON…', command=self._menu_export_at)
         m_file.add_separator()
@@ -288,6 +294,7 @@ class SerialDebugApp:
         self.root.bind('<Control-q>', lambda _e: self._on_close())
         self.root.bind('<Control-d>', lambda _e: self._toggle())
         self.root.bind('<Control-l>', lambda _e: self._clear_log())
+        self.root.bind('<Control-o>', lambda _e: self._open_log_viewer())
 
     # ---- 菜单回调 ------------------------------------------------------
     def _menu_import_at(self):
@@ -536,6 +543,13 @@ class SerialDebugApp:
         if self._at_embedded is not None:
             try:
                 self._at_embedded.apply_theme(t)
+            except Exception:
+                pass
+        # 日志查看窗口跟随主题
+        if (self._log_viewer is not None
+                and self._log_viewer.winfo_exists()):
+            try:
+                self._log_viewer.update_theme()
             except Exception:
                 pass
         # 状态点重画
@@ -1133,6 +1147,26 @@ class SerialDebugApp:
         except Exception:
             pass
         self._imu_monitor.update_theme()
+
+    def _open_log_viewer(self):
+        """打开日志文件查看窗口（不实时刷新，只读查看）。"""
+        path = filedialog.askopenfilename(
+            title='打开日志文件', parent=self.root,
+            filetypes=[('文本文件', '*.txt'), ('日志', '*.log'),
+                       ('所有文件', '*.*')])
+        if not path:
+            return
+        # 已有窗口则复用（单例）
+        if (hasattr(self, '_log_viewer')
+                and self._log_viewer is not None
+                and self._log_viewer.winfo_exists()):
+            self._log_viewer.destroy()
+        try:
+            self._log_viewer = LogViewerWindow(
+                self.root, path, theme=self._theme)
+            self._log_viewer.update_theme()
+        except Exception as e:
+            messagebox.showerror('打开失败', f'{e}', parent=self.root)
 
     def _on_monitor_vars_changed(self, kind: str, variables: list,
                                    plots: list | None = None):

@@ -259,6 +259,23 @@ def apply_theme(root: tk.Tk, theme_name: str):
                     font=_font())
     style.configure('TCombobox.Popdown',
                     background=t['panel_bg'], borderwidth=0)
+    # tkinter ttk.Combobox 弹出的 Listbox 不读 style.configure，
+    # 必须用 option_add 写入 option database 才能跟随主题。
+    # 不写这一段，深色主题下 Combobox 下拉仍是白色。
+    try:
+        root.option_add('*TCombobox*Listbox.background', t['panel_bg'])
+        root.option_add('*TCombobox*Listbox.foreground', t['panel_fg'])
+        root.option_add('*TCombobox*Listbox.selectBackground',
+                        t['select_bg'])
+        root.option_add('*TCombobox*Listbox.selectForeground', '#ffffff')
+        root.option_add('*TCombobox*Listbox.borderWidth', 0)
+        root.option_add('*TCombobox*Listbox.highlightThickness', 0)
+        root.option_add('*TCombobox*Listbox.font', _font())
+        root.option_add('*TCombobox*Popdown*Frame.background',
+                        t['panel_bg'])
+        root.option_add('*TCombobox*Popdown*Frame.borderWidth', 0)
+    except Exception:
+        pass
     style.configure('TScrollbar', background=t['btn_bg'],
                     troughcolor=t['bg'], arrowcolor=t['fg'],
                     bordercolor=t['bg'], gripcount=0)

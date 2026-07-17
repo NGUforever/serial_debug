@@ -24,25 +24,25 @@
     "period_ms": 0
   },
   {
-    "cmd": "AT+EMOTORRPM=0,450,1%",
+    "cmd": "AT+EMOTORRPM=1,450,1%",
     "desc": "ECU速度模式控制点击",
     "seq": 3,
     "period_ms": 5000
   },
   {
     "cmd": "AT+EMOTORREAD=6%",
-    "desc": "ECU直接速度控制所有电机",
+    "desc": "ECU读取电机转速",
     "seq": 4,
     "period_ms": 1000
   },
   {
-    "cmd": "AT+EMOTORRPM=6,0,1%",
-    "desc": "ECU读取电机转速",
+    "cmd": "AT+EMOTORRPM=6,3000,1%",
+    "desc": "速度环设置单电机轮速",
     "seq": 5,
     "period_ms": 2000
   },
   {
-    "cmd": "AT+EMOTORDIRECT=500,900,-900,30000,30000,0%",
+    "cmd": "AT+EMOTORDIRECT=500,900,-900,2000,2000,0%",
     "desc": "ECU控制整机速度",
     "seq": 6,
     "period_ms": 100
@@ -60,8 +60,32 @@
     "period_ms": 0
   },
   {
-    "cmd": "AT+VRESET=3,1%",
+    "cmd": "AT+VRESET=2,1%",
     "desc": "VCU重启",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EHALL?%",
+    "desc": "读取霍尔状态",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EPHYKEY?%",
+    "desc": "读取物理钥匙状态",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+ERESET=1%",
+    "desc": "ECU重启",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EDIS=1,1,1,1,7,2%",
+    "desc": "ECU指示灯控制",
     "seq": 0,
     "period_ms": 0
   }

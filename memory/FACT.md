@@ -91,7 +91,7 @@
   - 覆盖 55d2/55d3/55d4/55d5/55d7/55d8/55db/55dd/55da/55de/55e7/55df/55e9/55ea/55e8/55eb/55ec
   - V2.1（2026.02）关键改动："set low_latency flag in tty activate routine"
   - 装完节点变 /dev/ttyCH343USB0~3
-- **pyserial list_ports() 不识别 ttyCH343USBx**——list_ports_linux 不扫非标准命名的 tty，Combobox 下拉看不到，需要在 list_ports() 里兜底扫 /dev/ttyCH343USB* / /dev/ttyUSB*
+- **pyserial list_ports() 不识别 ttyCH343USBx**——list_ports_linux 不扫非标准命名的 tty，Combobox 下拉看不到，需要在 list_ports() 里兜底扫 /dev/ttyCH343USB* /dev/ttyUSB*
 
 ### 安装步骤
 ```bash
@@ -109,3 +109,21 @@ sudo udevadm control --reload && sudo udevadm trigger
 - cdc_acm 通用驱动不设这个寄存器，CH343 用上电默认值
 - 表现：OK 响应（8 字节 short packet）卡在 USB bulk IN FIFO，直到周期日志大批量数据涌入才被一起推出
 - Windows CH343SER.SYS vendor 驱动初始化 latency timer，所以同事的 Windows 工具工作正常
+
+## CH343 驱动抢占问题（2026-07-16 修复）
+
+### 问题
+- 重启后 `/dev/ttyCH343USB0-3` 消失，只剩 `/dev/ttyACM0-3`
+- 原因：cdc_acm 在 USB 枚举时先匹配 CDC ACM 接口（class 0x02）抢占接口 2-7，ch343 的 `in*` alias 没机会执行
+- CH343 Quad_Serial 每个端口用 2 个 interface（control + data），共 8 个接口；ch343 只抢到接口 0,1（端口 0），其余被 cdc_acm 抢
+
+### 持久化修复（已部署到 /etc/udev/rules.d/99-ch343-override.rules）
+- 不 blacklist cdc_acm（不影响其他 ACM 设备）
+- udev 规则：当 cdc_acm 匹配到 1a86:55d5 时，立即 `echo usb_ch343 > /sys$DEVPATH/driver_override` 改绑
+- 规则路径：`/etc/udev/rules.d/99-ch343-override.rules`
+- 脚本：`/home/ninebot/projects/serial_debug/scripts/fix_ch343_driver.sh`
+
+### 验证方式
+- `ls /dev/ttyCH343USB*` 应有 4 个
+- `ls /sys/bus/usb/drivers/usb_ch343/ | grep :` 应有 8 个接口
+- `cat /sys/bus/usb/devices/*/driver_override` 查看 override 设置

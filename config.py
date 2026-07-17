@@ -70,6 +70,7 @@ DEFAULTS = {
     'motor_monitor_mode': 'detached',   # detached / embedded / hidden
     'bms_monitor_mode': 'detached',
     'imu_monitor_mode': 'detached',
+    'log_view_last_dir': '',            # 日志查看窗口上次打开目录
 }
 
 

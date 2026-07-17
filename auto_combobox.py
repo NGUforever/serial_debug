@@ -153,6 +153,13 @@ class AutoCombobox(ttk.Frame):
             pop_y = max(0, ey - room_above + 2)
             list_h = max(80, room_above - 2)
 
+        # 边界保护：若 pop_y + list_h 超出屏幕底边，向上移动 pop_y
+        # 保证弹出窗口完全可见（避免被屏幕底边截断）
+        if pop_y + list_h > screen_h - 2:
+            pop_y = max(0, screen_h - list_h - 2)
+        if pop_y < 0:
+            pop_y = 0
+
         # 水平：如果右边空间不够，向左偏移保证完全显示
         pop_x = ex
         pop_w = ew

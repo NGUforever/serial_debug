@@ -22,7 +22,7 @@ import time
 import math
 import datetime as _dt
 import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser
+from tkinter import ttk, messagebox, colorchooser, filedialog
 from tkinter import font as tkfont
 from collections import deque
 
@@ -32,13 +32,15 @@ except Exception:
     themes = None
 
 
-# 日志行首时间戳（毫秒，10~13 位数字）。例：1783996615491 I model ...
-_LOG_TS_RE = re.compile(r'^\s*(\d{10,13})\b')
+# 日志时间戳（毫秒，10~13 位数字）。例：1783996615491
+# 不限定行首：用户的日志格式可能是 "[HH:MM:SS.mmm] 1783996615491 ..."，
+# 时间戳跟在 [time] 前缀后面，所以用 search 在整行里找第一个 10-13 位数字。
+_LOG_TS_RE = re.compile(r'(?<!\d)(\d{10,13})(?!\d)')
 
 
 def _extract_log_ts(line: str) -> float | None:
-    """从日志行首提取时间戳，返回秒（float）。提取失败返回 None。"""
-    m = _LOG_TS_RE.match(line)
+    """从日志行中提取时间戳，返回秒（float）。提取失败返回 None。"""
+    m = _LOG_TS_RE.search(line)
     if not m:
         return None
     try:
@@ -302,7 +304,23 @@ class _BmsVarDialog(tk.Toplevel):
         ttk.Entry(f, textvariable=self.ymax_var, width=12
                   ).grid(row=5, column=1, sticky='w', pady=4, padx=8)
 
-        ttk.Label(f, text='显示在图表').grid(row=6, column=0, sticky='w', pady=4)
+        ttk.Label(f, text='告警下限（空=不告警）').grid(
+            row=6, column=0, sticky='w', pady=4)
+        self.warn_min_var = tk.StringVar(
+            value=('' if not initial or initial.get('warn_min') is None
+                   else str(initial['warn_min'])))
+        ttk.Entry(f, textvariable=self.warn_min_var, width=12
+                  ).grid(row=6, column=1, sticky='w', pady=4, padx=8)
+
+        ttk.Label(f, text='告警上限（空=不告警）').grid(
+            row=7, column=0, sticky='w', pady=4)
+        self.warn_max_var = tk.StringVar(
+            value=('' if not initial or initial.get('warn_max') is None
+                   else str(initial['warn_max'])))
+        ttk.Entry(f, textvariable=self.warn_max_var, width=12
+                  ).grid(row=7, column=1, sticky='w', pady=4, padx=8)
+
+        ttk.Label(f, text='显示在图表').grid(row=8, column=0, sticky='w', pady=4)
         plot_choices = list(self._plot_names)
         if not plot_choices:
             plot_choices = ['（默认图表）']
@@ -311,15 +329,15 @@ class _BmsVarDialog(tk.Toplevel):
         self.plot_var = tk.StringVar(value=init_plot or '')
         plot_combo = ttk.Combobox(f, textvariable=self.plot_var, width=18,
                                    values=plot_choices, state='readonly')
-        plot_combo.grid(row=6, column=1, sticky='w', pady=4, padx=8)
+        plot_combo.grid(row=8, column=1, sticky='w', pady=4, padx=8)
 
         reg_hint = ('变量名匹配注册表时自动定位日志数据；'
                     '未注册变量将无法匹配，仅显示 —')
         ttk.Label(f, text=reg_hint, foreground=_default_theme()['muted']
-                  ).grid(row=7, column=0, columnspan=3, sticky='w', pady=4)
+                  ).grid(row=9, column=0, columnspan=3, sticky='w', pady=4)
 
         btns = ttk.Frame(f)
-        btns.grid(row=8, column=0, columnspan=3, pady=(10, 0))
+        btns.grid(row=10, column=0, columnspan=3, pady=(10, 0))
         ttk.Button(btns, text='确定', command=self._ok
                    ).pack(side='left', padx=4)
         ttk.Button(btns, text='取消', command=self._cancel
@@ -409,6 +427,22 @@ class _BmsVarDialog(tk.Toplevel):
             except ValueError:
                 messagebox.showerror('错误', 'Y 最大必须是数字', parent=self)
                 return
+        warn_min = None
+        if self.warn_min_var.get().strip():
+            try:
+                warn_min = float(self.warn_min_var.get())
+            except ValueError:
+                messagebox.showerror('错误', '告警下限必须是数字',
+                                     parent=self)
+                return
+        warn_max = None
+        if self.warn_max_var.get().strip():
+            try:
+                warn_max = float(self.warn_max_var.get())
+            except ValueError:
+                messagebox.showerror('错误', '告警上限必须是数字',
+                                     parent=self)
+                return
         # 从注册表查 log_tag/group_idx/pos_in_group（用户不感知）
         reg = self._registry.get(name, {})
         self.result = {
@@ -417,6 +451,8 @@ class _BmsVarDialog(tk.Toplevel):
             'color': self.color_var.get(),
             'y_min': y_min,
             'y_max': y_max,
+            'warn_min': warn_min,
+            'warn_max': warn_max,
             'log_tag': reg.get('log_tag', ''),
             'group_idx': reg.get('group_idx', 0),
             'pos_in_group': reg.get('pos_in_group', 0),
@@ -562,6 +598,7 @@ class MonitorPanel(ttk.Frame):
         self._compiled: dict[str, re.Pattern | None] = {}
         self._redraw_id: str | None = None
         self._closed = False
+        self._loading = False  # 加载历史日志期间为 True，跳过定时重绘避免卡顿
         self._theme = _default_theme()
         # 多图表配置：每个图表 dict = {title, x_label, y_label, vars: [names]}
         # 若传入 plots 则用之；否则默认一个图表包含全部变量
@@ -581,6 +618,12 @@ class MonitorPanel(ttk.Frame):
         self._build_toolbar()
         self._build_content()
         self.apply_theme(self._theme)
+
+        # 历史日志回放数据：加载日志文件后填充，绘制时优先用 _history
+        # 形如 {var_name: list[(ts, val)]}，不限大小
+        self._history: dict[str, list[tuple[float, float]]] | None = None
+        # 告警指示色块：每变量一个 Canvas，超限时变红
+        self._warn_indicators: dict[str, tk.Canvas] = {}
 
         self._rebuild_buffers()
         self._refresh_var_list()
@@ -620,6 +663,14 @@ class MonitorPanel(ttk.Frame):
 
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
         ttk.Button(bar, text='清空数据', command=self._clear_data).pack(side='left')
+
+        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
+        ttk.Button(bar, text='加载日志…',
+                   command=self._load_history_log).pack(side='left')
+        ttk.Button(bar, text='统计…',
+                   command=self._show_statistics).pack(side='left', padx=4)
+        ttk.Button(bar, text='导出 CSV…',
+                   command=self._export_csv).pack(side='left')
 
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
         self._fullscreen_btn = ttk.Button(bar, text='全屏',
@@ -743,6 +794,203 @@ class MonitorPanel(ttk.Frame):
     def _clear_data(self):
         for buf in self._buffers.values():
             buf.clear()
+        # 清空历史日志回放数据，回到实时模式
+        self._history = None
+
+    # ---- 历史日志回放 --------------------------------------------------
+    def _extract_value(self, line: str, v: dict) -> float | None:
+        """从日志行提取变量值。子类可覆盖以使用结构化解析。"""
+        name = v['name']
+        pat = self._compiled.get(name)
+        if pat is None:
+            return None
+        m = pat.search(line)
+        if m:
+            try:
+                return float(m.group(1))
+            except (ValueError, IndexError):
+                return None
+        return None
+
+    def _extract_value_parsed(self, line: str, v: dict,
+                              parsed: dict) -> float | None:
+        """基类默认：无解析缓存，直接走 _extract_value。
+        结构化子类覆盖此方法以复用同一行的解析结果。"""
+        return self._extract_value(line, v)
+
+    def _load_history_log(self):
+        """打开历史日志文件，分块解析填充 _history，避免 UI 卡死。"""
+        try:
+            path = filedialog.askopenfilename(
+                title='加载历史日志文件', parent=self.winfo_toplevel(),
+                filetypes=[('文本文件', '*.txt'), ('日志', '*.log'),
+                           ('所有文件', '*.*')])
+        except Exception as e:
+            messagebox.showerror('打开失败', f'文件对话框打开失败：{e}',
+                                 parent=self.winfo_toplevel())
+            return
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+        except Exception as e:
+            messagebox.showerror('打开失败', f'{e}',
+                                 parent=self.winfo_toplevel())
+            return
+        # 初始化 _history 容器（按最大数据量预分配，避免反复扩容）
+        self._history = {v['name']: [] for v in self._vars}
+        n_pts = [0]
+        total = len(lines)
+        chunk = 50000  # 加大批次：减少 after 调度次数 + 让单行处理更内联
+
+        # 加载期间跳过定时重绘
+        self._loading = True
+        self._status_lbl.configure(text=f'加载日志中 0/{total} 行…')
+        self.update_idletasks()
+
+        def _process_batch(start: int):
+            end = min(start + chunk, total)
+            # 局部绑定，减少属性查找
+            history = self._history
+            variables = self._vars
+            extract_ts = _extract_log_ts
+            extract_val = self._extract_value_parsed
+            for i in range(start, end):
+                line = lines[i]
+                # 不需要 rstrip：时间戳正则和结构化解析都不受尾部 \n 影响
+                ts = extract_ts(line)
+                if ts is None:
+                    ts = 0.0
+                parsed: dict = {}
+                for v in variables:
+                    val = extract_val(line, v, parsed)
+                    if val is not None:
+                        history[v['name']].append((ts, val))
+                        n_pts[0] += 1
+            self._status_lbl.configure(
+                text=f'加载日志中 {end}/{total} 行…（{n_pts[0]} 个数据点）')
+            self.update_idletasks()
+            if end < total:
+                self.after(0, lambda: _process_batch(end))
+            else:
+                # 完成
+                self._loading = False
+                if n_pts[0] == 0:
+                    self._history = None
+                    self._status_lbl.configure(text='')
+                    messagebox.showinfo(
+                        '提示',
+                        '未在日志中匹配到任何变量数据。请检查变量正则是否对应日志格式。',
+                        parent=self.winfo_toplevel())
+                else:
+                    self._status_lbl.configure(
+                        text=f'历史模式：{n_pts[0]} 个数据点')
+                    # 完成后立即重绘一次
+                    try:
+                        self._draw_curves()
+                    except Exception:
+                        pass
+                    messagebox.showinfo(
+                        '加载完成',
+                        f'已加载 {total} 行日志，匹配 {n_pts[0]} 个数据点。\n'
+                        f'当前显示历史数据；点击"清空数据"回到实时模式。',
+                        parent=self.winfo_toplevel())
+
+        _process_batch(0)
+
+    def _export_csv(self):
+        """导出当前所有变量数据点为 CSV。"""
+        # 数据源：_history 优先，否则 _buffers
+        if self._history is not None:
+            data = self._history
+            source_name = '历史日志'
+        else:
+            data = {n: list(buf) for n, buf in self._buffers.items()}
+            source_name = '实时缓冲'
+        if not any(pts for pts in data.values()):
+            messagebox.showinfo('提示', '没有可导出的数据',
+                                parent=self.winfo_toplevel())
+            return
+        path = filedialog.asksaveasfilename(
+            title='导出 CSV', parent=self.winfo_toplevel(),
+            defaultextension='.csv',
+            filetypes=[('CSV', '*.csv'), ('所有文件', '*.*')])
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                # 表头：时间戳 + 各变量名
+                names = list(data.keys())
+                f.write('timestamp,' + ','.join(names) + '\n')
+                # 按时间戳合并
+                # 每个变量独立时间轴，CSV 用稀疏表：每行一个 (ts, name, val)
+                # 这里改为"时间戳 + 每变量当时最新值"格式（密集表）：
+                # 收集所有时间戳排序
+                all_ts = sorted({ts for pts in data.values() for ts, _ in pts})
+                # 每变量按 ts 索引当前值
+                cursor = {n: 0 for n in names}
+                for ts in all_ts:
+                    row = [f'{ts:.3f}']
+                    for n in names:
+                        pts = data[n]
+                        # 推进 cursor 到 >= ts 的最新点
+                        while cursor[n] < len(pts) - 1 and pts[cursor[n] + 1][0] <= ts:
+                            cursor[n] += 1
+                        if cursor[n] < len(pts) and pts[cursor[n]][0] <= ts:
+                            row.append(f'{pts[cursor[n]][1]:g}')
+                        else:
+                            row.append('')
+                    f.write(','.join(row) + '\n')
+        except Exception as e:
+            messagebox.showerror('导出失败', f'{e}',
+                                 parent=self.winfo_toplevel())
+
+    def _show_statistics(self):
+        """弹窗显示每个变量的统计信息（最大/最小/平均/当前/点数）。"""
+        if self._history is not None:
+            data = self._history
+            source = '历史日志'
+        else:
+            data = {n: list(buf) for n, buf in self._buffers.items()}
+            source = '实时缓冲'
+        dlg = tk.Toplevel(self.winfo_toplevel())
+        dlg.title(f'统计信息（{source}）')
+        dlg.geometry('680x480')
+        dlg.transient(self.winfo_toplevel())
+        try:
+            dlg.configure(bg=self._theme['bg'])
+        except Exception:
+            pass
+        tree = ttk.Treeview(dlg, columns=('name', 'label', 'current',
+                                          'min', 'max', 'avg', 'n'),
+                            show='headings', height=20)
+        for col, label, w in [('name', '变量名', 140),
+                              ('label', '说明', 160),
+                              ('current', '当前值', 80),
+                              ('min', '最小', 80), ('max', '最大', 80),
+                              ('avg', '平均', 80), ('n', '点数', 60)]:
+            tree.heading(col, text=label)
+            tree.column(col, width=w, stretch=False)
+        vsb = ttk.Scrollbar(dlg, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side='left', fill='both', expand=True, padx=(8, 0), pady=8)
+        vsb.pack(side='right', fill='y', pady=8)
+        for v in self._vars:
+            pts = data.get(v['name'], [])
+            if not pts:
+                tree.insert('end', values=(v['name'],
+                                           v.get('label', ''),
+                                           '—', '—', '—', '—', 0))
+                continue
+            vals = [p[1] for p in pts]
+            cur = vals[-1]
+            tree.insert('end', values=(
+                v['name'], v.get('label', ''),
+                f'{cur:g}', f'{min(vals):g}', f'{max(vals):g}',
+                f'{sum(vals)/len(vals):g}', len(vals)))
+        ttk.Button(dlg, text='关闭', command=dlg.destroy
+                   ).pack(side='bottom', pady=4)
 
     def _sync_plots_var_renamed(self, old_name: str, new_name: str):
         """变量改名后，同步更新所有 plot 的 vars 引用。"""
@@ -898,17 +1146,19 @@ class MonitorPanel(ttk.Frame):
             canvas.pack(fill='both', expand=True)
             plot['_canvas'] = canvas
             plot['_frame'] = frame
-            # 左键拖动 = 平移；Shift+左键拖动 = 框选缩放；右键 = 菜单
-            canvas.bind('<Button-1>', self._on_plot_pan_start)
-            canvas.bind('<B1-Motion>', self._on_plot_pan_motion)
-            canvas.bind('<ButtonRelease-1>', self._on_plot_pan_release)
-            canvas.bind('<Shift-Button-1>', self._on_plot_zoom_start)
-            canvas.bind('<Shift-B1-Motion>', self._on_plot_zoom_motion)
-            canvas.bind('<Shift-ButtonRelease-1>', self._on_plot_zoom_release)
+            # 左键拖动 = 框选放大；中键/右键拖动 = 平移；
+            # 双击 = 重置缩放；滚轮 = 以鼠标位置为中心缩放
+            canvas.bind('<Button-1>', self._on_plot_zoom_start)
+            canvas.bind('<B1-Motion>', self._on_plot_zoom_motion)
+            canvas.bind('<ButtonRelease-1>', self._on_plot_zoom_release)
+            canvas.bind('<Double-Button-1>', self._on_plot_double_click)
+            canvas.bind('<Button-2>', self._on_plot_pan_start)
+            canvas.bind('<B2-Motion>', self._on_plot_pan_motion)
+            canvas.bind('<ButtonRelease-2>', self._on_plot_pan_release)
             canvas.bind('<Button-3>', self._show_plot_menu)
-            # 鼠标滚轮 slip
+            # 滚轮 = 以鼠标为中心缩放；Shift+滚轮 = X 轴平移
+            canvas.bind('<MouseWheel>', self._on_plot_wheel_zoom)
             canvas.bind('<Shift-MouseWheel>', self._on_plot_wheel_x)
-            canvas.bind('<MouseWheel>', self._on_plot_wheel_y)
             self._plot_frames.append(frame)
             self._plot_canvases.append(canvas)
         if self._plot_canvases:
@@ -974,17 +1224,15 @@ class MonitorPanel(ttk.Frame):
         self._draw_plot(event.widget, plot)
 
     def _on_plot_pan_release(self, event):
-        """左键松开（无 Shift）：结束平移，恢复自动滚动。"""
+        """中键松开：结束平移，保留当前视图位置（不清空 _zoom）。"""
         plot = self._canvas_plot(event.widget)
         if plot is None:
             return
         plot.pop('_pan_start', None)
         plot.pop('_pan_zoom0', None)
-        # 平移是临时查看，松开后恢复自动滚动
-        plot['_zoom'] = None
 
     def _on_plot_zoom_start(self, event):
-        """Shift+左键按下：开始框选缩放。"""
+        """左键按下：开始框选缩放（或单击不拖动则保留原状态）。"""
         plot = self._canvas_plot(event.widget)
         if plot is None:
             return
@@ -996,7 +1244,7 @@ class MonitorPanel(ttk.Frame):
         plot['_zoom_zoom0'] = plot.get('_zoom')
 
     def _on_plot_zoom_motion(self, event):
-        """Shift+左键拖动：更新选框矩形。"""
+        """左键拖动：更新选框矩形。"""
         plot = self._canvas_plot(event.widget)
         if plot is None or '_zoom_drag_start' not in plot:
             return
@@ -1010,7 +1258,7 @@ class MonitorPanel(ttk.Frame):
             self._draw_plot(canvas, plot)
 
     def _on_plot_zoom_release(self, event):
-        """Shift+左键松开：应用框选缩放（保留 _zoom 锁定视图）。"""
+        """左键松开：应用框选缩放（保留 _zoom 锁定视图）。"""
         plot = self._canvas_plot(event.widget)
         if plot is None:
             return
@@ -1036,6 +1284,47 @@ class MonitorPanel(ttk.Frame):
         new_y_hi = y_hi - (y_hi - y_lo) * (cy0 - pad_t) / plot_h
         new_y_lo = y_hi - (y_hi - y_lo) * (cy1 - pad_t) / plot_h
         # 保留 _zoom，锁定在选中区域
+        plot['_zoom'] = (new_t_min, new_t_max, new_y_lo, new_y_hi)
+        self._draw_plot(event.widget, plot)
+
+    def _on_plot_double_click(self, event):
+        """双击：重置缩放，恢复自动滚动。"""
+        plot = self._canvas_plot(event.widget)
+        if plot is None:
+            return
+        self._reset_plot_zoom(plot)
+
+    def _on_plot_wheel_zoom(self, event):
+        """Ctrl+滚轮（或裸滚轮）：以鼠标位置为中心缩放。"""
+        plot = self._canvas_plot(event.widget)
+        if plot is None:
+            return
+        self._ensure_zoom_for_pan(plot)
+        zoom = plot.get('_zoom')
+        geom = plot.get('_geom')
+        if not zoom or not geom:
+            return
+        t_min, t_max, y_lo, y_hi = zoom
+        pad_l, pad_t, plot_w, plot_h, _, _, _, _ = geom
+        if plot_w <= 0 or plot_h <= 0:
+            return
+        # 鼠标位置在数据坐标系中的比例
+        rx = (event.x - pad_l) / plot_w
+        ry = (event.y - pad_t) / plot_h
+        if not (0 <= rx <= 1):
+            rx = max(0, min(1, rx))
+        if not (0 <= ry <= 1):
+            ry = max(0, min(1, ry))
+        # 缩放因子：滚轮向上放大（数据范围缩小），向下缩小（范围扩大）
+        factor = 0.8 if event.delta > 0 else 1.25
+        # 限制缩放过度（防止范围过小或倒置）
+        new_t_span = max((t_max - t_min) * factor, 0.1)
+        new_y_span = max((y_hi - y_lo) * factor, 1e-6)
+        # 鼠标位置保持不动，反推新的 t_min/y_lo
+        new_t_min = t_min + rx * ((t_max - t_min) - new_t_span)
+        new_t_max = new_t_min + new_t_span
+        new_y_hi = y_lo + ry * (y_hi - y_lo) + new_y_span * (1 - ry)
+        new_y_lo = new_y_hi - new_y_span
         plot['_zoom'] = (new_t_min, new_t_max, new_y_lo, new_y_hi)
         self._draw_plot(event.widget, plot)
 
@@ -1137,15 +1426,16 @@ class MonitorPanel(ttk.Frame):
         plot['_popout_canvas'] = canvas
         plot['_popout_toplevel'] = top
         # 与内嵌 canvas 相同的交互绑定
-        canvas.bind('<Button-1>', self._on_plot_pan_start)
-        canvas.bind('<B1-Motion>', self._on_plot_pan_motion)
-        canvas.bind('<ButtonRelease-1>', self._on_plot_pan_release)
-        canvas.bind('<Shift-Button-1>', self._on_plot_zoom_start)
-        canvas.bind('<Shift-B1-Motion>', self._on_plot_zoom_motion)
-        canvas.bind('<Shift-ButtonRelease-1>', self._on_plot_zoom_release)
+        canvas.bind('<Button-1>', self._on_plot_zoom_start)
+        canvas.bind('<B1-Motion>', self._on_plot_zoom_motion)
+        canvas.bind('<ButtonRelease-1>', self._on_plot_zoom_release)
+        canvas.bind('<Double-Button-1>', self._on_plot_double_click)
+        canvas.bind('<Button-2>', self._on_plot_pan_start)
+        canvas.bind('<B2-Motion>', self._on_plot_pan_motion)
+        canvas.bind('<ButtonRelease-2>', self._on_plot_pan_release)
         canvas.bind('<Button-3>', self._show_plot_menu)
+        canvas.bind('<MouseWheel>', self._on_plot_wheel_zoom)
         canvas.bind('<Shift-MouseWheel>', self._on_plot_wheel_x)
-        canvas.bind('<MouseWheel>', self._on_plot_wheel_y)
         top.protocol('WM_DELETE_WINDOW', lambda: self._close_plot_popout(plot))
         # 等画布就绪后画一次
         top.after(50, lambda: self._draw_plot(canvas, plot))
@@ -1255,6 +1545,7 @@ class MonitorPanel(ttk.Frame):
         for child in self._data_frame.winfo_children():
             child.destroy()
         self._data_labels = {}
+        self._warn_indicators = {}
         if not self._vars:
             ttk.Label(self._data_frame, text='（无变量，请先添加）',
                       foreground=self._theme['muted']).pack(pady=40)
@@ -1265,9 +1556,10 @@ class MonitorPanel(ttk.Frame):
             row.columnconfigure(1, weight=3)
             row.columnconfigure(3, weight=1)
 
-            tk.Canvas(row, width=14, height=14, bg=v['color'],
-                      highlightthickness=0
-                      ).grid(row=0, column=0, padx=(0, 6))
+            color_canvas = tk.Canvas(row, width=14, height=14, bg=v['color'],
+                      highlightthickness=0)
+            color_canvas.grid(row=0, column=0, padx=(0, 6))
+            self._warn_indicators[v['name']] = color_canvas
 
             ttk.Label(row, text=v['name'], font=_font('bold')
                       ).grid(row=0, column=1, sticky='w')
@@ -1310,6 +1602,10 @@ class MonitorPanel(ttk.Frame):
     def _schedule_redraw(self):
         if self._closed:
             return
+        # 加载历史日志期间跳过定时重绘（避免对越来越大的 _history 反复重绘导致越来越慢）
+        if self._loading:
+            self._redraw_id = self.after(self.REDRAW_MS, self._schedule_redraw)
+            return
         if self._mode == 'curve':
             self._draw_curves()
             interval = self.REDRAW_MS
@@ -1321,16 +1617,51 @@ class MonitorPanel(ttk.Frame):
     def _update_data_text(self):
         now = time.time()
         for name, var in self._data_labels.items():
-            buf = self._buffers.get(name)
-            if not buf:
+            pts = self._get_plot_data(name)
+            if not pts:
                 var.set('—')
+                self._set_warn_state(name, False)
                 continue
-            ts, val = buf[-1]
-            age = now - ts
-            if age > 5:
-                var.set(f'{val:g}  (旧 {age:.1f}s)')
-            else:
+            ts, val = pts[-1]
+            # 历史模式（_history 非空）：不显示"旧"标记
+            if self._history is not None:
                 var.set(f'{val:g}')
+            else:
+                age = now - ts
+                if age > 5:
+                    var.set(f'{val:g}  (旧 {age:.1f}s)')
+                else:
+                    var.set(f'{val:g}')
+            # 阈值告警检测
+            self._set_warn_state(name, self._is_value_warning(name, val))
+
+    def _is_value_warning(self, name: str, val: float) -> bool:
+        """检查变量值是否超出 warn_min/warn_max。"""
+        v = next((x for x in self._vars if x['name'] == name), None)
+        if v is None:
+            return False
+        wmin = v.get('warn_min')
+        wmax = v.get('warn_max')
+        if wmin is not None and val < wmin:
+            return True
+        if wmax is not None and val > wmax:
+            return True
+        return False
+
+    def _set_warn_state(self, name: str, warn: bool):
+        """切换告警指示色块颜色：超限红，否则恢复变量原色。"""
+        canvas = self._warn_indicators.get(name)
+        if canvas is None:
+            return
+        try:
+            if warn:
+                canvas.configure(bg=self._theme['status_err'])
+            else:
+                v = next((x for x in self._vars if x['name'] == name), None)
+                if v is not None:
+                    canvas.configure(bg=v.get('color', self._theme['fg']))
+        except Exception:
+            pass
 
     def _draw_curves(self):
         """遍历 self._plots，每个 plot 在自己的 canvas 上绘制。
@@ -1345,9 +1676,39 @@ class MonitorPanel(ttk.Frame):
                 self._draw_plot(popout, plot)
 
         total = sum(len(buf) for buf in self._buffers.values())
+        if self._history is not None:
+            total = sum(len(pts) for pts in self._history.values())
+            total_str = f'{total} 点（历史）'
+        else:
+            total_str = f'{total} 点'
         n_plots = len(self._plots)
         self._status_lbl.configure(
-            text=f'{total} 点 | {len(self._vars)} 变量 | {n_plots} 图表')
+            text=f'{total_str} | {len(self._vars)} 变量 | {n_plots} 图表')
+
+    def _get_plot_data(self, name: str) -> list[tuple[float, float]]:
+        """返回变量对应的 (ts, val) 列表。
+        历史模式优先用 _history（不限大小），否则用 _buffers（maxlen=600）。
+        """
+        if self._history is not None:
+            return self._history.get(name, [])
+        buf = self._buffers.get(name)
+        return list(buf) if buf else []
+
+    @staticmethod
+    def _truncate_text(text: str, max_w: int,
+                       font: tkfont.Font) -> str:
+        """按像素宽度截断文字并加 '…' 后缀。"""
+        if font.measure(text) <= max_w:
+            return text
+        # 二分查找最大字符数
+        lo, hi = 1, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if font.measure(text[:mid] + '…') <= max_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + '…'
 
     def _draw_plot(self, c: tk.Canvas, plot: dict):
         c.delete('all')
@@ -1376,15 +1737,17 @@ class MonitorPanel(ttk.Frame):
         legend_pad_col = 12 + 4 + 16  # 色块 12 + 间隙 4 + 文字偏移 16
         legend_max_text = 0
         for v in plot_vars:
-            buf = self._buffers.get(v['name'])
-            if buf:
-                txt = f'{v["name"]} = {buf[-1][1]:g}'
+            pts = self._get_plot_data(v['name'])
+            if pts:
+                txt = f'{v["name"]} = {pts[-1][1]:g}'
             else:
                 txt = v['name']
             legend_max_text = max(legend_max_text,
                                   legend_font.measure(txt))
         # 至少留 60px，最多不超过窗口一半
         legend_width = legend_pad_col + min(legend_max_text, max(60, w // 3))
+        # 图例每行高度（行间距）：>= 18px 避免文字垂直方向挤压
+        legend_line_h = max(18, legend_font.metrics('linespace') + 6)
 
         # 边距：上留 title，下留 x_label，左留 y_label
         pad_l, pad_r, pad_t, pad_b = 64, legend_width + 14, 26, 36
@@ -1400,6 +1763,7 @@ class MonitorPanel(ttk.Frame):
         # 时间范围：若用户框选缩放则用 zoom 范围，否则自动
         # 自动范围：t_max = buf 中最新 ts；t_min = max(t_max-WINDOW, 最老 ts)
         # 这样：数据稀疏时填满整个宽度；数据超过窗口时滚动显示最近 WINDOW 秒
+        # 历史模式：不限时间窗口，显示全部数据范围
         zoom = plot.get('_zoom')  # (t_min, t_max, y_lo, y_hi) or None
         if zoom:
             t_min, t_max, y_lo, y_hi = zoom
@@ -1409,17 +1773,20 @@ class MonitorPanel(ttk.Frame):
             t_max = 0.0
             t_min_data = None
             for v in plot_vars:
-                buf = self._buffers.get(v['name'])
-                if not buf:
+                pts = self._get_plot_data(v['name'])
+                if not pts:
                     continue
-                if buf[-1][0] > t_max:
-                    t_max = buf[-1][0]
-                if t_min_data is None or buf[0][0] < t_min_data:
-                    t_min_data = buf[0][0]
+                if pts[-1][0] > t_max:
+                    t_max = pts[-1][0]
+                if t_min_data is None or pts[0][0] < t_min_data:
+                    t_min_data = pts[0][0]
             if t_max == 0.0:
                 t_max = time.time()
-            if t_min_data is not None and t_max - t_min_data <= self.TIME_WINDOW_S:
-                t_min = t_min_data
+            # 历史模式或数据时间跨度 <= WINDOW：显示全部
+            if (self._history is not None
+                    or (t_min_data is not None
+                        and t_max - t_min_data <= self.TIME_WINDOW_S)):
+                t_min = t_min_data if t_min_data is not None else t_max - self.TIME_WINDOW_S
             else:
                 t_min = t_max - self.TIME_WINDOW_S
             y_lo, y_hi = None, None
@@ -1431,7 +1798,7 @@ class MonitorPanel(ttk.Frame):
         # 锚点让曲线从左边缘开始延伸，而不是从第一个窗口内点开始
         series: list[tuple[dict, list[tuple[float, float]]]] = []
         for v in plot_vars:
-            buf = self._buffers.get(v['name'])
+            buf = self._get_plot_data(v['name'])
             if not buf:
                 continue
             pts: list[tuple[float, float]] = []
@@ -1497,13 +1864,23 @@ class MonitorPanel(ttk.Frame):
                           fill=muted, anchor='e',
                           font=('DejaVu Sans', 9))
 
-        # X 轴标签：日志时间戳 HH:MM:SS
+        # X 轴标签：日志时间戳 → 实际时间（自适应格式）
         n_grid_x = 6
+        span = t_max - t_min
+        # 格式选择：跨度 > 1 天 → 显示日期 + 时分；> 1 小时 → 时分秒；否则 → 秒.毫秒
+        if span > 86400:
+            fmt = '%m-%d %H:%M'
+        elif span > 3600:
+            fmt = '%H:%M:%S'
+        elif span > 60:
+            fmt = '%H:%M:%S'
+        else:
+            fmt = '%H:%M:%S'
         for i in range(n_grid_x + 1):
             x = pad_l + plot_w * i / n_grid_x
-            t_at = t_min + (t_max - t_min) * i / n_grid_x
+            t_at = t_min + span * i / n_grid_x
             try:
-                label = _dt.datetime.fromtimestamp(t_at).strftime('%H:%M:%S')
+                label = _dt.datetime.fromtimestamp(t_at).strftime(fmt)
             except (ValueError, OSError):
                 label = '--:--:--'
             c.create_text(x, pad_t + plot_h + 4, text=label,
@@ -1539,17 +1916,36 @@ class MonitorPanel(ttk.Frame):
 
         # 图例
         legend_x = pad_l + plot_w + 10
+        # 图例可用文字宽度（超过则字符级截断 + 省略号，避免文字延伸到画布外）
+        legend_text_w = max(40, legend_width - legend_pad_col)
+        # 行数过多时缩小行高（最多缩到 14px），保证所有行可见
+        n_lines = len(plot_vars)
+        line_h = legend_line_h
+        if n_lines * line_h > plot_h:
+            line_h = max(14, plot_h // max(1, n_lines))
+        # 顶部居中起始 y，让图例在绘图区纵向居中
+        if n_lines * line_h < plot_h:
+            start_y = pad_t + (plot_h - n_lines * line_h) // 2
+        else:
+            start_y = pad_t + 2
         for i, v in enumerate(plot_vars):
-            ly = pad_t + 4 + i * 20
+            ly = start_y + i * line_h
+            # 防止最后一行色块底部超出绘图区
+            if ly + 12 > pad_t + plot_h:
+                break
             c.create_rectangle(legend_x, ly, legend_x + 12, ly + 12,
                                 fill=v['color'], outline='')
             label = v['name']
-            buf = self._buffers.get(v['name'])
+            buf = self._get_plot_data(v['name'])
             if buf:
                 label = f'{v["name"]} = {buf[-1][1]:g}'
+            # 按可用宽度截断文字，避免延伸到画布外被相邻图例覆盖
+            if legend_font.measure(label) > legend_text_w:
+                label = self._truncate_text(label, legend_text_w,
+                                            legend_font)
             c.create_text(legend_x + 16, ly + 6, text=label,
                           fill=fg, anchor='w',
-                          font=('DejaVu Sans', 9))
+                          font=legend_font)
 
         # 缓存绘图区几何，供鼠标框选缩放时把像素坐标换算回数据坐标
         plot['_geom'] = (pad_l, pad_t, plot_w, plot_h, t_min, t_max,
@@ -1612,6 +2008,7 @@ class MonitorPanel(ttk.Frame):
             buf.clear()
         self._buffers.clear()
         self._compiled.clear()
+        self._history = None
 
     def destroy(self):
         self._stop()
@@ -1943,27 +2340,50 @@ class StructuredMonitorPanel(MonitorPanel):
         ts = _extract_log_ts(line) or time.time()
         parsed: dict[str, list | None] = {}
         for v in self._vars:
-            tag = v.get('log_tag')
-            if not tag:
-                continue
-            if tag not in parsed:
-                parsed[tag] = self._parse_tagged_line(line, tag)
-            blocks = parsed.get(tag)
-            if not blocks:
-                continue
-            bi = v.get('block_idx', 0)
-            gi = v.get('group_idx', 0)
-            pi = v.get('pos_in_group', 0)
-            try:
-                if bi < len(blocks) and gi < len(blocks[bi]) and pi < len(blocks[bi][gi]):
-                    val = float(blocks[bi][gi][pi])
-                else:
-                    continue
-            except (ValueError, IndexError):
-                continue
-            buf = self._buffers.get(v['name'])
-            if buf is not None:
-                buf.append((ts, val))
+            val = self._extract_value_parsed(line, v, parsed)
+            if val is not None:
+                buf = self._buffers.get(v['name'])
+                if buf is not None:
+                    buf.append((ts, val))
+
+    def _extract_value(self, line: str, v: dict) -> float | None:
+        """覆盖：使用结构化解析（log_tag / block / group / pos）。"""
+        tag = v.get('log_tag')
+        if not tag:
+            return None
+        blocks = self._parse_tagged_line(line, tag)
+        if not blocks:
+            return None
+        bi = v.get('block_idx', 0)
+        gi = v.get('group_idx', 0)
+        pi = v.get('pos_in_group', 0)
+        try:
+            if bi < len(blocks) and gi < len(blocks[bi]) and pi < len(blocks[bi][gi]):
+                return float(blocks[bi][gi][pi])
+        except (ValueError, IndexError):
+            return None
+        return None
+
+    def _extract_value_parsed(self, line: str, v: dict,
+                              parsed: dict) -> float | None:
+        """feed 用：复用同一行的 parsed 缓存，避免每变量重解析。"""
+        tag = v.get('log_tag')
+        if not tag:
+            return None
+        if tag not in parsed:
+            parsed[tag] = self._parse_tagged_line(line, tag)
+        blocks = parsed.get(tag)
+        if not blocks:
+            return None
+        bi = v.get('block_idx', 0)
+        gi = v.get('group_idx', 0)
+        pi = v.get('pos_in_group', 0)
+        try:
+            if bi < len(blocks) and gi < len(blocks[bi]) and pi < len(blocks[bi][gi]):
+                return float(blocks[bi][gi][pi])
+        except (ValueError, IndexError):
+            return None
+        return None
 
     def _refresh_var_list(self):
         """左侧 Treeview 显示：中文说明 / 标签 / 块.组.位。"""
@@ -2048,6 +2468,7 @@ class StructuredMonitorPanel(MonitorPanel):
         for child in self._data_frame.winfo_children():
             child.destroy()
         self._data_labels = {}
+        self._warn_indicators = {}
         if not self._vars:
             ttk.Label(self._data_frame, text='（无变量，请先添加）',
                       foreground=self._theme['muted']).pack(pady=40)
@@ -2077,9 +2498,11 @@ class StructuredMonitorPanel(MonitorPanel):
                 r.columnconfigure(1, weight=3)
                 r.columnconfigure(3, weight=1)
 
-                tk.Canvas(r, width=12, height=12, bg=v['color'],
-                          highlightthickness=0
-                          ).grid(row=0, column=0, padx=(0, 6))
+                color_canvas = tk.Canvas(r, width=12, height=12,
+                                          bg=v['color'],
+                                          highlightthickness=0)
+                color_canvas.grid(row=0, column=0, padx=(0, 6))
+                self._warn_indicators[v['name']] = color_canvas
 
                 ttk.Label(r, text=v.get('label', '') or v['name'],
                           font=_font('bold')
