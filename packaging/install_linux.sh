@@ -65,15 +65,24 @@ mkdir -p "$INSTALL_DIR"
 cp -r dist/serial_debug/* "$INSTALL_DIR/"
 
 # 1. 命令行启动脚本到 ~/.local/bin
-echo "==> 注册命令 serial_debug 到 PATH..."
+echo "==> 注册命令 serial_debug / serial_debug_log 到 PATH..."
 mkdir -p "$BIN_DIR"
+# 串口调试助手：直接 exec binary
 cat > "$BIN_DIR/serial_debug" << EOF
 #!/bin/bash
 exec "$INSTALL_DIR/serial_debug" "\$@"
 EOF
 chmod +x "$BIN_DIR/serial_debug"
-echo "  命令路径: $BIN_DIR/serial_debug"
-echo "  现在 'serial_debug' 命令可用（需 ~/.local/bin 在 PATH 中）"
+# 日志查看器：exec -a 改 argv[0] 让 GNOME 识别为独立应用
+# （否则两个 .desktop 都用同一 binary 名，GNOME 会把它们当作同一应用，
+# 点击日志查看器图标会前置已运行的串口助手窗口）
+cat > "$BIN_DIR/serial_debug_log" << EOF
+#!/bin/bash
+exec -a serial_debug_log "$INSTALL_DIR/serial_debug" --view "\$@"
+EOF
+chmod +x "$BIN_DIR/serial_debug_log"
+echo "  命令路径: $BIN_DIR/serial_debug / $BIN_DIR/serial_debug_log"
+echo "  现在 'serial_debug' 和 'serial_debug_log' 命令可用"
 
 # 2. 安装图标：串口调试 + 日志查看器
 echo "==> 安装图标..."
@@ -95,6 +104,9 @@ echo "==> 注册到应用菜单..."
 mkdir -p "$APP_DIR"
 
 # 3.1 串口调试助手
+# StartupNotify=false：tkinter 不实现 _NET_STARTUP_ID，true 会让 GNOME
+# 超时判定启动失败。去掉 StartupWMClass 让 GNOME 用进程名匹配，避免
+# 与日志查看器互相串台（两个图标同 binary 不同 wrapper）。
 cat > "$APP_DIR/serial_debug.desktop" << EOF
 [Desktop Entry]
 Type=Application
@@ -103,16 +115,17 @@ Name=串口调试助手
 GenericName=Serial Debug Tool
 Comment=串口调试工具：CH343 实时收发 / AT 命令管理 / 日志存储
 Comment[zh_CN]=串口调试工具：CH343 实时收发 / AT 命令管理 / 日志存储
-Exec=$INSTALL_DIR/serial_debug
+Exec=$BIN_DIR/serial_debug
 Icon=serial_debug
 Terminal=false
-Categories=Development;Utility;Electronics;
+Categories=Development;Utility;
 Keywords=serial;uart;AT;debug;ch343;
-StartupNotify=true
-StartupWMClass=串口调试助手
+StartupNotify=false
 EOF
 
 # 3.2 日志查看器（支持文件管理器右键"打开方式"）
+# Exec 指向独立 wrapper 脚本 serial_debug_log（exec -a 改 argv[0]），
+# 让 GNOME 识别为与串口助手不同的应用，避免前置串口助手窗口。
 cat > "$APP_DIR/serial_debug_log.desktop" << EOF
 [Desktop Entry]
 Type=Application
@@ -121,13 +134,12 @@ Name=日志查看器
 GenericName=Log File Viewer
 Comment=日志文件查看工具：多文件 Tab + 筛选面板 + 全局搜索
 Comment[zh_CN]=日志文件查看工具：多文件 Tab + 筛选面板 + 全局搜索
-Exec=$INSTALL_DIR/serial_debug --view %F
+Exec=$BIN_DIR/serial_debug_log %F
 Icon=serial_debug_log
 Terminal=false
-Categories=Development;Utility;TextTools;
+Categories=Utility;TextTools;
 Keywords=log;viewer;text;grep;filter;
-StartupNotify=true
-StartupWMClass=日志查看
+StartupNotify=false
 MimeType=text/plain;text/x-log;text/x-readme;application/octet-stream;text/*;
 EOF
 

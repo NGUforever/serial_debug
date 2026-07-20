@@ -194,7 +194,7 @@ class AtCmdPanel(ttk.Frame):
             return
         x, y, w, h = bbox
         value = self.tree.set(row_id, col_name)
-        entry = ttk.Entry(self.tree, font=('DejaVu Sans Mono', 10))
+        entry = ttk.Entry(self.tree, font=('DejaVu Sans Mono', 11))
         entry.place(x=x, y=y, width=max(w, 60), height=h)
         entry.insert(0, str(value))
         entry.select_range(0, 'end')
