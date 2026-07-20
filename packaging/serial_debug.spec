@@ -29,15 +29,15 @@ _resources = os.path.join(_root, 'src', 'serial_debug', 'resources')
 # 图标路径：按平台选择
 _icon_path = None
 if sys.platform == 'win32':
-    _icon_path = os.path.join(_resources, 'assets', 'icon.ico')
+    _icon_path = os.path.join(_resources, 'assets', 'icon_debug.ico')
     if not os.path.exists(_icon_path):
-        _icon_path = os.path.join(_resources, 'assets', 'icon.png')
+        _icon_path = os.path.join(_resources, 'assets', 'icon_debug.png')
 elif sys.platform == 'darwin':
-    _icon_path = os.path.join(_resources, 'assets', 'icon.icns')
+    _icon_path = os.path.join(_resources, 'assets', 'icon_debug.icns')
     if not os.path.exists(_icon_path):
-        _icon_path = os.path.join(_resources, 'assets', 'icon.png')
+        _icon_path = os.path.join(_resources, 'assets', 'icon_debug.png')
 else:
-    _icon_path = os.path.join(_resources, 'assets', 'icon.png')
+    _icon_path = os.path.join(_resources, 'assets', 'icon_debug.png')
 
 a = Analysis(
     [os.path.join(_root, 'src', 'serial_debug', 'app.py')],

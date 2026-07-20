@@ -300,12 +300,12 @@ def apply_theme(root: tk.Tk, theme_name: str):
                               ('!selected', t['panel_bg'])])
 
     # Treeview（AT 命令表格）
-    # rowheight 44px：10pt 字体 + 上下 12px 留白，行间不拥挤、易点击
-    # padding 8 让单元格内容与边框有呼吸空间
+    # rowheight 56px：字体上下充分留白，避免文字显得扁
+    # padding 4 让单元格内容更贴近中央，文字更舒展
     style.configure('Treeview',
                     background=t['panel_bg'], foreground=t['panel_fg'],
                     fieldbackground=t['panel_bg'], borderwidth=0,
-                    rowheight=44, font=_mono(), padding=8)
+                    rowheight=56, font=_mono(), padding=4)
     style.map('Treeview',
               background=[('selected', t['select_bg'])],
               foreground=[('selected', '#ffffff')])

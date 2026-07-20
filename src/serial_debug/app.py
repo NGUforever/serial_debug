@@ -144,9 +144,10 @@ class SerialDebugApp:
 
     # ---- 图标 ----------------------------------------------------------
     def _set_icon(self):
-        """加载 assets/icon.png 作为窗口图标。"""
+        """加载 assets/icon_debug.png 作为串口助手窗口图标。"""
         try:
-            icon_path = resource_path(os.path.join('assets', 'icon.png'))
+            icon_path = resource_path(
+                os.path.join('assets', 'icon_debug.png'))
             if os.path.exists(icon_path):
                 img = tk.PhotoImage(file=icon_path)
                 self.root.iconphoto(True, img)
@@ -1532,6 +1533,16 @@ def _run_log_viewer_only(files: list[str]):
     resolved = themes.resolve(pref)
     t = themes.THEMES[resolved]
     themes.apply_theme(root, resolved)
+    # 日志查看器窗口加载独立图标
+    try:
+        icon_path = resource_path(
+            os.path.join('assets', 'icon_view.png'))
+        if os.path.exists(icon_path):
+            img = tk.PhotoImage(file=icon_path)
+            root.iconphoto(True, img)
+            root._icon_img = img  # 防 GC
+    except Exception:
+        pass
     if not files:
         from tkinter import filedialog
         cfg = config.load()
