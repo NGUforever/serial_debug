@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=日志查看器
+GenericName=Log File Viewer
+Comment=日志文件查看工具：多文件 Tab + 筛选面板 + 全局搜索
+Comment[zh_CN]=日志文件查看工具：多文件 Tab + 筛选面板 + 全局搜索
+Exec=serial_debug --view %F
+Icon=serial_debug_log
+Terminal=false
+Categories=Development;Utility;TextTools;
+Keywords=log;viewer;text;grep;filter;
+StartupNotify=true
+StartupWMClass=日志查看
+MimeType=text/plain;text/x-log;text/x-readme;application/octet-stream;text/*;

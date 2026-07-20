@@ -1351,6 +1351,12 @@ class SerialDebugApp:
                 if kind == 'line':
                     # 先喂监视窗口（用原始行，未经过时间戳转换/筛选）
                     self._feed_monitors(payload)
+                    # 日志落盘：原始行直接写，不受正则筛选影响
+                    if self.log_writer is not None:
+                        try:
+                            self.log_writer.put(payload + '\n')
+                        except Exception:
+                            pass
                     r = self._route_line(payload)
                     if r is not None:
                         batch.append(r)
@@ -1458,9 +1464,6 @@ class SerialDebugApp:
             args.append(text)
             args.append(tag)
         txt.insert('end', *args)
-        if self.log_writer is not None:
-            for text, _tag in batch:
-                self.log_writer.put(text)
         self._trim()
         txt.configure(state='disabled')
         if self.auto_scroll:
@@ -1486,6 +1489,17 @@ class SerialDebugApp:
 
 
 def main():
+    """启动入口。
+
+    用法：
+      serial_debug                    # 启动完整串口调试助手
+      serial_debug --view F1 [F2 ...] # 只启动日志查看器加载给定文件
+    """
+    import sys
+    args = sys.argv[1:]
+    if args and args[0] == '--view':
+        files = [f for f in args[1:] if not f.startswith('-')]
+        return _run_log_viewer_only(files)
     try:
         root = tk.Tk()
         SerialDebugApp(root)
@@ -1498,6 +1512,48 @@ def main():
                           f'{e}\n\n{traceback.format_exc()}')
         except Exception:
             traceback.print_exc()
+
+
+def _run_log_viewer_only(files: list[str]):
+    """独立模式：只启动日志查看器窗口加载给定文件。
+
+    用于桌面文件管理器右键"打开方式"：.desktop Exec=serial_debug --view %F
+    """
+    import sys
+    import os
+    import config
+    import themes
+    root = tk.Tk()
+    root.withdraw()
+    pref = themes.load_pref()
+    resolved = themes.resolve(pref)
+    t = themes.THEMES[resolved]
+    themes.apply_theme(root, resolved)
+    if not files:
+        from tkinter import filedialog
+        cfg = config.load()
+        init_dir = cfg.get('log_view_last_dir', '') or os.path.expanduser('~')
+        paths = filedialog.askopenfilenames(
+            title='打开日志文件（可多选）',
+            initialdir=init_dir,
+            filetypes=[('文本文件', '*.txt'), ('日志', '*.log'),
+                       ('所有文件', '*.*')])
+        if not paths:
+            sys.exit(0)
+        files = list(paths)
+    try:
+        win = LogViewerWindow(root, path=None, theme=t)
+        for p in files:
+            win.open_file(p)
+    except Exception as e:
+        import traceback
+        from tkinter import messagebox as _mb
+        _mb.showerror('日志查看 - 启动错误',
+                      f'{e}\n\n{traceback.format_exc()}')
+        sys.exit(1)
+    win.protocol('WM_DELETE_WINDOW',
+                 lambda: (win._on_close(), root.destroy()))
+    root.mainloop()
 
 
 if __name__ == '__main__':

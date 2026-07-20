@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2a2d3a"/>
+      <stop offset="55%" stop-color="#1e1e1e"/>
+      <stop offset="100%" stop-color="#181818"/>
+    </linearGradient>
+    <linearGradient id="docBackGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a2820"/>
+      <stop offset="100%" stop-color="#0f1a14"/>
+    </linearGradient>
+    <linearGradient id="docFrontGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#252526"/>
+      <stop offset="100%" stop-color="#1e1e1e"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.2"/>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="48" ry="48" fill="url(#bgGrad)"/>
+  <!-- 顶部 accent 条 -->
+  <rect x="48" y="44" width="160" height="5" rx="2.5" fill="#007acc"/>
+
+  <!-- 顶部搜索框样式（模拟过滤条） -->
+  <rect x="48" y="60" width="160" height="20" rx="4" fill="#2d2d2d" stroke="#3c3c3c" stroke-width="1"/>
+  <!-- 放大镜图标（小，左内嵌） -->
+  <circle cx="60" cy="70" r="4.5" fill="none" stroke="#888" stroke-width="1.4"/>
+  <path d="M 63.2 73.2 L 67 77" stroke="#888" stroke-width="1.4" stroke-linecap="round"/>
+  <!-- 搜索占位文字 -->
+  <text x="72" y="74" font-family="monospace" font-size="9" fill="#666">filter logs...</text>
+
+  <!-- 后层文档（右后方堆叠，错位显示多文件） -->
+  <path d="M 132 96 L 196 96 L 214 114 L 214 220 L 132 220 Z"
+        fill="url(#docBackGrad)" stroke="#3a3a3a" stroke-width="1.5"
+        stroke-linejoin="round"/>
+  <path d="M 196 96 L 196 114 L 214 114" fill="none"
+        stroke="#3a3a3a" stroke-width="1.5" stroke-linejoin="round"/>
+
+  <!-- 前层文档（左前主体） -->
+  <path d="M 46 110 L 168 110 L 186 128 L 186 224 L 46 224 Z"
+        fill="url(#docFrontGrad)" stroke="#4ec9b0" stroke-width="2"
+        stroke-linejoin="round"/>
+  <!-- 折角内三角 -->
+  <path d="M 168 110 L 168 128 L 186 128" fill="none"
+        stroke="#4ec9b0" stroke-width="2" stroke-linejoin="round"/>
+  <!-- 折角高光 -->
+  <path d="M 168 110 L 186 128" stroke="#ffffff" stroke-width="1" opacity="0.15"/>
+
+  <!-- 行号侧栏（前层左侧） -->
+  <rect x="46" y="110" width="14" height="114" fill="#1a1a1a" opacity="0.6"/>
+  <text x="53" y="140" font-family="monospace" font-size="7" fill="#666" text-anchor="middle">1</text>
+  <text x="53" y="158" font-family="monospace" font-size="7" fill="#666" text-anchor="middle">2</text>
+  <text x="53" y="176" font-family="monospace" font-size="7" fill="#666" text-anchor="middle">3</text>
+  <text x="53" y="194" font-family="monospace" font-size="7" fill="#666" text-anchor="middle">4</text>
+  <text x="53" y="212" font-family="monospace" font-size="7" fill="#666" text-anchor="middle">5</text>
+
+  <!-- 5 条日志行（颜色按级别：info/warn/error/timestamp） -->
+  <!-- 行 1：时间戳 + info -->
+  <rect x="64" y="135" width="40" height="3" rx="1" fill="#6a9955"/>
+  <rect x="108" y="135" width="60" height="3" rx="1" fill="#569cd6"/>
+  <!-- 行 2：高亮匹配行（黄色背景 + 高亮黄字） -->
+  <rect x="64" y="148" width="104" height="9" rx="1.5" fill="#614d1e" opacity="0.85"/>
+  <rect x="64" y="151" width="50" height="3" rx="1" fill="#dcdcaa"/>
+  <rect x="118" y="151" width="48" height="3" rx="1" fill="#dcdcaa"/>
+  <!-- 行 3：warning -->
+  <rect x="64" y="166" width="35" height="3" rx="1" fill="#ce9178"/>
+  <rect x="103" y="166" width="55" height="3" rx="1" fill="#569cd6"/>
+  <!-- 行 4：error -->
+  <rect x="64" y="184" width="30" height="3" rx="1" fill="#f44747"/>
+  <rect x="98" y="184" width="65" height="3" rx="1" fill="#569cd6"/>
+  <!-- 行 5：normal -->
+  <rect x="64" y="202" width="48" height="3" rx="1" fill="#4ec9b0"/>
+  <rect x="116" y="202" width="50" height="3" rx="1" fill="#569cd6"/>
+
+  <!-- 后层文档的几行（模糊暗示） -->
+  <rect x="142" y="120" width="60" height="3" rx="1" fill="#4ec9b0" opacity="0.4"/>
+  <rect x="142" y="135" width="50" height="3" rx="1" fill="#569cd6" opacity="0.4"/>
+  <rect x="142" y="150" width="65" height="3" rx="1" fill="#4ec9b0" opacity="0.4"/>
+  <rect x="142" y="165" width="45" height="3" rx="1" fill="#dcdcaa" opacity="0.4"/>
+
+  <!-- 右下角放大镜（搜索/定位，黄金分割右下角 0.382 留白） -->
+  <circle cx="206" cy="206" r="20" fill="#1e1e1e" stroke="#dcdcaa" stroke-width="3.5"
+          filter="url(#glow)"/>
+  <circle cx="206" cy="206" r="20" fill="none" stroke="#dcdcaa" stroke-width="3.5"/>
+  <!-- 镜片内高光 -->
+  <path d="M 198 198 A 10 10 0 0 1 214 198" fill="none" stroke="#ffffff"
+        stroke-width="1.5" opacity="0.4"/>
+  <!-- 手柄：右下 45 度 -->
+  <path d="M 220 220 L 234 234" stroke="#dcdcaa" stroke-width="5"
+        stroke-linecap="round" fill="none"/>
+</svg>

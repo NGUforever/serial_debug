@@ -52,6 +52,8 @@ class AtCmdPanel(ttk.Frame):
         self._edit_entry: ttk.Entry | None = None
         self._batch_running = False
         self._batch_after_id: str | None = None
+        self._batch_queue: list = []
+        self._batch_idx = 0
 
         self._build_toolbar()
         self._build_treeview()
@@ -79,8 +81,15 @@ class AtCmdPanel(ttk.Frame):
         ttk.Separator(bar, orient='vertical').pack(
             side='left', fill='y', padx=6)
         self._batch_btn = ttk.Button(bar, text='批量执行',
-                                     command=self._toggle_batch)
+                                     command=self._start_batch)
         self._batch_btn.pack(side='left', padx=4)
+        self._stop_btn = ttk.Button(bar, text='停止',
+                                    command=self._stop_batch,
+                                    state='disabled')
+        self._stop_btn.pack(side='left', padx=4)
+        self._batch_status = ttk.Label(bar, text='空闲', width=18,
+                                        anchor='w')
+        self._batch_status.pack(side='left', padx=8)
 
     # ---- Treeview -------------------------------------------------------
     def _build_treeview(self):
@@ -282,7 +291,7 @@ class AtCmdPanel(ttk.Frame):
             return
         self.send_callback(cmd)
 
-    # ---- 批量执行 --------------------------------------------------------
+    # ---- 批量执行（周期循环）---------------------------------------------
     def _toggle_batch(self):
         if self._batch_running:
             self._stop_batch()
@@ -290,6 +299,11 @@ class AtCmdPanel(ttk.Frame):
             self._start_batch()
 
     def _start_batch(self):
+        """按 seq 升序循环执行：跑完一轮从第一条重新开始，直到点停止。
+
+        间隔规则：发送本条后等待该条的 period_ms 再发下一条。
+        period_ms<=0 时按 500ms 兜底。
+        """
         batch = [(c['seq'], c['period_ms'], c['cmd'])
                  for c in self.commands
                  if c.get('seq', 0) > 0 and c.get('cmd', '').strip()]
@@ -299,13 +313,17 @@ class AtCmdPanel(ttk.Frame):
                                 '没有标记执行顺序（seq > 0）的命令',
                                 parent=self.winfo_toplevel())
             return
-        self._batch_running = True
         self._batch_queue = batch
         self._batch_idx = 0
-        self._batch_btn.configure(text='停止执行')
+        self._batch_running = True
+        self._batch_btn.configure(state='disabled')
+        self._stop_btn.configure(state='normal')
+        self._update_batch_status('启动周期批量执行')
         self._exec_next()
 
     def _stop_batch(self):
+        if not self._batch_running and self._batch_after_id is None:
+            return
         self._batch_running = False
         if self._batch_after_id is not None:
             try:
@@ -313,22 +331,33 @@ class AtCmdPanel(ttk.Frame):
             except Exception:
                 pass
             self._batch_after_id = None
-        self._batch_btn.configure(text='批量执行')
+        self._batch_btn.configure(state='normal')
+        self._stop_btn.configure(state='disabled')
+        self._update_batch_status('已停止')
 
     def _exec_next(self):
         if not self._batch_running:
             return
-        if self._batch_idx >= len(self._batch_queue):
+        if not self._batch_queue:
             self._stop_batch()
             return
+        # 循环：索引到达末尾后回到 0
+        if self._batch_idx >= len(self._batch_queue):
+            self._batch_idx = 0
+            self._update_batch_status('开始新一轮')
         seq, period_ms, cmd = self._batch_queue[self._batch_idx]
         self.send_callback(cmd)
+        self._update_batch_status(
+            f'执行 {self._batch_idx + 1}/{len(self._batch_queue)}: {cmd}')
         self._batch_idx += 1
-        if self._batch_idx < len(self._batch_queue):
-            delay = period_ms or 500
-            self._batch_after_id = self.after(delay, self._exec_next)
-        else:
-            self._stop_batch()
+        delay = period_ms if period_ms and period_ms > 0 else 500
+        self._batch_after_id = self.after(delay, self._exec_next)
+
+    def _update_batch_status(self, text: str):
+        try:
+            self._batch_status.configure(text=text)
+        except Exception:
+            pass
 
     # ---- 导入/导出 ------------------------------------------------------
     def _import_json(self):
