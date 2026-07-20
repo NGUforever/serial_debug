@@ -19,29 +19,32 @@ import queue
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from serial_backend import SerialBackend
-import log_writer
-from at_cmd_window import AtCmdWindow
-from log_viewer_window import LogViewerWindow
-from monitor_window import (MotorMonitorWindow, BmsMonitorWindow,
+from serial_debug.core.serial_backend import SerialBackend
+from serial_debug.core import log_writer
+from serial_debug.ui.at_cmd_window import AtCmdWindow
+from serial_debug.ui.log_viewer_window import LogViewerWindow
+from serial_debug.ui.monitor_window import (MotorMonitorWindow, BmsMonitorWindow,
                             ImuMonitorWindow,
                             MotorMonitorPanel, BmsMonitorPanel,
                             ImuMonitorPanel, FillCheck)
-from auto_combobox import AutoCombobox
-import themes
-import config
+from serial_debug.widgets.auto_combobox import AutoCombobox
+from serial_debug.infra import themes
+from serial_debug.infra import config
 
 
 def resource_path(relative_path: str) -> str:
-    """返回资源文件绝对路径，兼容 PyInstaller 打包和开发模式。
+    """返回包内资源文件绝对路径，兼容 PyInstaller 打包和开发模式。
 
-    PyInstaller 打包后资源解压到 sys._MEIPASS；开发模式用 __file__ 所在目录。
+    PyInstaller 打包后资源解压到 sys._MEIPASS/serial_debug/resources；
+    开发模式用 importlib.resources 解析包路径。
     """
     try:
-        base_path = sys._MEIPASS
+        base_path = sys._MEIPASS  # type: ignore[attr-defined]
+        return os.path.join(base_path, 'serial_debug', 'resources', relative_path)
     except AttributeError:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
+        from importlib.resources import files
+        base = files('serial_debug.resources')
+        return str(base / relative_path)
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')   # 响应行判定：OK, / OK% / ERROR / +CMD
 TS_RE = re.compile(r'^(\d{13})\b')              # 设备时间戳：13 位毫秒
@@ -1252,7 +1255,7 @@ class SerialDebugApp:
             return
         self.at_panel = ttk.Frame(self._main_pane, padding=6)
         self._main_pane.add(self.at_panel, weight=1)
-        from at_cmd_window import AtCmdPanel
+        from serial_debug.ui.at_cmd_window import AtCmdPanel
         self._at_embedded = AtCmdPanel(
             self.at_panel, self._send_cmd,
             self.cfg.get('at_commands', []),
@@ -1521,8 +1524,8 @@ def _run_log_viewer_only(files: list[str]):
     """
     import sys
     import os
-    import config
-    import themes
+    from serial_debug.infra import config
+    from serial_debug.infra import themes
     root = tk.Tk()
     root.withdraw()
     pref = themes.load_pref()

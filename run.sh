@@ -27,16 +27,16 @@ cleanup() {
   echo
   echo "退出中..."
   kill "$SOCAT_PID" 2>/dev/null
-  pkill -f "mock_device.py $P1" 2>/dev/null
+  pkill -f "tools/mock_device.py $P1" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 
 # 2) 启动 mock 设备
-$PY mock_device.py "$P1" 115200 &
+$PY tools/mock_device.py "$P1" 115200 &
 MOCK_PID=$!
 sleep 0.4
 
 # 3) 启动 GUI（提示用户在串口框里填 $P2）
 echo "请在 GUI 串口框填入: $P2   波特率: 115200   然后点「连接」"
-$PY app.py
+cd src && PYTHONPATH=. $PY -m serial_debug

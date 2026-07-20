@@ -13,7 +13,8 @@
 
 set -e
 
-PROJECT_DIR=$(cd "$(dirname "$0")" && pwd)
+# spec 在 packaging/ 下，仓库根在上一层
+PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
 ACTION="install"
@@ -34,7 +35,7 @@ fi
 
 # 检查构建产物
 if [ ! -d "dist/serial_debug.app" ]; then
-    echo "错误：dist/serial_debug.app 不存在，请先运行 bash build_mac.sh"
+    echo "错误：dist/serial_debug.app 不存在，请先运行 bash packaging/build_mac.sh"
     exit 1
 fi
 

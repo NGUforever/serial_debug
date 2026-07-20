@@ -17,7 +17,8 @@
 
 set -e
 
-PROJECT_DIR=$(cd "$(dirname "$0")" && pwd)
+# spec 在 packaging/ 下，仓库根在上一层
+PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
 ACTION="install"
@@ -55,7 +56,7 @@ fi
 
 # 检查构建产物
 if [ ! -d "dist/serial_debug" ]; then
-    echo "错误：dist/serial_debug/ 不存在，请先运行 bash build_linux.sh"
+    echo "错误：dist/serial_debug/ 不存在，请先运行 bash packaging/build_linux.sh"
     exit 1
 fi
 
@@ -78,15 +79,16 @@ echo "  现在 'serial_debug' 命令可用（需 ~/.local/bin 在 PATH 中）"
 echo "==> 安装图标..."
 mkdir -p "$ICON_DIR/256x256/apps" "$ICON_DIR/128x128/apps" \
          "$ICON_DIR/48x48/apps" "$ICON_DIR/scalable/apps"
+_ASSETS="$PROJECT_DIR/src/serial_debug/resources/assets"
 # 串口调试助手图标（icon_debug 系列）
-cp assets/icon_debug-256.png "$ICON_DIR/256x256/apps/serial_debug.png"
-cp assets/icon_debug-48.png  "$ICON_DIR/48x48/apps/serial_debug.png"
-cp assets/icon_debug.svg     "$ICON_DIR/scalable/apps/serial_debug.svg"
+cp "$_ASSETS/icon_debug-256.png" "$ICON_DIR/256x256/apps/serial_debug.png"
+cp "$_ASSETS/icon_debug-48.png"  "$ICON_DIR/48x48/apps/serial_debug.png"
+cp "$_ASSETS/icon_debug.svg"     "$ICON_DIR/scalable/apps/serial_debug.svg"
 # 日志查看器图标（icon_view 系列）→ 文件名 serial_debug_log
-cp assets/icon_view-256.png  "$ICON_DIR/256x256/apps/serial_debug_log.png"
-cp assets/icon_view-128.png  "$ICON_DIR/128x128/apps/serial_debug_log.png"
-cp assets/icon_view-48.png   "$ICON_DIR/48x48/apps/serial_debug_log.png"
-cp assets/icon_view.svg      "$ICON_DIR/scalable/apps/serial_debug_log.svg"
+cp "$_ASSETS/icon_view-256.png"  "$ICON_DIR/256x256/apps/serial_debug_log.png"
+cp "$_ASSETS/icon_view-128.png"  "$ICON_DIR/128x128/apps/serial_debug_log.png"
+cp "$_ASSETS/icon_view-48.png"   "$ICON_DIR/48x48/apps/serial_debug_log.png"
+cp "$_ASSETS/icon_view.svg"      "$ICON_DIR/scalable/apps/serial_debug_log.svg"
 
 # 3. 注册 .desktop 文件
 echo "==> 注册到应用菜单..."

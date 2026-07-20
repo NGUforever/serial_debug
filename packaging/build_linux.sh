@@ -18,7 +18,8 @@
 
 set -e
 
-PROJECT_DIR=$(cd "$(dirname "$0")" && pwd)
+# spec 在 packaging/ 下，仓库根在上一层
+PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
 MAKE_APPIMAGE=0
@@ -31,7 +32,7 @@ pip install --quiet pyinstaller pyserial
 
 # PyInstaller 构建
 echo "==> PyInstaller 构建中..."
-pyinstaller --clean --noconfirm serial_debug.spec
+pyinstaller --clean --noconfirm packaging/serial_debug.spec
 
 # 添加启动脚本（解压后直接运行 run.sh 或 ./serial_debug）
 cat > dist/serial_debug/run.sh << 'EOF'
@@ -68,9 +69,9 @@ if [ $MAKE_APPIMAGE -eq 1 ]; then
     mkdir -p AppDir/usr/share/icons/hicolor/48x48/apps
 
     cp -r dist/serial_debug/* AppDir/usr/bin/
-    cp serial_debug.desktop AppDir/usr/share/applications/
-    cp assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/serial_debug.png
-    cp assets/icon-48.png AppDir/usr/share/icons/hicolor/48x48/apps/serial_debug.png
+    cp desktop/serial_debug.desktop AppDir/usr/share/applications/
+    cp src/serial_debug/resources/assets/icon_debug.png AppDir/usr/share/icons/hicolor/256x256/apps/serial_debug.png
+    cp src/serial_debug/resources/assets/icon_debug-48.png AppDir/usr/share/icons/hicolor/48x48/apps/serial_debug.png
 
     cat > AppDir/AppRun << 'EOF'
 #!/bin/bash

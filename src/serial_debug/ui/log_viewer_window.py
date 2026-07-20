@@ -19,8 +19,8 @@ import time as _time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-import themes
-import config
+from serial_debug.infra import themes
+from serial_debug.infra import config
 
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')

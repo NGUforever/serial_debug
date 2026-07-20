@@ -150,7 +150,7 @@ class AtCmdPanel(ttk.Frame):
                 tags=(tag,))
         # 配置交替行配色（首次调用时绑定）
         try:
-            import themes
+            from serial_debug.infra import themes
             t = themes.THEMES.get(themes.resolve(themes.load_pref())) or \
                 themes.THEMES['dark']
             self.tree.tag_configure('evenrow', background=t['panel_bg'])
@@ -464,7 +464,7 @@ class AtCmdWindow(tk.Toplevel):
 
     def update_theme(self):
         try:
-            import themes
+            from serial_debug.infra import themes
             t = themes.THEMES[themes.resolve(themes.load_pref())]
             self.configure(bg=t['bg'])
             self.panel.apply_theme(t)

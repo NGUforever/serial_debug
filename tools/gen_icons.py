@@ -7,7 +7,10 @@ import os
 import shutil
 from PIL import Image, ImageDraw, ImageFont
 
-ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
+# 仓库根在 tools/ 上一层，资源在 src/serial_debug/resources/assets
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+ASSETS = os.path.join(_ROOT, 'src', 'serial_debug', 'resources', 'assets')
 SIZES = [16, 24, 32, 48, 64, 128, 256, 512, 1024]
 
 

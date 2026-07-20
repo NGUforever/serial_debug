@@ -11,13 +11,14 @@ REM   dist\serial_debug\              (onedir 目录)
 REM   可用 Inno Setup 打包成安装器
 
 setlocal
-cd /d %~dp0
+cd /d %~dp0..
+set "PROJECT_DIR=%CD%"
 
 echo ==> 安装依赖...
 pip install --quiet pyinstaller pyserial || goto :error
 
 echo ==> PyInstaller 构建...
-pyinstaller --clean --noconfirm serial_debug.spec || goto :error
+pyinstaller --clean --noconfirm packaging\serial_debug.spec || goto :error
 
 echo.
 echo ==> 完成！输出目录: dist\serial_debug\

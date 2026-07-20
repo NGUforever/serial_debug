@@ -1,9 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec 文件 - 串口调试助手跨平台打包。
 
-构建命令：
-  pyinstaller serial_debug.spec            # 当前平台默认输出
-  pyinstaller --clean serial_debug.spec    # 清理缓存重建
+构建命令（在仓库根目录执行）：
+  pyinstaller --clean packaging/serial_debug.spec
 
 输出：
   Linux:   dist/serial_debug/        (onedir，后续用 build_linux.sh 转 AppImage)
@@ -11,9 +10,9 @@
   macOS:   dist/serial_debug.app     (app bundle)
 
 图标：
-  Linux:   .desktop 文件引用 assets/icon.png
-  Windows: 嵌入 assets/icon.ico
-  macOS:   嵌入 assets/icon.icns
+  Linux:   .desktop 文件引用 serial_debug 资源目录的 PNG
+  Windows: 嵌入 src/serial_debug/resources/assets/icon.ico
+  macOS:   嵌入 src/serial_debug/resources/assets/icon.icns
 """
 import os
 import sys
@@ -22,27 +21,31 @@ from PyInstaller.utils.hooks import collect_submodules
 # pyserial 延迟导入 list_ports 平台子模块，必须显式收集
 hiddenimports = collect_submodules('serial')
 
-# 图标路径：按平台选择
+# 仓库根目录（spec 在 packaging/ 下，向上一层）
 _here = os.path.dirname(os.path.abspath(SPEC))
+_root = os.path.dirname(_here)
+_resources = os.path.join(_root, 'src', 'serial_debug', 'resources')
+
+# 图标路径：按平台选择
 _icon_path = None
 if sys.platform == 'win32':
-    _icon_path = os.path.join(_here, 'assets', 'icon.ico')
+    _icon_path = os.path.join(_resources, 'assets', 'icon.ico')
     if not os.path.exists(_icon_path):
-        _icon_path = os.path.join(_here, 'assets', 'icon.png')
+        _icon_path = os.path.join(_resources, 'assets', 'icon.png')
 elif sys.platform == 'darwin':
-    _icon_path = os.path.join(_here, 'assets', 'icon.icns')
+    _icon_path = os.path.join(_resources, 'assets', 'icon.icns')
     if not os.path.exists(_icon_path):
-        _icon_path = os.path.join(_here, 'assets', 'icon.png')
+        _icon_path = os.path.join(_resources, 'assets', 'icon.png')
 else:
-    _icon_path = os.path.join(_here, 'assets', 'icon.png')
+    _icon_path = os.path.join(_resources, 'assets', 'icon.png')
 
 a = Analysis(
-    ['app.py'],
-    pathex=[],
+    [os.path.join(_root, 'src', 'serial_debug', 'app.py')],
+    pathex=[os.path.join(_root, 'src')],
     binaries=[],
     datas=[
-        ('assets', 'assets'),           # 图标资源
-        ('common_at.json', '.'),        # 预置 AT 命令
+        (os.path.join(_resources, 'assets'), 'serial_debug/resources/assets'),
+        (os.path.join(_resources, 'common_at.json'), 'serial_debug/resources'),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -16,14 +16,15 @@
 
 set -e
 
-PROJECT_DIR=$(cd "$(dirname "$0")" && pwd)
+# spec 在 packaging/ 下，仓库根在上一层
+PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
 # 安装依赖
 pip install --quiet pyinstaller pyserial
 
 # PyInstaller 构建
-pyinstaller --clean --noconfirm serial_debug.spec
+pyinstaller --clean --noconfirm packaging/serial_debug.spec
 
 # 打包 .dmg（可选，需要 create-dmg）
 if command -v create-dmg >/dev/null 2>&1; then
