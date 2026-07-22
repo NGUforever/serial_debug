@@ -48,6 +48,7 @@ DEFAULTS = {
     'filter_pattern': '',
     'filter_enabled': False,
     'ts_convert_enabled': False,
+    'show_at_interactive': True,
     'at_window_mode': 'detached',     # detached / embedded / hidden
     'geometry': '1100x680',
     'at_geometry': '720x520',

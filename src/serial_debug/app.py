@@ -96,6 +96,7 @@ class SerialDebugApp:
         self._filter_enabled_var: tk.BooleanVar | None = None
         self._filter_compiled: re.Pattern | None = None
         self._ts_convert_var: tk.BooleanVar | None = None
+        self._show_at_var: tk.BooleanVar | None = None
         self.theme_pref = self.cfg.get('theme_pref', 'auto')
         self._theme_name = themes.resolve(self.theme_pref)
         self._theme = themes.THEMES[self._theme_name]
@@ -253,6 +254,12 @@ class SerialDebugApp:
         m_view.add_checkbutton(label='设备时间戳→可读时间',
                                variable=self._ts_convert_var,
                                command=self._on_ts_convert_toggle)
+        # 显示 AT 命令交互（发送/响应）
+        self._show_at_var = tk.BooleanVar(
+            value=self.cfg.get('show_at_interactive', True))
+        m_view.add_checkbutton(label='显示 AT 命令交互',
+                               variable=self._show_at_var,
+                               command=lambda: self._schedule_save())
         # 自动滚动
         self._auto_scroll_menu_var = tk.BooleanVar(
             value=self.cfg.get('auto_scroll', True))
@@ -658,6 +665,11 @@ class SerialDebugApp:
             variable=self.autoscroll_var,
             command=self._on_autoscroll_toggle)
         self._autoscroll_check.pack(side='left', padx=4)
+        self._show_at_check = FillCheck(
+            bar, text='显示 AT',
+            variable=self._show_at_var,
+            command=lambda: self._schedule_save())
+        self._show_at_check.pack(side='left', padx=4)
         ttk.Button(bar, text='清空',
                    command=self._clear_log).pack(side='left', padx=4)
 
@@ -783,6 +795,7 @@ class SerialDebugApp:
             self.cfg['filter_pattern'] = self._filter_var.get() if self._filter_var else ''
             self.cfg['filter_enabled'] = bool(self._filter_enabled_var.get()) if self._filter_enabled_var else False
             self.cfg['ts_convert_enabled'] = bool(self._ts_convert_var.get()) if self._ts_convert_var else False
+            self.cfg['show_at_interactive'] = bool(self._show_at_var.get()) if self._show_at_var else True
             try:
                 self.cfg['geometry'] = self.root.geometry()
             except Exception:
@@ -900,6 +913,16 @@ class SerialDebugApp:
     def _now() -> str:
         t = time.localtime()
         return time.strftime('%H:%M:%S', t) + f'.{int((time.time() % 1)*1000):03d}'
+
+    def _ts_prefix_if_needed(self, line: str) -> str:
+        """时间戳转换开关打开、且行未以 [ 开头时，返回本地可读时间前缀。
+        设备周期日志行首有 13 位毫秒时间戳，已被 _convert_ts 转成 [HH:MM:SS.mmm]
+        前缀（保留原 ts）；响应/发送行没有设备 ts，用本地当前时间补前缀。
+        """
+        if (self._ts_convert_var and self._ts_convert_var.get()
+                and not line.startswith('[')):
+            return f'[{self._now()}] '
+        return ''
 
     # ---- 日志存储 -------------------------------------------------------
     def _choose_log(self):
@@ -1222,6 +1245,11 @@ class SerialDebugApp:
             except Exception:
                 pass
 
+    def _feed_monitors_batch(self, lines: list[str]):
+        """批量喂多行给监视窗口（_drain 末尾 after_idle 触发）。"""
+        for ln in lines:
+            self._feed_monitors(ln)
+
     def _apply_at_window_mode(self, mode: str):
         """根据模式呈现 AT 命令面板：embedded / detached / hidden。
         日志始终在 PanedWindow 第 0 pane；AT 面板按 add/forget 切换。
@@ -1337,7 +1365,8 @@ class SerialDebugApp:
             self._dot_state = 'wait'
             self._draw_status_dot('wait')
             return
-        self._append(f'→ {cmd}\n', 'send')
+        if self._show_at_var and self._show_at_var.get():
+            self._append(f'{self._ts_prefix_if_needed(cmd)}→ {cmd}\n', 'send')
         self.pending_cmd = cmd
         self.pending_ts = time.time()
         self.backend.send(cmd, append_crlf=self.crlf_var.get())
@@ -1345,6 +1374,7 @@ class SerialDebugApp:
     # ---- 队列排空 + 路由 ----------------------------------------------
     def _drain(self):
         batch: list[tuple[str, str]] = []
+        pending_feeds: list[str] = []
         status_update = None
         error_msg = None
         closed = False
@@ -1353,8 +1383,9 @@ class SerialDebugApp:
             while True:
                 kind, payload = self.backend.rx_queue.get_nowait()
                 if kind == 'line':
-                    # 先喂监视窗口（用原始行，未经过时间戳转换/筛选）
-                    self._feed_monitors(payload)
+                    # 收集到待喂列表，_drain 末尾 after_idle 批量喂
+                    # （让 log_txt 先显示，监视窗口喂料不阻塞日志显示）
+                    pending_feeds.append(payload)
                     # 日志落盘：原始行直接写，不受正则筛选影响
                     if self.log_writer is not None:
                         try:
@@ -1371,13 +1402,20 @@ class SerialDebugApp:
                 elif kind == 'closed':
                     closed = True
         except queue.Empty:
-            pass
+            # 无数据时拉长下次轮询间隔，减少空闲 CPU 占用
+            if not batch:
+                self.root.after(60, self._drain)
+                return
         except Exception:
             pass
 
         # 批量插入：一次 state 切换 + 一次 insert，避免逐行开销
         if batch:
             self._append_batch(batch)
+
+        # 监视窗口喂料延后到 idle，让日志显示先完成（避免 _feed_monitors 累积开销拖慢显示）
+        if pending_feeds:
+            self.root.after_idle(self._feed_monitors_batch, pending_feeds)
 
         if error_msg is not None:
             self.status_var.set(error_msg)
@@ -1434,12 +1472,18 @@ class SerialDebugApp:
                 and self._filter_compiled is not None):
             if not self._filter_compiled.search(line):
                 return None
+        prefix = self._ts_prefix_if_needed(line)
+        show_at = self._show_at_var and self._show_at_var.get()
         if is_resp:
             if self.pending_cmd:
                 self.pending_cmd = None
-                return (f'← {line}\n', 'resp')
-            return (f'← {line} (未配对)\n', 'resp')
-        return (f'{line}\n', 'log')
+                if show_at:
+                    return (f'{prefix}← {line}\n', 'resp')
+                return None
+            if show_at:
+                return (f'{prefix}← {line} (未配对)\n', 'resp')
+            return None
+        return (f'{prefix}{line}\n', 'log')
 
     @staticmethod
     def _convert_ts(line: str) -> str:

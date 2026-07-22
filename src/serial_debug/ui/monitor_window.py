@@ -582,8 +582,8 @@ class MonitorPanel(ttk.Frame):
     子类覆盖 DEFAULT_VARS 提供特定领域默认变量。
     """
 
-    REDRAW_MS = 100       # 曲线刷新间隔（10fps）
-    DATA_MS = 200         # 数据文本刷新间隔（5fps）
+    REDRAW_MS = 150       # 曲线刷新间隔（≈6.6fps，多窗口同时打开时降 CPU）
+    DATA_MS = 250         # 数据文本刷新间隔（4fps）
     MAX_POINTS = 600      # 每变量最大点数（约 60s @ 10fps）
     TIME_WINDOW_S = 60    # X 轴时间窗口
 
@@ -624,6 +624,10 @@ class MonitorPanel(ttk.Frame):
         self._history: dict[str, list[tuple[float, float]]] | None = None
         # 告警指示色块：每变量一个 Canvas，超限时变红
         self._warn_indicators: dict[str, tk.Canvas] = {}
+        # 缓存 Font 对象，避免每次 _draw_plot 都 tkfont.Font() 新建（创建销毁开销大）
+        self._legend_font = tkfont.Font(font=('DejaVu Sans', 9))
+        # 实时模式空闲跳过：记录上次绘图时的最新 ts，没新数据就不重绘
+        self._last_drawn_ts: float = 0.0
 
         self._rebuild_buffers()
         self._refresh_var_list()
@@ -1159,6 +1163,9 @@ class MonitorPanel(ttk.Frame):
             # 滚轮 = 以鼠标为中心缩放；Shift+滚轮 = X 轴平移
             canvas.bind('<MouseWheel>', self._on_plot_wheel_zoom)
             canvas.bind('<Shift-MouseWheel>', self._on_plot_wheel_x)
+            # 窗口/Canvas 大小变化时强制重绘（避免空闲跳过导致 resize 后画面不刷新）
+            canvas.bind('<Configure>',
+                        lambda _e: self._force_redraw())
             self._plot_frames.append(frame)
             self._plot_canvases.append(canvas)
         if self._plot_canvases:
@@ -1606,13 +1613,38 @@ class MonitorPanel(ttk.Frame):
         if self._loading:
             self._redraw_id = self.after(self.REDRAW_MS, self._schedule_redraw)
             return
+        # 历史模式：数据固定不变，无需定时重绘（仅在数据变更时手动触发）
+        # 用长间隔心跳保活，以便切回实时模式或关闭窗口时调度链不断
+        if self._history is not None and self._mode == 'curve':
+            self._redraw_id = self.after(1000, self._schedule_redraw)
+            return
         if self._mode == 'curve':
+            # 实时模式：无新数据时跳过重绘，串口空闲时多窗口 CPU 接近 0
+            latest = self._latest_data_ts()
+            if latest is not None and latest == self._last_drawn_ts:
+                self._redraw_id = self.after(self.REDRAW_MS, self._schedule_redraw)
+                return
+            self._last_drawn_ts = latest if latest is not None else self._last_drawn_ts
             self._draw_curves()
             interval = self.REDRAW_MS
         else:
             self._update_data_text()
             interval = self.DATA_MS
         self._redraw_id = self.after(interval, self._schedule_redraw)
+
+    def _latest_data_ts(self) -> float | None:
+        """返回 _buffers 中所有变量的最新 ts（最后追加的点时间戳）。"""
+        latest = None
+        for buf in self._buffers.values():
+            if buf:
+                ts = buf[-1][0]
+                if latest is None or ts > latest:
+                    latest = ts
+        return latest
+
+    def _force_redraw(self):
+        """外部触发强制重绘：让 _schedule_redraw 下一帧不跳过。"""
+        self._last_drawn_ts = 0.0
 
     def _update_data_text(self):
         now = time.time()
@@ -1666,24 +1698,42 @@ class MonitorPanel(ttk.Frame):
     def _draw_curves(self):
         """遍历 self._plots，每个 plot 在自己的 canvas 上绘制。
 
-        若 plot 有 _popout_canvas（单独显示窗口），也一并绘制。
+        分拆到多个 after(0) 任务：每个 plot 一帧，中间让出主线程响应 _drain，
+        避免日志显示因 _draw_curves 阻塞而一卡一卡。
         """
-        for plot in self._plots:
+        plots = list(self._plots)
+        # 总点数 / 状态文本（在所有 plot 绘制完后更新）
+        def _draw_one(i):
+            if self._closed or i >= len(plots):
+                # 全部 plot 画完，更新状态文本
+                self._update_status_text()
+                return
+            plot = plots[i]
             canvas = plot.get('_canvas') or self._canvas
             self._draw_plot(canvas, plot)
             popout = plot.get('_popout_canvas')
             if popout is not None and popout.winfo_exists():
                 self._draw_plot(popout, plot)
+            # 让出主线程：下一个 plot 在下次事件循环 tick 绘制
+            if i + 1 < len(plots):
+                self.after(0, lambda: _draw_one(i + 1))
+            else:
+                self._update_status_text()
+        _draw_one(0)
 
-        total = sum(len(buf) for buf in self._buffers.values())
+    def _update_status_text(self):
+        """更新状态栏点数信息（缓存避免每帧 sum 几十万点）。"""
         if self._history is not None:
             total = sum(len(pts) for pts in self._history.values())
             total_str = f'{total} 点（历史）'
         else:
+            total = sum(len(buf) for buf in self._buffers.values())
             total_str = f'{total} 点'
-        n_plots = len(self._plots)
-        self._status_lbl.configure(
-            text=f'{total_str} | {len(self._vars)} 变量 | {n_plots} 图表')
+        if total != getattr(self, '_last_total', -1):
+            self._last_total = total
+            n_plots = len(self._plots)
+            self._status_lbl.configure(
+                text=f'{total_str} | {len(self._vars)} 变量 | {n_plots} 图表')
 
     def _get_plot_data(self, name: str) -> list[tuple[float, float]]:
         """返回变量对应的 (ts, val) 列表。
@@ -1733,7 +1783,7 @@ class MonitorPanel(ttk.Frame):
         y_label = plot.get('y_label', '')
 
         # 预先计算图例文字最大宽度，动态调整右侧留白
-        legend_font = tkfont.Font(font=('DejaVu Sans', 9))
+        legend_font = self._legend_font
         legend_pad_col = 12 + 4 + 16  # 色块 12 + 间隙 4 + 文字偏移 16
         legend_max_text = 0
         for v in plot_vars:
@@ -1821,6 +1871,18 @@ class MonitorPanel(ttk.Frame):
             # 确保曲线从左边缘延伸，而非从第一个数据点开始留空白
             if pts and pts[0][0] > t_min:
                 pts.insert(0, (t_min, pts[0][1]))
+            # 降采样：点数超过 plot 像素宽度的 1.5 倍时按步长抽样
+            # 减少 create_line 顶点数，降低 _draw_plot 主线程占用
+            max_pts = max(200, int(plot_w * 1.5))
+            if len(pts) > max_pts:
+                step = len(pts) / max_pts
+                sampled = [pts[0]]
+                idx = step
+                while idx < len(pts) - 1:
+                    sampled.append(pts[int(idx)])
+                    idx += step
+                sampled.append(pts[-1])
+                pts = sampled
             series.append((v, pts))
 
         # 自动 Y 范围：仅从窗口内（含锚点）数据计算

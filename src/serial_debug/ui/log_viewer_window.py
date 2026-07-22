@@ -640,6 +640,7 @@ class _FilterPanel(ttk.Frame):
         self._theme = theme
         self._tab: _LogViewTab | None = None
         self._filtered_idx: list[int] = []
+        self._last_scanned_idx = 0   # 增量筛选游标：已扫描到哪一行
         self._on_locate = on_locate
         self._build_widgets()
         self.apply_theme(theme)
@@ -697,22 +698,22 @@ class _FilterPanel(ttk.Frame):
             self._clear_results()
             self._info_lbl.configure(text='无打开的文件')
             return
-        # 绑定实时刷新回调：新行到来时自动重新筛选
+        # 绑定实时刷新回调：新行到来时自动增量筛选
         tab._on_lines_appended = self._on_lines_appended
         self._apply_filter()
 
     def _on_lines_appended(self, _new_count: int):
-        """实时模式下新行追加后触发：重跑筛选并增量追加结果。"""
-        if self._tab is None:
-            return
-        self._apply_filter()
+        """实时模式下新行追加后触发：增量筛选只扫描新增行，避免全量 O(N)。"""
+        self._apply_filter_incremental()
 
     def _clear_results(self):
         for iid in self._tree.get_children():
             self._tree.delete(iid)
         self._filtered_idx = []
+        self._last_scanned_idx = 0
 
     def _apply_filter(self):
+        """全量筛选：扫描所有行，用于初次加载、用户切换过滤类型/正则时。"""
         if self._tab is None:
             return
         ftype = self._filter_var.get()
@@ -744,9 +745,74 @@ class _FilterPanel(ttk.Frame):
             if len(filtered) >= FILTER_RESULT_MAX:
                 break
         self._render_results(filtered, len(lines))
+        self._last_scanned_idx = len(lines)
         suffix = '' if len(filtered) < FILTER_RESULT_MAX else f'（仅显示前 {FILTER_RESULT_MAX} 条）'
         self._info_lbl.configure(
             text=f'{len(filtered)} / {len(lines)} 行 {suffix}')
+
+    def _apply_filter_incremental(self):
+        """增量筛选：实时模式新行到来时，只扫描 [last_scanned, end) 区间，
+        匹配的行追加到 Treeview，避免全量 O(N) 重扫几十万行。"""
+        if self._tab is None:
+            return
+        ftype = self._filter_var.get()
+        regex = self._regex_var.get().strip()
+        try:
+            pat = re.compile(regex) if regex else None
+        except re.error:
+            return  # 正则错误时不增量，下次全量重试会弹错
+        lines = self._tab.all_lines
+        tags = self._tab._line_tags if hasattr(self._tab, '_line_tags') else None
+        start = self._last_scanned_idx
+        if start >= len(lines):
+            return
+        # 类型预筛
+        if ftype == 'AT 响应':
+            type_check = lambda i: RESP_RE.match(lines[i])
+        elif ftype == '警告/错误':
+            type_check = lambda i: (tags[i] if (tags and i < len(tags)) else _LogViewTab._classify(lines[i])) == 'note'
+        elif ftype == '日志':
+            type_check = lambda i: (tags[i] if (tags and i < len(tags)) else _LogViewTab._classify(lines[i])) == 'log'
+        else:
+            type_check = lambda i: True
+        new_filtered = []
+        cap = FILTER_RESULT_MAX - len(self._filtered_idx)
+        for i in range(start, len(lines)):
+            if not type_check(i):
+                continue
+            if pat is not None and not pat.search(lines[i]):
+                continue
+            new_filtered.append(i)
+            if len(new_filtered) >= cap:
+                break
+        self._last_scanned_idx = len(lines)
+        if new_filtered:
+            self._filtered_idx.extend(new_filtered)
+            self._insert_into_tree(new_filtered, lines, tags)
+        suffix = '' if len(self._filtered_idx) < FILTER_RESULT_MAX else f'（仅显示前 {FILTER_RESULT_MAX} 条）'
+        self._info_lbl.configure(
+            text=f'{len(self._filtered_idx)} / {len(lines)} 行 {suffix}')
+
+    def _insert_into_tree(self, idx_list: list[int],
+                          lines: list[str], tags):
+        """把指定行索引批量插入 Treeview（增量追加，不先 clear）。"""
+        def _insert_batch(start: int):
+            end = min(start + FILTER_INSERT_BATCH, len(idx_list))
+            for k in range(start, end):
+                i = idx_list[k]
+                ln = lines[i] if i < len(lines) else ''
+                tag = tags[i] if (tags and i < len(tags)) else _LogViewTab._classify(ln)
+                preview = ln.replace('\t', ' ')[:120]
+                try:
+                    self._tree.insert(
+                        '', 'end', iid=f'L{i}',
+                        text=f'{i+1}',
+                        values=(i + 1, preview, tag), tags=(tag,))
+                except tk.TclError:
+                    pass  # iid 已存在
+            if end < len(idx_list):
+                self.after(10, lambda: _insert_batch(end))
+        _insert_batch(0)
 
     def _render_results(self, filtered: list[int], total: int = 0):
         self._clear_results()
