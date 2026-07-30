@@ -22,14 +22,21 @@ import time
 import math
 import datetime as _dt
 import tkinter as tk
+from array import array as _farray
 from tkinter import ttk, messagebox, colorchooser, filedialog
 from tkinter import font as tkfont
 from collections import deque
 
 try:
-    import themes
+    from serial_debug.infra import themes
+    from serial_debug.infra import config
 except Exception:
-    themes = None
+    try:
+        import themes
+        import config
+    except Exception:
+        themes = None
+        config = None
 
 
 # 日志时间戳（毫秒，10~13 位数字）。例：1783996615491
@@ -67,9 +74,13 @@ def _default_theme():
             return themes.THEMES[themes.resolve(themes.load_pref())]
         except Exception:
             pass
+    # 兜底主题：补全所有代码访问的 key，避免 KeyError 导致弹窗只显示部分内容
     return {
-        'bg': '#1e1e1e', 'panel_bg': '#252526', 'fg': '#cccccc',
-        'muted': '#858585', 'border': '#3c3c3c', 'select_bg': '#264f78',
+        'bg': '#1e1e1e', 'panel_bg': '#252526', 'panel_fg': '#cccccc',
+        'fg': '#cccccc', 'muted': '#858585', 'border': '#3c3c3c',
+        'select_bg': '#264f78',
+        'btn_bg': '#3a3d41', 'btn_hover': '#4c5052', 'btn_active': '#2d2d30',
+        'btn_primary': '#0e639c', 'btn_primary_hover': '#1177bb',
     }
 
 
@@ -91,6 +102,220 @@ def _mono():
     return ('DejaVu Sans Mono', 10)
 
 
+def _size_dialog_to_content(dlg, min_w=320, min_h=200,
+                            parent=None):
+    """让对话框按内容自适应初始尺寸，并居中到父窗口。
+
+    问题背景：很多 Toplevel 弹窗默认尺寸由 Tk 内部布局自然撑开，
+    在不同 DPI/字体下会出现内容被裁剪、按钮看不见、Listbox 只有 1 行高
+    等问题。本函数：
+    1. update_idletasks 触发布局计算
+    2. 用 winfo_reqwidth/reqheight 拿到内容需要的尺寸
+    3. 取 max(需要尺寸, min_w/min_h) 作为初始 geometry
+    4. 设 minsize 防止用户拖小后内容被裁
+    5. resizable(True, True) 让用户可以放大查看更多内容
+    6. 居中到父窗口（若提供）
+    """
+    dlg.update_idletasks()
+    need_w = dlg.winfo_reqwidth()
+    need_h = dlg.winfo_reqheight()
+    w = max(need_w, min_w)
+    h = max(need_h, min_h)
+    try:
+        dlg.geometry(f'{w}x{h}')
+    except Exception:
+        pass
+    try:
+        dlg.minsize(min_w, min_h)
+    except Exception:
+        pass
+    try:
+        dlg.resizable(True, True)
+    except Exception:
+        pass
+    if parent is not None:
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
+            py = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+            px = max(px, 0)
+            py = max(py, 0)
+            dlg.geometry(f'+{px}+{py}')
+        except Exception:
+            pass
+
+
+def _enable_tree_column_resize(tree, min_width=40, edge_tol=6):
+    """让 ttk.Treeview 支持拖拽列分隔线调整列宽。
+
+    ttk.Treeview 默认 heading 分隔线只有 1px，用户很难抓取。
+    这里在 heading 区域监听鼠标：靠近列右边缘 edge_tol 像素时启动拖拽，
+    拖动期间用 tree.column(col, width=...) 实时更新。
+    所有列强制 stretch=False，避免自动伸缩覆盖手动拖拽结果。
+    """
+    state = {'col': None, 'x0': 0, 'w0': 0}
+
+    def col_list():
+        cols = tree.cget('columns') or ()
+        if isinstance(cols, str):
+            cols = tuple(c for c in cols.split() if c)
+        return list(cols)
+
+    def col_right_x(name):
+        x = 0
+        for c in col_list():
+            try:
+                w = tree.column(c, 'width')
+            except Exception:
+                w = 0
+            if c == name:
+                return x + w
+            x += w
+        return None
+
+    def on_press(e):
+        # Tk 不同版本对 heading 与 separator 的 region 命名略不同，统一接受
+        region = tree.identify_region(e.x, e.y)
+        if region not in ('heading', 'separator', 'separator1', 'cell'):
+            # cell 用于在 heading 行的非边缘位置仍允许判断（会被 edge_tol 拦截）
+            return
+        col_id = tree.identify_column(e.x)  # '#1', '#2' ...
+        if not col_id or col_id == '#0':
+            return
+        try:
+            idx = int(col_id.lstrip('#'))
+        except ValueError:
+            return
+        cols = col_list()
+        if idx < 1 or idx > len(cols):
+            return
+        # 拖拽触发点：当前列右边缘 OR 下一列的左边缘（更宽容）
+        name = cols[idx - 1]
+        rx = col_right_x(name)
+        if rx is None:
+            return
+        if abs(e.x - rx) <= edge_tol:
+            state['col'] = name
+            state['x0'] = e.x
+            try:
+                state['w0'] = tree.column(name, 'width')
+            except Exception:
+                state['w0'] = 0
+
+    def on_motion(e):
+        if not state['col']:
+            return
+        new_w = max(min_width, state['w0'] + (e.x - state['x0']))
+        try:
+            # 保留原 stretch 设置：若上层用 stretch=True 想自动分配，
+            # 拖拽后不能强制 False 覆盖掉
+            cur_stretch = tree.column(state['col'], 'stretch')
+            tree.column(state['col'], width=new_w, stretch=cur_stretch)
+        except Exception:
+            pass
+
+    def on_release(_e):
+        state['col'] = None
+
+    tree.bind('<Button-1>', on_press, '+')
+    tree.bind('<B1-Motion>', on_motion, '+')
+    tree.bind('<ButtonRelease-1>', on_release, '+')
+
+    # 鼠标在 heading 列边缘切换光标形状，提示可拖拽
+    def on_motion_cursor(e):
+        region = tree.identify_region(e.x, e.y)
+        if region not in ('heading', 'separator', 'separator1', 'cell'):
+            tree.configure(cursor='')
+            return
+        col_id = tree.identify_column(e.x)
+        if not col_id or col_id == '#0':
+            tree.configure(cursor='')
+            return
+        try:
+            idx = int(col_id.lstrip('#'))
+        except ValueError:
+            tree.configure(cursor='')
+            return
+        cols = col_list()
+        if idx < 1 or idx > len(cols):
+            tree.configure(cursor='')
+            return
+        rx = col_right_x(cols[idx - 1])
+        if rx is not None and abs(e.x - rx) <= edge_tol:
+            tree.configure(cursor='sb_h_double_arrow')
+        else:
+            tree.configure(cursor='')
+
+    tree.bind('<Motion>', on_motion_cursor, '+')
+    tree.bind('<Leave>', lambda _e: tree.configure(cursor=''), '+')
+
+
+def _enable_tree_column_stretch(tree, ratios, min_widths=None):
+    """绑定 <Configure>：当 treeview 宽度变化时按比例自动分配各列宽度。
+
+    ratios: dict[col_name, float] —— 每列占比（可不等比），如
+        {'label': 3, 'tag': 1, 'pos': 1}
+    min_widths: 可选每列最小宽度，避免压缩到不可读。
+    用户手动拖拽后的新宽度会作为下次分配的基准比例。
+    """
+    if not ratios:
+        return
+    state = {'last_w': 0}
+
+    def col_list():
+        cols = tree.cget('columns') or ()
+        if isinstance(cols, str):
+            cols = tuple(c for c in cols.split() if c)
+        return list(cols)
+
+    def apply_dist():
+        cols = col_list()
+        try:
+            total_w = tree.winfo_width()
+        except Exception:
+            return
+        if total_w <= 1:
+            return
+        # 用当前各列宽度作为权重（用户拖拽过就以新比例为准），
+        # 缺失列回退到 ratios
+        cur = {}
+        for c in cols:
+            try:
+                w = tree.column(c, 'width')
+            except Exception:
+                w = 0
+            cur[c] = max(w, 1)
+        # 归一化权重
+        sum_cur = sum(cur.get(c, 0) for c in cols)
+        sum_ratio = sum(ratios.get(c, 1) for c in cols)
+        if sum_cur <= 0 or sum_ratio <= 0:
+            return
+        # 用当前宽度比例作为分配权重，若比例稳定则与 ratios 等效
+        for c in cols:
+            w_cur = cur.get(c, 0)
+            r = w_cur / sum_cur if sum_cur else (ratios.get(c, 1) / sum_ratio)
+            new_w = int(total_w * r)
+            if min_widths and c in min_widths:
+                new_w = max(new_w, min_widths[c])
+            try:
+                tree.column(c, width=new_w, stretch=False)
+            except Exception:
+                pass
+
+    def on_configure(_e):
+        try:
+            cur_w = tree.winfo_width()
+        except Exception:
+            return
+        if cur_w != state['last_w']:
+            state['last_w'] = cur_w
+            apply_dist()
+
+    # 初次布局后做一次分配
+    tree.after_idle(apply_dist)
+    tree.bind('<Configure>', on_configure, '+')
+
+
 class _VarDialog(tk.Toplevel):
     """添加/编辑监视变量的对话框。"""
 
@@ -98,8 +323,14 @@ class _VarDialog(tk.Toplevel):
                  used_names=(), theme=None):
         super().__init__(parent)
         self.title(title)
-        self.transient(parent)
-        self.resizable(False, False)
+        # 不调用 transient：GNOME/Mutter 把 transient 窗口当对话框处理，
+        # 会移除最大化按钮、禁用边框拖拽缩放，导致弹窗只有最小化/关闭按钮
+        # 且尺寸被锁死。改用 lift+focus 保持层级。
+        try:
+            self.lift(parent)
+            self.focus_force()
+        except Exception:
+            pass
         self.result = None
         self._used_names = set(used_names)
         if initial:
@@ -165,6 +396,10 @@ class _VarDialog(tk.Toplevel):
         self.protocol('WM_DELETE_WINDOW', self._cancel)
         self.bind('<Return>', lambda _e: self._ok())
         self.bind('<Escape>', lambda _e: self._cancel())
+        # 内容完整可见 + 可调整大小（原 resizable(False, False) 会让用户
+        # 在不同字体/DPI 下无法看到全部 Entry/按钮）
+        _size_dialog_to_content(self, min_w=480, min_h=320,
+                                parent=parent)
 
     def _pick_color(self):
         c = colorchooser.askcolor(self.color_var.get())
@@ -228,7 +463,13 @@ class _BmsVarDialog(tk.Toplevel):
                  initial_plot=None, theme=None):
         super().__init__(parent)
         self.title(title)
-        self.transient(parent)
+        # 不调用 transient：GNOME/Mutter 把 transient 窗口当对话框处理，
+        # 会移除最大化按钮、禁用边框拖拽缩放。改用 lift+focus 保持层级。
+        try:
+            self.lift(parent)
+            self.focus_force()
+        except Exception:
+            pass
         self.resizable(True, True)
         self.result = None
         self._used_names = set(used_names)
@@ -346,6 +587,11 @@ class _BmsVarDialog(tk.Toplevel):
         self.protocol('WM_DELETE_WINDOW', self._cancel)
         self.bind('<Return>', lambda _e: self._ok())
         self.bind('<Escape>', lambda _e: self._cancel())
+        # 显式初始尺寸 + 最小尺寸，避免 BMS 变量对话框在不同字体/DPI 下
+        # 默认尺寸过小导致分组下拉、变量名、说明、Y 范围、告警、显示图表等
+        # 多行 Entry 互相挤压或被裁切
+        _size_dialog_to_content(self, min_w=520, min_h=420,
+                                parent=parent)
 
     def _build_groups(self) -> dict[str, list[str]]:
         """按 log_tag 将注册表变量分组，返回 {组名: [变量名列表]}。
@@ -485,8 +731,25 @@ class _PlotDialog(tk.Toplevel):
                  theme=None):
         super().__init__(parent)
         self.title(title)
-        self.transient(parent)
+        # 不调用 transient：GNOME/Mutter 把 transient 窗口当对话框处理，
+        # 会移除最大化按钮、禁用边框拖拽缩放。改用 lift+focus 保持层级。
+        try:
+            self.lift(parent)
+            self.focus_force()
+        except Exception:
+            pass
         self.resizable(True, True)
+        # 显式初始尺寸 + 最小尺寸，避免窗口被默认撑小或被变量数量撑到屏外
+        self.geometry('760x560')
+        self.minsize(560, 420)
+        # 居中到父窗口
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + (parent.winfo_width() - 760) // 2
+            py = parent.winfo_rooty() + (parent.winfo_height() - 560) // 2
+            self.geometry(f'+{max(px, 0)}+{max(py, 0)}')
+        except Exception:
+            pass
         self.result = None
         if theme:
             self.configure(bg=theme['bg'])
@@ -497,29 +760,96 @@ class _PlotDialog(tk.Toplevel):
         ttk.Label(f, text='标题').grid(row=0, column=0, sticky='w', pady=4)
         self.title_var = tk.StringVar(
             value=initial.get('title', '数据曲线') if initial else '数据曲线')
-        ttk.Entry(f, textvariable=self.title_var, width=30
+        ttk.Entry(f, textvariable=self.title_var, width=36
                   ).grid(row=0, column=1, pady=4, padx=8, columnspan=2)
 
         ttk.Label(f, text='X 轴标签').grid(row=1, column=0, sticky='w', pady=4)
         self.x_var = tk.StringVar(
             value=initial.get('x_label', '时间 (s)') if initial else '时间 (s)')
-        ttk.Entry(f, textvariable=self.x_var, width=30
+        ttk.Entry(f, textvariable=self.x_var, width=36
                   ).grid(row=1, column=1, pady=4, padx=8, columnspan=2)
 
         ttk.Label(f, text='Y 轴标签').grid(row=2, column=0, sticky='w', pady=4)
         self.y_var = tk.StringVar(
             value=initial.get('y_label', '值') if initial else '值')
-        ttk.Entry(f, textvariable=self.y_var, width=30
+        ttk.Entry(f, textvariable=self.y_var, width=36
                   ).grid(row=2, column=1, pady=4, padx=8, columnspan=2)
 
+        # 显示选项：在曲线上叠加最值标注 / 数据表格；鼠标悬停查看点详情
+        ttk.Label(f, text='显示选项', font=_font('bold')
+                  ).grid(row=3, column=0, columnspan=3, sticky='w',
+                         pady=(8, 2))
+        opt_frame = ttk.Frame(f)
+        opt_frame.grid(row=3, column=0, columnspan=3, sticky='w',
+                        padx=(0, 4), pady=(0, 2))
+        # NOTE: 上面覆盖了 row 3 的 label，下面用单独的 row 容纳 checkboxes
+        opt_frame.grid_rowconfigure(0, weight=0)
+        self.show_max_var = tk.BooleanVar(
+            value=initial.get('show_max', False) if initial else False)
+        self.show_min_var = tk.BooleanVar(
+            value=initial.get('show_min', False) if initial else False)
+        self.show_avg_var = tk.BooleanVar(
+            value=initial.get('show_avg', False) if initial else False)
+        self.show_last_var = tk.BooleanVar(
+            value=initial.get('show_last', False) if initial else False)
+        self.show_table_var = tk.BooleanVar(
+            value=initial.get('show_table', False) if initial else False)
+        self.show_hover_var = tk.BooleanVar(
+            value=initial.get('show_hover', True) if initial else True)
+        ttk.Checkbutton(opt_frame, text='最大值',
+                        variable=self.show_max_var
+                        ).pack(side='left', padx=4)
+        ttk.Checkbutton(opt_frame, text='最小值',
+                        variable=self.show_min_var
+                        ).pack(side='left', padx=4)
+        ttk.Checkbutton(opt_frame, text='均值线',
+                        variable=self.show_avg_var
+                        ).pack(side='left', padx=4)
+        ttk.Checkbutton(opt_frame, text='末值点',
+                        variable=self.show_last_var
+                        ).pack(side='left', padx=4)
+        ttk.Checkbutton(opt_frame, text='数据表格',
+                        variable=self.show_table_var
+                        ).pack(side='left', padx=4)
+        ttk.Checkbutton(opt_frame, text='悬停提示',
+                        variable=self.show_hover_var
+                        ).pack(side='left', padx=4)
+
         ttk.Label(f, text='包含变量（多选）', font=_font('bold')
-                  ).grid(row=3, column=0, columnspan=3, sticky='w', pady=(8, 2))
-        vars_wrap = ttk.Frame(f)
-        vars_wrap.grid(row=4, column=0, columnspan=3, sticky='nsew',
-                       padx=(0, 4))
-        f.rowconfigure(4, weight=1)
+                  ).grid(row=4, column=0, columnspan=3, sticky='w', pady=(8, 2))
+        # 变量列表放进可滚动容器：变量多时不再把对话框撑高到屏幕外，
+        # 同时显示完整 label（不再截断为 10 字符）
+        vars_outer = ttk.Frame(f)
+        vars_outer.grid(row=5, column=0, columnspan=3, sticky='nsew',
+                        padx=(0, 4), pady=2)
+        f.rowconfigure(5, weight=1)
         f.columnconfigure(1, weight=1)
         f.columnconfigure(2, weight=1)
+
+        vars_canvas = tk.Canvas(vars_outer, highlightthickness=0,
+                                borderwidth=0,
+                                bg=theme['bg'] if theme else '#ffffff')
+        vars_canvas.pack(side='left', fill='both', expand=True)
+        vars_sb = ttk.Scrollbar(vars_outer, orient='vertical',
+                                command=vars_canvas.yview)
+        vars_sb.pack(side='right', fill='y')
+        vars_canvas.configure(yscrollcommand=vars_sb.set)
+        vars_inner = ttk.Frame(vars_canvas)
+        self._vars_inner = vars_inner
+        vars_window = vars_canvas.create_window((0, 0), window=vars_inner,
+                                                anchor='nw')
+        # 让 inner 跟随 canvas 宽度（避免水平方向留白或溢出）
+        def _resize_inner(_e=None):
+            vars_canvas.itemconfigure(vars_window,
+                                       width=vars_canvas.winfo_width())
+        vars_canvas.bind('<Configure>', _resize_inner, '+')
+        # 鼠标滚轮滚动变量列表
+        def _wheel(e):
+            vars_canvas.yview_scroll(int(-e.delta / 120), 'units')
+        vars_canvas.bind('<Enter>',
+                        lambda _e: vars_canvas.bind_all('<MouseWheel>', _wheel))
+        vars_canvas.bind('<Leave>',
+                        lambda _e: vars_canvas.unbind_all('<MouseWheel>'))
 
         initial_vars = set(initial.get('vars', [])) if initial else set()
         self._var_checks: dict[str, tk.BooleanVar] = {}
@@ -528,16 +858,20 @@ class _PlotDialog(tk.Toplevel):
             name = v['name']
             bv = tk.BooleanVar(value=name in initial_vars)
             label = v.get('label', '') or name
-            # 标签太长截断，避免对话框过宽
-            disp = label if len(label) <= 10 else label[:9] + '…'
-            cb = FillCheck(vars_wrap, text=f'{disp} ({name})', variable=bv)
+            # 完整 label，让 ttk.Label 自带省略由布局控制
+            cb = FillCheck(vars_inner, text=f'{label} ({name})', variable=bv)
             cb.grid(row=i // n_cols, column=i % n_cols,
-                    sticky='w', padx=4, pady=1)
+                    sticky='ew', padx=4, pady=1)
             self._var_checks[name] = bv
+        for c in range(n_cols):
+            vars_inner.columnconfigure(c, weight=1, minsize=160)
+        # 让 inner 更新后才能正确设置 scrollregion
+        vars_inner.update_idletasks()
+        vars_canvas.configure(scrollregion=vars_canvas.bbox('all'))
 
         # 全选/全不选
         sel_btns = ttk.Frame(f)
-        sel_btns.grid(row=5, column=0, columnspan=3, sticky='w', pady=(6, 0))
+        sel_btns.grid(row=6, column=0, columnspan=3, sticky='w', pady=(6, 0))
         ttk.Button(sel_btns, text='全选',
                    command=lambda: self._set_all(True)
                    ).pack(side='left', padx=4)
@@ -546,7 +880,7 @@ class _PlotDialog(tk.Toplevel):
                    ).pack(side='left', padx=4)
 
         btns = ttk.Frame(f)
-        btns.grid(row=6, column=0, columnspan=3, pady=(10, 0))
+        btns.grid(row=7, column=0, columnspan=3, pady=(10, 0))
         ttk.Button(btns, text='确定', command=self._ok
                    ).pack(side='left', padx=4)
         ttk.Button(btns, text='取消', command=self._cancel
@@ -567,6 +901,12 @@ class _PlotDialog(tk.Toplevel):
         self.result = {
             'title': title, 'x_label': x_label, 'y_label': y_label,
             'vars': chosen,
+            'show_max': self.show_max_var.get(),
+            'show_min': self.show_min_var.get(),
+            'show_avg': self.show_avg_var.get(),
+            'show_last': self.show_last_var.get(),
+            'show_table': self.show_table_var.get(),
+            'show_hover': self.show_hover_var.get(),
         }
         self.destroy()
 
@@ -600,8 +940,13 @@ class MonitorPanel(ttk.Frame):
         self._closed = False
         self._loading = False  # 加载历史日志期间为 True，跳过定时重绘避免卡顿
         self._theme = _default_theme()
+        # 鼠标悬停 tooltip：Toplevel 单例，跟随鼠标显示点详情
+        self._hover_tip: tk.Toplevel | None = None
+        self._hover_canvas: tk.Canvas | None = None
         # 多图表配置：每个图表 dict = {title, x_label, y_label, vars: [names]}
-        # 若传入 plots 则用之；否则默认一个图表包含全部变量
+        # 若传入 plots 则用之；否则默认一个空图表（vars=[]），
+        # 让用户在编辑图表时再勾选变量。这样初次打开时图例为空、绘制轻量，
+        # 打开速度快；用户编辑后的配置通过 plots 参数传入即生效。
         if plots:
             self._plots: list[dict] = [self._normalize_plot(p)
                                        for p in plots]
@@ -610,7 +955,7 @@ class MonitorPanel(ttk.Frame):
                 'title': '数据曲线',
                 'x_label': '时间 (s)',
                 'y_label': '值',
-                'vars': [v['name'] for v in self._vars],
+                'vars': [],
             }]
         self._plot_frames: list[ttk.Frame] = []
         self._plot_canvases: list[tk.Canvas] = []
@@ -626,6 +971,9 @@ class MonitorPanel(ttk.Frame):
         self._warn_indicators: dict[str, tk.Canvas] = {}
         # 缓存 Font 对象，避免每次 _draw_plot 都 tkfont.Font() 新建（创建销毁开销大）
         self._legend_font = tkfont.Font(font=('DejaVu Sans', 9))
+        self._axis_font = tkfont.Font(font=('DejaVu Sans', 9))
+        self._title_font = tkfont.Font(font=('DejaVu Sans', 10, 'bold'))
+        self._small_font = tkfont.Font(font=('DejaVu Sans', 8))
         # 实时模式空闲跳过：记录上次绘图时的最新 ts，没新数据就不重绘
         self._last_drawn_ts: float = 0.0
 
@@ -640,6 +988,7 @@ class MonitorPanel(ttk.Frame):
     def _build_toolbar(self):
         bar = ttk.Frame(self, padding=(8, 6))
         bar.pack(fill='x')
+        self._toolbar = bar
 
         ttk.Button(bar, text='添加变量', command=self._add_var).pack(side='left')
         ttk.Button(bar, text='编辑选中', command=self._edit_var).pack(side='left', padx=4)
@@ -666,6 +1015,22 @@ class MonitorPanel(ttk.Frame):
         mode_box.bind('<<ComboboxSelected>>', lambda _e: self._on_mode_change())
 
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
+        # 配置菜单：悬停提示模式（仅当前曲线 / 显示全部曲线）
+        self._hover_mode = tk.StringVar(value='current')
+        cfg_btn = ttk.Menubutton(bar, text='配置', direction='below')
+        cfg_menu = tk.Menu(cfg_btn, tearoff=False)
+        cfg_btn['menu'] = cfg_menu
+        cfg_btn.pack(side='left')
+        hover_sub = tk.Menu(cfg_menu, tearoff=False)
+        cfg_menu.add_cascade(label='悬停提示', menu=hover_sub)
+        hover_sub.add_radiobutton(label='仅当前曲线',
+                                    variable=self._hover_mode,
+                                    value='current')
+        hover_sub.add_radiobutton(label='显示全部曲线',
+                                    variable=self._hover_mode,
+                                    value='all')
+
+        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
         ttk.Button(bar, text='清空数据', command=self._clear_data).pack(side='left')
 
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
@@ -686,11 +1051,35 @@ class MonitorPanel(ttk.Frame):
 
     def _build_content(self):
         # 外层水平 PanedWindow：左变量列表 + 右曲线/数值面板
-        pane = ttk.PanedWindow(self, orient='horizontal')
+        # 用自定义 style 让 sash 更显眼，避免 BMS 主题下 1px 分隔线
+        # 用户抓不到，导致"无法调节各窗口宽高"
+        style = ttk.Style()
+        try:
+            style.configure('MonitorSash.TPanedwindow',
+                             background=self._theme.get('border', '#3c3c3c'))
+            style.configure('MonitorSash.TPanedwindow.Sash',
+                             sashthickness=8, gripcount=0)
+        except Exception:
+            pass
+        try:
+            pane = ttk.PanedWindow(self, orient='horizontal',
+                                   style='MonitorSash.TPanedwindow')
+        except Exception:
+            pane = ttk.PanedWindow(self, orient='horizontal')
         pane.pack(fill='both', expand=True)
+        self._content_pane = pane
 
-        left = ttk.Frame(pane, width=260)
+        left = ttk.Frame(pane, width=320)
         pane.add(left, weight=0)
+        # 保存左侧变量列表 frame 引用，视图菜单可隐藏/显示
+        self._var_list_frame = left
+        # 通过 paneconfigure 设 minsize：某些 Tk 版本（含 docker python3.12
+        # 打包出的 binary）的 add 子命令不接受 -minsize 选项，会直接
+        # 抛 TclError 导致整个 panel 构建失败 → Toplevel 空白（白屏）
+        try:
+            pane.paneconfigure(left, minsize=280)
+        except Exception:
+            pass
         ttk.Label(left, text='变量列表', font=_font('bold')).pack(
             anchor='w', padx=8, pady=(8, 4))
         self._var_tree = ttk.Treeview(
@@ -698,10 +1087,19 @@ class MonitorPanel(ttk.Frame):
             height=12, selectmode='browse')
         self._var_tree.heading('name', text='名称')
         self._var_tree.heading('regex', text='正则')
-        self._var_tree.column('name', width=90, stretch=False)
-        self._var_tree.column('regex', width=160)
-        self._var_tree.pack(fill='both', expand=True, padx=4, pady=4)
+        self._var_tree.column('name', width=90, stretch=False,
+                              anchor='w', minwidth=60)
+        self._var_tree.column('regex', width=180, stretch=False,
+                              anchor='w', minwidth=60)
+        # 水平滚动条：列总宽超过可见宽度时可横向滚动查看完整内容
+        hsb = ttk.Scrollbar(left, orient='horizontal',
+                            command=self._var_tree.xview)
+        self._var_tree.configure(xscrollcommand=hsb.set)
+        self._var_tree.pack(fill='both', expand=True, padx=4, pady=(4, 0))
+        hsb.pack(fill='x', padx=4, pady=(0, 4))
         self._var_tree.bind('<Double-1>', lambda _e: self._edit_var())
+        # 启用列宽拖拽（ttk.Treeview 默认分隔线只有 1px，体验差）
+        _enable_tree_column_resize(self._var_tree)
 
         right = ttk.Frame(pane)
         pane.add(right, weight=3)
@@ -961,7 +1359,14 @@ class MonitorPanel(ttk.Frame):
         dlg = tk.Toplevel(self.winfo_toplevel())
         dlg.title(f'统计信息（{source}）')
         dlg.geometry('680x480')
-        dlg.transient(self.winfo_toplevel())
+        dlg.minsize(520, 320)
+        dlg.resizable(True, True)
+        # 不调用 transient：避免 GNOME 把它当对话框锁死尺寸
+        try:
+            dlg.lift(self.winfo_toplevel())
+            dlg.focus_force()
+        except Exception:
+            pass
         try:
             dlg.configure(bg=self._theme['bg'])
         except Exception:
@@ -995,6 +1400,12 @@ class MonitorPanel(ttk.Frame):
                 f'{sum(vals)/len(vals):g}', len(vals)))
         ttk.Button(dlg, text='关闭', command=dlg.destroy
                    ).pack(side='bottom', pady=4)
+        _size_dialog_to_content(dlg, min_w=520, min_h=320,
+                                parent=self.winfo_toplevel())
+        try:
+            dlg.geometry('680x480')
+        except Exception:
+            pass
 
     def _sync_plots_var_renamed(self, old_name: str, new_name: str):
         """变量改名后，同步更新所有 plot 的 vars 引用。"""
@@ -1124,11 +1535,15 @@ class MonitorPanel(ttk.Frame):
             child.destroy()
         self._plot_frames = []
         self._plot_canvases = []
-        # 清除旧的 grid 配置
-        for i in range(container.grid_size()[0]):
-            container.rowconfigure(i, weight=0)
-        for i in range(container.grid_size()[1]):
-            container.columnconfigure(i, weight=0)
+        # 清除旧的 grid 配置：grid_size() 返回 (cols, rows)
+        # 必须按对应轴重置：rows → rowconfigure, cols → columnconfigure
+        # 否则从 2 plot 删到 1 plot 时，col 1 的 weight=1 不会清零，
+        # 导致剩余 1 个 plot 只占一半宽度，另一半是空白
+        n_cols, n_rows = container.grid_size()
+        for r in range(n_rows):
+            container.rowconfigure(r, weight=0, minsize=0)
+        for c in range(n_cols):
+            container.columnconfigure(c, weight=0, minsize=0)
         n = len(self._plots)
         if n == 0:
             return
@@ -1163,6 +1578,9 @@ class MonitorPanel(ttk.Frame):
             # 滚轮 = 以鼠标为中心缩放；Shift+滚轮 = X 轴平移
             canvas.bind('<MouseWheel>', self._on_plot_wheel_zoom)
             canvas.bind('<Shift-MouseWheel>', self._on_plot_wheel_x)
+            # 鼠标悬停：显示最近点详情（plot 配置 show_hover 控制开关）
+            canvas.bind('<Motion>', self._on_plot_hover)
+            canvas.bind('<Leave>', self._on_plot_leave)
             # 窗口/Canvas 大小变化时强制重绘（避免空闲跳过导致 resize 后画面不刷新）
             canvas.bind('<Configure>',
                         lambda _e: self._force_redraw())
@@ -1170,6 +1588,9 @@ class MonitorPanel(ttk.Frame):
             self._plot_canvases.append(canvas)
         if self._plot_canvases:
             self._canvas = self._plot_canvases[0]
+        # 重建后必须强制下一帧重绘：否则实时模式无新数据时会跳过，
+        # 导致编辑/删除图表后新画布空白，曲线不显示
+        self._force_redraw()
 
     # ---- 曲线图交互：平移 / 框选缩放 / 滚轮 slip / 右键菜单 / 单独显示 ----
     def _canvas_plot(self, canvas: tk.Canvas) -> dict | None:
@@ -1374,6 +1795,252 @@ class MonitorPanel(ttk.Frame):
         plot['_zoom'] = (t_min, t_max, y_lo + d, y_hi + d)
         self._draw_plot(event.widget, plot)
 
+    # ---- 鼠标悬停 tooltip：显示最近点详情 ------------------------------
+    def _on_plot_hover(self, event):
+        """鼠标在画布上移动：找最近点，弹出 tooltip 显示数据详情。
+
+        模式由 self._hover_mode 决定：
+        - 'current': 找像素距离最近的单个点，显示单条曲线信息
+        - 'all':     按鼠标 x 对应的时间，显示每条曲线在该时间附近的值
+        """
+        canvas: tk.Canvas = event.widget
+        plot = self._canvas_plot(canvas)
+        if plot is None:
+            return
+        # 默认开启；plot 配置可关
+        if plot.get('show_hover', True) is False:
+            self._hide_hover()
+            return
+        geom = plot.get('_geom')
+        stats = plot.get('_stats_cache')
+        if not geom or not stats:
+            self._hide_hover()
+            return
+        pad_l, pad_t, plot_w, plot_h, t_min, t_max, y_lo, y_hi = geom
+        if plot_w <= 0 or plot_h <= 0:
+            return
+        # 表格 overlay 区域：在表格内时不显示点提示
+        tbl_rect = plot.get('_table_rect')
+        if tbl_rect and tbl_rect[0] <= event.x <= tbl_rect[2] \
+                and tbl_rect[1] <= event.y <= tbl_rect[3]:
+            self._hide_hover()
+            return
+        if t_max <= t_min:
+            self._hide_hover()
+            return
+        # 鼠标 x 转数据时间
+        t_at = t_min + (event.x - pad_l) / plot_w * (t_max - t_min)
+
+        mode = self._hover_mode.get() or 'current'
+        if mode == 'all':
+            self._hover_show_all(plot, stats, t_at, pad_l, pad_t,
+                                  plot_w, plot_h, t_min, t_max,
+                                  y_lo, y_hi, canvas, event)
+        else:
+            self._hover_show_current(stats, t_at, pad_l, pad_t,
+                                       plot_w, plot_h, t_min, t_max,
+                                       y_lo, y_hi, canvas, event)
+
+    def _hover_show_current(self, stats, t_at, pad_l, pad_t,
+                              plot_w, plot_h, t_min, t_max,
+                              y_lo, y_hi, canvas, event):
+        """仅当前曲线模式：找像素距离最近的点。"""
+        SNAP_PX = 15  # 抓取半径：15px 内才算"在曲线上"
+        best = None  # (px_dist, name, ts, val, color, mx, my)
+        for st in stats:
+            if not st or not st.get('pts'):
+                continue
+            pts = st['pts']
+            # pts 按 ts 升序，二分定位 ts 最近候选
+            lo, hi = 0, len(pts) - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if pts[mid][0] < t_at:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            cand = []
+            if lo < len(pts):
+                cand.append(lo)
+            if lo > 0:
+                cand.append(lo - 1)
+            for idx in cand:
+                p_ts, p_val = pts[idx]
+                mx = pad_l + plot_w * (p_ts - t_min) / (t_max - t_min) \
+                    if (t_max > t_min) else pad_l
+                my = pad_t + plot_h * (y_hi - p_val) / (y_hi - y_lo) \
+                    if (y_hi > y_lo) else pad_t
+                dx = event.x - mx
+                dy = event.y - my
+                dist = (dx * dx + dy * dy) ** 0.5
+                if best is None or dist < best[0]:
+                    best = (dist, st['name'], p_ts, p_val,
+                            st['color'], mx, my)
+        if best is None or best[0] > SNAP_PX:
+            self._hide_hover()
+            return
+        _, name, p_ts, p_val, color, mx, my = best
+        try:
+            t_str = _dt.datetime.fromtimestamp(p_ts).strftime(
+                '%Y-%m-%d %H:%M:%S')
+        except (ValueError, OSError):
+            t_str = f't={p_ts:g}'
+        # 第一行：时间（无图标），其余数据行带变量色图标
+        rows = [
+            (f'时间: {t_str}', None),
+            (f'{name}: {p_val:g}', color),
+        ]
+        # 附加统计
+        st = next((s for s in stats
+                    if s and s['name'] == name), None)
+        if st:
+            rows.append(
+                (f'范围: {st["min_v"]:g} ~ {st["max_v"]:g} '
+                 f'均值 {st["avg_v"]:g}', None))
+        self._show_hover(canvas, rows, event.x_root,
+                          event.y_root, mx, my)
+
+    def _hover_show_all(self, plot, stats, t_at, pad_l, pad_t,
+                         plot_w, plot_h, t_min, t_max,
+                         y_lo, y_hi, canvas, event):
+        """显示全部曲线模式：按鼠标 x 时间显示每条曲线的值。"""
+        per_series = []
+        snap_ts = None
+        for st in stats:
+            if not st or not st.get('pts'):
+                continue
+            pts = st['pts']
+            lo, hi = 0, len(pts) - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if pts[mid][0] < t_at:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            cand = []
+            if lo < len(pts):
+                cand.append(lo)
+            if lo > 0:
+                cand.append(lo - 1)
+            if not cand:
+                continue
+            best_idx = min(cand, key=lambda i: abs(pts[i][0] - t_at))
+            p_ts, p_val = pts[best_idx]
+            per_series.append((st, p_ts, p_val))
+            if snap_ts is None or abs(p_ts - t_at) < abs(snap_ts - t_at):
+                snap_ts = p_ts
+        if not per_series:
+            self._hide_hover()
+            return
+        try:
+            t_str = _dt.datetime.fromtimestamp(snap_ts).strftime(
+                '%Y-%m-%d %H:%M:%S')
+        except (ValueError, OSError):
+            t_str = f't={snap_ts:g}'
+        # 第一行：时间（无图标），其余每行带变量色图标
+        rows = [(f'时间: {t_str}', None)]
+        for st, p_ts, p_val in per_series:
+            rows.append(
+                (f'{st["name"]}: {p_val:g}  '
+                 f'(范围 {st["min_v"]:g} ~ {st["max_v"]:g}, '
+                 f'均值 {st["avg_v"]:g})',
+                 st['color']))
+        # 颜色用第一条曲线的色，锚点用 snap_ts 对应的 x + 鼠标 y
+        mx = pad_l + plot_w * (snap_ts - t_min) / (t_max - t_min) \
+            if t_max > t_min else pad_l
+        my = event.y
+        self._show_hover(canvas, rows, event.x_root,
+                          event.y_root, mx, my)
+
+    def _on_plot_leave(self, _event):
+        self._hide_hover()
+
+    def _show_hover(self, canvas, rows, screen_x, screen_y,
+                     plot_x, plot_y):
+        """在鼠标位置旁显示 tooltip Toplevel。
+
+        rows: list[(text, color_or_None)]。color 非 None 时在该行左侧
+        画一个小色块（与文字同高度），用于区分变量/曲线。
+        """
+        if self._hover_tip is None or not self._hover_tip.winfo_exists():
+            tip = tk.Toplevel(canvas)
+            tip.wm_overrideredirect(True)  # 无边框
+            tip.configure(bg=self._theme.get('panel_bg', '#252526'))
+            self._hover_tip = tip
+            # 用 Canvas 画图标 + 文字（Label 嵌入色块难做）
+            self._hover_cv = tk.Canvas(
+                tip, bg=self._theme.get('panel_bg', '#252526'),
+                highlightthickness=0, borderwidth=0)
+            self._hover_cv.pack(fill='both', expand=True)
+        else:
+            tip = self._hover_tip
+        cv = self._hover_cv
+        cv.delete('all')
+        font = self._small_font
+        linespace = font.metrics('linespace')
+        # 色块尺寸：与文字行高匹配（小一点显得协调）
+        icon_size = max(8, linespace - 3)
+        pad = 6
+        gap = 5
+        row_h = linespace + 2
+
+        # 计算文字最大宽度，确定画布宽度
+        max_text_w = 0
+        for text, _color in rows:
+            w = font.measure(text)
+            if w > max_text_w:
+                max_text_w = w
+        tip_w = pad + icon_size + gap + max_text_w + pad
+        tip_h = pad + row_h * len(rows) + pad
+
+        y = pad
+        fg_color = self._theme.get('fg', '#cccccc')
+        for text, color in rows:
+            if color is not None:
+                cx = pad
+                cy = y + (row_h - icon_size) // 2
+                # 圆形小图标：比方形更柔和，与文字协调
+                cv.create_oval(cx, cy, cx + icon_size, cy + icon_size,
+                               fill=color, outline='')
+                text_x = pad + icon_size + gap
+            else:
+                text_x = pad
+            cv.create_text(text_x, y + row_h / 2, text=text,
+                           fill=fg_color, anchor='w', font=font)
+            y += row_h
+
+        cv.configure(width=tip_w, height=tip_h)
+        # 计算尺寸并定位：鼠标右下方，避免贴边
+        x = screen_x + 14
+        y_pos = screen_y + 14
+        # 屏幕右/下溢出则翻到左/上方
+        try:
+            sw = tip.winfo_screenwidth()
+            sh = tip.winfo_screenheight()
+            if x + tip_w > sw - 4:
+                x = screen_x - tip_w - 14
+            if y_pos + tip_h > sh - 4:
+                y_pos = screen_y - tip_h - 14
+        except Exception:
+            pass
+        tip.geometry(f'+{int(x)}+{int(y_pos)}')
+        # 若之前 withdraw 过，需 deiconify 才能重新显示
+        try:
+            tip.wm_deiconify()
+        except Exception:
+            pass
+        tip.lift()
+        self._hover_canvas = canvas
+
+    def _hide_hover(self):
+        if self._hover_tip is not None:
+            try:
+                if self._hover_tip.winfo_exists():
+                    self._hover_tip.withdraw()
+            except Exception:
+                pass
+        self._hover_canvas = None
+
     def _show_plot_menu(self, event):
         """右键单击：弹出菜单。"""
         canvas: tk.Canvas = event.widget
@@ -1508,16 +2175,23 @@ class MonitorPanel(ttk.Frame):
         t = self._theme
         dlg = tk.Toplevel(self.winfo_toplevel())
         dlg.title(title)
-        dlg.transient(self.winfo_toplevel())
-        dlg.resizable(False, False)
+        # 不调用 transient：避免 GNOME 把它当对话框锁死尺寸
+        try:
+            dlg.lift(self.winfo_toplevel())
+            dlg.focus_force()
+        except Exception:
+            pass
         dlg.configure(bg=t['bg'])
         result = {'idx': None}
         f = ttk.Frame(dlg, padding=12)
         f.pack(fill='both', expand=True)
         ttk.Label(f, text='选择图表：', font=_font('bold')).pack(
             anchor='w', pady=(0, 4))
+        # Listbox 高度按内容自适应：每行 22px，至少 4 行可见，最多 14 行
+        n_items = max(1, len(names))
+        list_h = max(4, min(n_items, 14))
         lb = tk.Listbox(f, selectmode='single', font=_font(),
-                        height=min(len(names), 10),
+                        height=list_h,
                         bg=t['panel_bg'], fg=t['panel_fg'],
                         selectbackground=t['select_bg'],
                         selectforeground='#ffffff',
@@ -1525,6 +2199,8 @@ class MonitorPanel(ttk.Frame):
         lb.pack(fill='both', expand=True)
         for n in names:
             lb.insert('end', n)
+        if names:
+            lb.selection_set(0)
 
         def _ok(_e=None):
             sel = lb.curselection()
@@ -1545,6 +2221,15 @@ class MonitorPanel(ttk.Frame):
         dlg.bind('<Return>', _ok)
         dlg.bind('<Escape>', _cancel)
         dlg.protocol('WM_DELETE_WINDOW', _cancel)
+        # 按 Listbox 行数动态计算初始高度，并允许用户调整大小
+        # 每行约 22px + 标题/按钮/内边距 ~120px
+        init_h = max(220, 120 + 22 * list_h)
+        _size_dialog_to_content(dlg, min_w=360, min_h=220,
+                                parent=self.winfo_toplevel())
+        try:
+            dlg.geometry(f'{max(360, dlg.winfo_reqwidth())}x{init_h}')
+        except Exception:
+            pass
         self.winfo_toplevel().wait_window(dlg)
         return result['idx']
 
@@ -1761,10 +2446,9 @@ class MonitorPanel(ttk.Frame):
         return text[:lo] + '…'
 
     def _draw_plot(self, c: tk.Canvas, plot: dict):
-        c.delete('all')
         w = c.winfo_width()
         h = c.winfo_height()
-        if w < 50 or h < 50:
+        if w < 30 or h < 30:
             return
 
         t = self._theme
@@ -1778,42 +2462,22 @@ class MonitorPanel(ttk.Frame):
         plot_vars = [var_map[n] for n in var_names
                      if n in var_map and n in self._buffers]
 
+        # 一次性获取本 plot 所有变量数据，避免重复 list(buf)
+        _data: dict[str, list] = {}
+        for v in plot_vars:
+            _data[v['name']] = self._get_plot_data(v['name'])
+
         title = plot.get('title', '')
         x_label = plot.get('x_label', '')
         y_label = plot.get('y_label', '')
 
-        # 预先计算图例文字最大宽度，动态调整右侧留白
+        # 缓存 Font 对象
         legend_font = self._legend_font
-        legend_pad_col = 12 + 4 + 16  # 色块 12 + 间隙 4 + 文字偏移 16
-        legend_max_text = 0
-        for v in plot_vars:
-            pts = self._get_plot_data(v['name'])
-            if pts:
-                txt = f'{v["name"]} = {pts[-1][1]:g}'
-            else:
-                txt = v['name']
-            legend_max_text = max(legend_max_text,
-                                  legend_font.measure(txt))
-        # 至少留 60px，最多不超过窗口一半
-        legend_width = legend_pad_col + min(legend_max_text, max(60, w // 3))
-        # 图例每行高度（行间距）：>= 18px 避免文字垂直方向挤压
-        legend_line_h = max(18, legend_font.metrics('linespace') + 6)
-
-        # 边距：上留 title，下留 x_label，左留 y_label
-        pad_l, pad_r, pad_t, pad_b = 64, legend_width + 14, 26, 36
-        if title:
-            pad_t += 16
-        if x_label:
-            pad_b += 14
-        if y_label:
-            pad_l += 14
-        plot_w = max(50, w - pad_l - pad_r)
-        plot_h = max(30, h - pad_t - pad_b)
+        axis_font = self._axis_font
+        title_font = self._title_font
+        small_font = self._small_font
 
         # 时间范围：若用户框选缩放则用 zoom 范围，否则自动
-        # 自动范围：t_max = buf 中最新 ts；t_min = max(t_max-WINDOW, 最老 ts)
-        # 这样：数据稀疏时填满整个宽度；数据超过窗口时滚动显示最近 WINDOW 秒
-        # 历史模式：不限时间窗口，显示全部数据范围
         zoom = plot.get('_zoom')  # (t_min, t_max, y_lo, y_hi) or None
         if zoom:
             t_min, t_max, y_lo, y_hi = zoom
@@ -1823,7 +2487,7 @@ class MonitorPanel(ttk.Frame):
             t_max = 0.0
             t_min_data = None
             for v in plot_vars:
-                pts = self._get_plot_data(v['name'])
+                pts = _data[v['name']]
                 if not pts:
                     continue
                 if pts[-1][0] > t_max:
@@ -1844,11 +2508,12 @@ class MonitorPanel(ttk.Frame):
         if t_max <= t_min:
             t_max = t_min + 1.0
 
-        # 收集每条曲线在 [t_min, t_max] 内的点 + 左侧锚点
-        # 锚点让曲线从左边缘开始延伸，而不是从第一个窗口内点开始
+        # 收集每条曲线在 [t_min, t_max] 内的点 + 左侧锚点（暂不降采样，
+        # 降采样依赖 plot_w，而 plot_w 依赖 padding，padding 依赖 y 刻度文字宽度，
+        # y 刻度文字宽度依赖 y_lo/y_hi，所以先收集算出 y 范围）
         series: list[tuple[dict, list[tuple[float, float]]]] = []
         for v in plot_vars:
-            buf = self._get_plot_data(v['name'])
+            buf = _data[v['name']]
             if not buf:
                 continue
             pts: list[tuple[float, float]] = []
@@ -1858,31 +2523,15 @@ class MonitorPanel(ttk.Frame):
                     anchor = (ts, val)
                     continue
                 if ts > t_max:
-                    # zoom 模式下裁剪 t_max 以外的点
                     break
                 if anchor is not None and not pts:
                     pts.append(anchor)
                     anchor = None
                 pts.append((ts, val))
-            # 若所有点都在 t_min 之前（数据过老），至少保留最近一个作锚点
             if not pts and anchor is not None:
                 pts.append(anchor)
-            # 若第一个点时间 > t_min（zoom t_min 在数据之前），插入虚拟锚点
-            # 确保曲线从左边缘延伸，而非从第一个数据点开始留空白
             if pts and pts[0][0] > t_min:
                 pts.insert(0, (t_min, pts[0][1]))
-            # 降采样：点数超过 plot 像素宽度的 1.5 倍时按步长抽样
-            # 减少 create_line 顶点数，降低 _draw_plot 主线程占用
-            max_pts = max(200, int(plot_w * 1.5))
-            if len(pts) > max_pts:
-                step = len(pts) / max_pts
-                sampled = [pts[0]]
-                idx = step
-                while idx < len(pts) - 1:
-                    sampled.append(pts[int(idx)])
-                    idx += step
-                sampled.append(pts[-1])
-                pts = sampled
             series.append((v, pts))
 
         # 自动 Y 范围：仅从窗口内（含锚点）数据计算
@@ -1902,34 +2551,18 @@ class MonitorPanel(ttk.Frame):
                 y_lo, y_hi = 0.0, 1.0
             if y_hi == y_lo:
                 y_hi = y_lo + 1.0
-            # 缓存自动 y 范围，供右键"重置缩放"使用
             plot['_auto_y'] = (y_lo, y_hi)
 
-        # 标题
-        if title:
-            c.create_text(pad_l + plot_w / 2, 6, text=title,
-                          fill=fg, anchor='n', font=_font('bold'))
+        # ---- 自适应布局：测量文字宽度，渐进式压缩 padding ----
+        # Y 轴刻度文字最大宽度（用 6 档刻度先估算）
+        y_axis_w = 0
+        for i in range(6):
+            val = y_hi - (y_hi - y_lo) * i / 5
+            y_axis_w = max(y_axis_w, axis_font.measure(f'{val:g}'))
+        y_axis_w = min(y_axis_w, 72)  # 极端数值占位过多时截断
 
-        # Y 轴标签（左侧旋转用文字横向写在左侧上方）
-        if y_label:
-            c.create_text(pad_l - 28, pad_t + plot_h / 2, text=y_label,
-                          fill=muted, anchor='n',
-                          font=('DejaVu Sans', 9))
-
-        n_grid_y = 5
-        for i in range(n_grid_y + 1):
-            y = pad_t + plot_h * i / n_grid_y
-            c.create_line(pad_l, y, pad_l + plot_w, y,
-                          fill=border, dash=(2, 3))
-            val = y_hi - (y_hi - y_lo) * i / n_grid_y
-            c.create_text(pad_l - 6, y, text=f'{val:g}',
-                          fill=muted, anchor='e',
-                          font=('DejaVu Sans', 9))
-
-        # X 轴标签：日志时间戳 → 实际时间（自适应格式）
-        n_grid_x = 6
+        # X 轴刻度文字宽度（用 6 档估算）
         span = t_max - t_min
-        # 格式选择：跨度 > 1 天 → 显示日期 + 时分；> 1 小时 → 时分秒；否则 → 秒.毫秒
         if span > 86400:
             fmt = '%m-%d %H:%M'
         elif span > 3600:
@@ -1938,76 +2571,278 @@ class MonitorPanel(ttk.Frame):
             fmt = '%H:%M:%S'
         else:
             fmt = '%H:%M:%S'
-        for i in range(n_grid_x + 1):
+        x_label_w = 0
+        for i in range(7):
+            t_at = t_min + span * i / 6
+            try:
+                txt = _dt.datetime.fromtimestamp(t_at).strftime(fmt)
+            except (ValueError, OSError):
+                txt = '--:--:--'
+            x_label_w = max(x_label_w, axis_font.measure(txt))
+
+        # 图例文字最大宽度
+        legend_pad_col = 12 + 4 + 16  # 色块 12 + 间隙 4 + 文字偏移 16
+        legend_max_text = 0
+        for v in plot_vars:
+            pts = _data[v['name']]
+            if pts:
+                txt = f'{v["name"]} = {pts[-1][1]:g}'
+            else:
+                txt = v['name']
+            legend_max_text = max(legend_max_text,
+                                  legend_font.measure(txt))
+
+        axis_h = axis_font.metrics('linespace')
+        title_h = title_font.metrics('linespace')
+        legend_line_h = max(18, legend_font.metrics('linespace') + 6)
+
+        # 渐进式显示开关：默认全显示，宽度不足时按优先级剥离
+        show_title = bool(title)
+        # X 轴标题不显示：用户反馈与刻度文字混着不方便，去掉
+        show_x_label = False
+        show_y_label = bool(y_label)
+        show_legend = bool(plot_vars)
+
+        # 基础 padding（最紧凑）
+        pad_l = y_axis_w + 8
+        if show_y_label:
+            pad_l += 12
+        pad_r = 8
+        pad_t = 4
+        if show_title:
+            pad_t += title_h + 4
+        # Y 轴标签放顶端时需要一行空间（与 title 共存时复用同一行）
+        if show_y_label and not show_title:
+            pad_t += axis_h + 4
+        pad_b = axis_h + 6
+
+        # 估算绘图区宽度，决定图例占多大
+        est_plot_w = w - pad_l - pad_r
+        if show_legend:
+            # 图例文字宽度：最多占绘图区 40%，至少 80px
+            legend_text_w = min(legend_max_text,
+                                max(80, int(est_plot_w * 0.4)))
+            pad_r = legend_pad_col + legend_text_w + 14
+            est_plot_w = w - pad_l - pad_r
+
+        # 宽度不足时按优先级剥离（legend > y_label > x_label > title）
+        if est_plot_w < 60 and show_legend:
+            show_legend = False
+            legend_text_w = 0
+            pad_r = 8
+            est_plot_w = w - pad_l - pad_r
+        if est_plot_w < 40 and show_y_label:
+            show_y_label = False
+            pad_l -= 12
+            est_plot_w = w - pad_l - pad_r
+        if est_plot_w < 30:
+            c.delete('all')
+            c.create_text(w / 2, h / 2, text='窗口过小',
+                          fill=muted, font=small_font)
+            return
+
+        # 高度不足时剥离 title/x_label
+        est_plot_h = h - pad_t - pad_b
+        if est_plot_h < 60 and show_title:
+            show_title = False
+            pad_t -= title_h + 4
+            est_plot_h = h - pad_t - pad_b
+        if est_plot_h < 40 and show_x_label:
+            show_x_label = False
+            pad_b -= 14
+            est_plot_h = h - pad_t - pad_b
+        if est_plot_h < 20:
+            c.delete('all')
+            c.create_text(w / 2, h / 2, text='窗口过小',
+                          fill=muted, font=small_font)
+            return
+
+        plot_w = max(20, w - pad_l - pad_r)
+        plot_h = max(15, h - pad_t - pad_b)
+
+        # 自适应刻度数量：
+        # X 网格数：每档至少留 2.2 倍文字宽度间隔，确保不重叠
+        if x_label_w > 0:
+            desired = int(plot_w / (x_label_w * 2.2))
+            n_grid_x = min(6, max(2, desired))
+        else:
+            n_grid_x = 6
+        # Y 网格数：每档至少留 1.8 倍文字高度间隔，确保不重叠
+        if axis_h > 0:
+            n_grid_y = min(5, max(2, int(plot_h / (axis_h * 1.8))))
+        else:
+            n_grid_y = 5
+
+        # 降采样：点数超过 plot_w * 1.5 时按步长抽样
+        max_pts = max(200, int(plot_w * 1.5))
+        for i, (v, pts) in enumerate(series):
+            if len(pts) > max_pts:
+                step = len(pts) / max_pts
+                sampled = [pts[0]]
+                idx = step
+                while idx < len(pts) - 1:
+                    sampled.append(pts[int(idx)])
+                    idx += step
+                sampled.append(pts[-1])
+                series[i] = (v, sampled)
+
+        # 跳过完全相同的重绘：几何/范围/数据均未变 → 直接返回。
+        sig = (w, h, pad_l, pad_r, pad_t, pad_b, t_min, t_max, y_lo, y_hi,
+               bool(zoom), plot.get('_zoom_rect'),
+               show_title, show_x_label, show_y_label, show_legend,
+               n_grid_x, n_grid_y,
+               tuple((v['name'], len(p), p[-1][0] if p else 0.0)
+                     for v, p in series))
+        cache = plot.setdefault('_draw_cache', {})
+        cur = cache.get(id(c))
+        if cur and cur.get('sig') == sig:
+            # 数据未变，跳过整次重绘（line item 等不重建）
+            return
+        cache[id(c)] = {'sig': sig}
+        c.delete('all')
+
+        # 标题：限制在绘图区内（小窗口下若仍显示则居中绘制）
+        if show_title:
+            title_text = title
+            max_w = plot_w
+            if title_font.measure(title_text) > max_w:
+                title_text = self._truncate_text(title_text, max_w,
+                                                  title_font)
+            c.create_text(pad_l + plot_w / 2, 4, text=title_text,
+                          fill=fg, anchor='n', font=title_font)
+
+        # Y 轴标签：放画布顶端（绘图区上方左侧），避免与曲线混在一起
+        if show_y_label:
+            ylbl = y_label
+            # 限定宽度：Y 轴刻度文字宽度 + 12 余量
+            max_w = y_axis_w + 12
+            if axis_font.measure(ylbl) > max_w:
+                ylbl = self._truncate_text(ylbl, max_w, axis_font)
+            # 放在顶端紧贴 Y 刻度顶部，靠左对齐
+            c.create_text(pad_l - 6, pad_t - 2, text=ylbl,
+                          fill=muted, anchor='sw',
+                          font=axis_font)
+
+        # Y 刻度 + 水平网格线
+        # 先按等距生成 n_grid_y+1 个刻度值，若 0 在范围内则把最接近 0
+        # 的刻度替换为 0，让用户能直观看到 0 基线
+        y_tick_vals = [y_hi - (y_hi - y_lo) * i / n_grid_y
+                       for i in range(n_grid_y + 1)]
+        if y_lo < 0 < y_hi:
+            idx0 = min(range(len(y_tick_vals)),
+                        key=lambda i: abs(y_tick_vals[i]))
+            if abs(y_tick_vals[idx0]) > 1e-9:
+                y_tick_vals[idx0] = 0.0
+        for i, val in enumerate(y_tick_vals):
+            y = pad_t + plot_h * i / n_grid_y
+            c.create_line(pad_l, y, pad_l + plot_w, y,
+                          fill=border, dash=(2, 3))
+            c.create_text(pad_l - 6, y, text=f'{val:g}',
+                          fill=muted, anchor='e',
+                          font=axis_font)
+
+        # X 刻度 + 垂直网格线 + 时间标签（自适应格式）
+        # 边缘刻度用 nw/ne 锚点，避免长标签溢出画布左右边界
+        # 中间刻度用 n 居中；间隔由 n_grid_x 自适应保证不重叠
+        # 极窄画布下按槽位宽度截断，防止边缘标签延伸出画布
+        n_xticks = n_grid_x + 1
+        slot_w = plot_w / max(1, n_grid_x)
+        # 留 4px 余量，避免标签贴边
+        max_label_w = max(20, int(slot_w - 4))
+        for i in range(n_xticks):
             x = pad_l + plot_w * i / n_grid_x
             t_at = t_min + span * i / n_grid_x
             try:
                 label = _dt.datetime.fromtimestamp(t_at).strftime(fmt)
             except (ValueError, OSError):
                 label = '--:--:--'
+            if axis_font.measure(label) > max_label_w:
+                label = self._truncate_text(label, max_label_w, axis_font)
+            if i == 0:
+                anc = 'nw'
+            elif i == n_grid_x:
+                anc = 'ne'
+            else:
+                anc = 'n'
             c.create_text(x, pad_t + plot_h + 4, text=label,
-                          fill=muted, anchor='n',
-                          font=('DejaVu Sans', 9))
+                          fill=muted, anchor=anc,
+                          font=axis_font)
 
         c.create_rectangle(pad_l, pad_t, pad_l + plot_w, pad_t + plot_h,
                            outline=border, width=1)
 
-        def _t2x(ts):
-            return pad_l + plot_w * (ts - t_min) / (t_max - t_min)
-
-        def _v2y(val):
-            return pad_t + plot_h * (y_hi - val) / (y_hi - y_lo)
+        # 内联坐标变换：避免每点函数调用开销（原 _t2x/_v2y 闭包）
+        t_span = t_max - t_min
+        y_span = y_hi - y_lo
+        inv_t = 1.0 / t_span if t_span else 0.0
+        inv_y = 1.0 / y_span if y_span else 0.0
+        _pl = pad_l
+        _pt = pad_t
+        _pw = plot_w
+        _ph = plot_h
+        _tmn = t_min
+        _yhi = y_hi
 
         for v, pts in series:
-            if len(pts) >= 2:
-                coords = []
+            n = len(pts)
+            if n >= 2:
+                # array.array 批量构建坐标，比 list.extend 在大列表上更快
+                arr = _farray('d')
+                ap = arr.append
                 for ts, val in pts:
-                    coords.extend([_t2x(ts), _v2y(val)])
-                c.create_line(*coords, fill=v['color'], width=1.5)
+                    ap(_pl + _pw * (ts - _tmn) * inv_t)
+                    ap(_pt + _ph * (_yhi - val) * inv_y)
+                c.create_line(*arr, fill=v['color'], width=1.5)
             if pts:
-                lx = _t2x(pts[-1][0])
-                ly = _v2y(pts[-1][1])
+                lx = _pl + _pw * (pts[-1][0] - _tmn) * inv_t
+                ly = _pt + _ph * (_yhi - pts[-1][1]) * inv_y
+                # 端点圆点限制在绘图区内（小窗口下不溢出）
+                lx = max(_pl, min(_pl + _pw, lx))
+                ly = max(_pt, min(_pt + _ph, ly))
                 c.create_oval(lx - 3, ly - 3, lx + 3, ly + 3,
                               fill=v['color'], outline='')
 
-        # X 轴标签（绘图区下方）
-        if x_label:
-            c.create_text(pad_l + plot_w / 2, pad_t + plot_h + 22,
-                          text=x_label, fill=muted, anchor='n',
-                          font=('DejaVu Sans', 9))
+        # X 轴标签（绘图区下方，紧贴 X 刻度文字之下）
+        if show_x_label:
+            xlbl = x_label
+            if axis_font.measure(xlbl) > plot_w:
+                xlbl = self._truncate_text(xlbl, plot_w, axis_font)
+            c.create_text(pad_l + plot_w / 2, pad_t + plot_h + axis_h + 4,
+                          text=xlbl, fill=muted, anchor='n',
+                          font=axis_font)
 
-        # 图例
-        legend_x = pad_l + plot_w + 10
-        # 图例可用文字宽度（超过则字符级截断 + 省略号，避免文字延伸到画布外）
-        legend_text_w = max(40, legend_width - legend_pad_col)
-        # 行数过多时缩小行高（最多缩到 14px），保证所有行可见
-        n_lines = len(plot_vars)
-        line_h = legend_line_h
-        if n_lines * line_h > plot_h:
-            line_h = max(14, plot_h // max(1, n_lines))
-        # 顶部居中起始 y，让图例在绘图区纵向居中
-        if n_lines * line_h < plot_h:
-            start_y = pad_t + (plot_h - n_lines * line_h) // 2
-        else:
-            start_y = pad_t + 2
-        for i, v in enumerate(plot_vars):
-            ly = start_y + i * line_h
-            # 防止最后一行色块底部超出绘图区
-            if ly + 12 > pad_t + plot_h:
-                break
-            c.create_rectangle(legend_x, ly, legend_x + 12, ly + 12,
-                                fill=v['color'], outline='')
-            label = v['name']
-            buf = self._get_plot_data(v['name'])
-            if buf:
-                label = f'{v["name"]} = {buf[-1][1]:g}'
-            # 按可用宽度截断文字，避免延伸到画布外被相邻图例覆盖
-            if legend_font.measure(label) > legend_text_w:
-                label = self._truncate_text(label, legend_text_w,
-                                            legend_font)
-            c.create_text(legend_x + 16, ly + 6, text=label,
-                          fill=fg, anchor='w',
-                          font=legend_font)
+        # 图例：show_legend=False 时完全跳过
+        if show_legend:
+            legend_x = pad_l + plot_w + 10
+            # 图例可用文字宽度（基于实际 legend_text_w，超过则字符级截断）
+            # 行数过多时缩小行高（最多缩到 14px），保证所有行可见
+            n_lines = len(plot_vars)
+            line_h = legend_line_h
+            if n_lines * line_h > plot_h:
+                line_h = max(14, plot_h // max(1, n_lines))
+            # 顶部居中起始 y，让图例在绘图区纵向居中
+            if n_lines * line_h < plot_h:
+                start_y = pad_t + (plot_h - n_lines * line_h) // 2
+            else:
+                start_y = pad_t + 2
+            for i, v in enumerate(plot_vars):
+                ly = start_y + i * line_h
+                # 防止最后一行色块底部超出绘图区
+                if ly + 12 > pad_t + plot_h:
+                    break
+                c.create_rectangle(legend_x, ly, legend_x + 12, ly + 12,
+                                    fill=v['color'], outline='')
+                label = v['name']
+                buf = _data[v['name']]
+                if buf:
+                    label = f'{v["name"]} = {buf[-1][1]:g}'
+                # 按可用宽度截断文字，避免延伸到画布外被相邻图例覆盖
+                if legend_font.measure(label) > legend_text_w:
+                    label = self._truncate_text(label, legend_text_w,
+                                                legend_font)
+                c.create_text(legend_x + 16, ly + 6, text=label,
+                              fill=fg, anchor='w',
+                              font=legend_font)
 
         # 缓存绘图区几何，供鼠标框选缩放时把像素坐标换算回数据坐标
         plot['_geom'] = (pad_l, pad_t, plot_w, plot_h, t_min, t_max,
@@ -2018,6 +2853,133 @@ class MonitorPanel(ttk.Frame):
             c.create_rectangle(x0, y0, x1, y1,
                                outline=t.get('accent', fg),
                                dash=(3, 3), tag='zoom_rect')
+
+        # ---- 显示选项：最值标注 / 末值点 / 均值线 / 数据表格 ----
+        # 缓存每条 series 的统计值供 hover 也复用
+        stats_cache = []
+        for v, pts in series:
+            if not pts:
+                stats_cache.append(None)
+                continue
+            vals = [p[1] for p in pts]
+            stats_cache.append({
+                'name': v['name'], 'color': v['color'],
+                'pts': pts,
+                'min_v': min(vals), 'max_v': max(vals),
+                'last_v': vals[-1], 'last_ts': pts[-1][0],
+                'avg_v': sum(vals) / len(vals),
+                'min_pt': pts[vals.index(min(vals))],
+                'max_pt': pts[vals.index(max(vals))],
+            })
+        plot['_stats_cache'] = stats_cache
+
+        # 均值水平线：在绘图区内画一条虚线 + 右侧标注
+        if plot.get('show_avg') and stats_cache:
+            for st in stats_cache:
+                if not st:
+                    continue
+                y_avg = _pt + _ph * (_yhi - st['avg_v']) * inv_y
+                y_avg = max(_pt, min(_pt + _ph, y_avg))
+                c.create_line(_pl, y_avg, _pl + _pw, y_avg,
+                              fill=st['color'], dash=(4, 4))
+                lbl = f'均值 {st["name"]}: {st["avg_v"]:g}'
+                if legend_font.measure(lbl) > _pw - 4:
+                    lbl = self._truncate_text(lbl, _pw - 4, legend_font)
+                c.create_text(_pl + 4, y_avg - 2, text=lbl,
+                              fill=st['color'], anchor='nw',
+                              font=small_font)
+
+        # 最大值/最小值/末值 标注点
+        def _draw_marker(pt, text, color, anchor_side='ne'):
+            if not pt:
+                return
+            mx = _pl + _pw * (pt[0] - _tmn) * inv_t
+            my = _pt + _ph * (_yhi - pt[1]) * inv_y
+            mx = max(_pl, min(_pl + _pw, mx))
+            my = max(_pt, min(_pt + _ph, my))
+            c.create_oval(mx - 4, my - 4, mx + 4, my + 4,
+                          fill=color, outline=t.get('bg', ''))
+            c.create_text(mx + 6, my - 6, text=text,
+                          fill=color, anchor=anchor_side,
+                          font=small_font)
+        for st in stats_cache:
+            if not st:
+                continue
+            if plot.get('show_max'):
+                _draw_marker(st['max_pt'],
+                             f'最大 {st["name"]}: {st["max_v"]:g}',
+                             st['color'])
+            if plot.get('show_min'):
+                _draw_marker(st['min_pt'],
+                             f'最小 {st["name"]}: {st["min_v"]:g}',
+                             st['color'], anchor_side='sw')
+            if plot.get('show_last'):
+                _draw_marker((st['last_ts'], st['last_v']),
+                             f'{st["name"]}: {st["last_v"]:g}',
+                             st['color'], anchor_side='n')
+
+        # 数据表格 overlay：右上角紧凑表格显示 每变量的 当前/最小/最大/均值
+        if plot.get('show_table') and stats_cache:
+            cols = ['变量', '当前', '最小', '最大', '均值']
+            col_w = [legend_font.measure(c) + 16 for c in cols]
+            rows_data = []
+            for st in stats_cache:
+                if not st:
+                    continue
+                row = [st['name'],
+                       f'{st["last_v"]:g}',
+                       f'{st["min_v"]:g}',
+                       f'{st["max_v"]:g}',
+                       f'{st["avg_v"]:g}']
+                rows_data.append((st['color'], row))
+                for i, cell in enumerate(row):
+                    col_w[i] = max(col_w[i],
+                                    legend_font.measure(cell) + 8)
+            if rows_data:
+                cell_h = max(16, legend_font.metrics('linespace') + 4)
+                tbl_w = sum(col_w) + 4
+                tbl_h = cell_h * (len(rows_data) + 1) + 4
+                # 右上角，留 4px 内边距，超出绘图区时缩到画布右上角
+                tx0 = _pl + _pw - tbl_w - 4
+                ty0 = _pt + 4
+                if tx0 < _pl + 4:
+                    tx0 = _pl + 4
+                if ty0 < _pt:
+                    ty0 = _pt
+                # 半透明背景：用 panel_bg 实色覆盖（tk canvas 无 alpha）
+                c.create_rectangle(tx0, ty0, tx0 + tbl_w, ty0 + tbl_h,
+                                   fill=t.get('panel_bg', '#252526'),
+                                   stipple='gray50', outline=border)
+                # 表头
+                cx = tx0 + 2
+                for i, col_text in enumerate(cols):
+                    c.create_text(cx + col_w[i] / 2,
+                                  ty0 + cell_h / 2 + 2,
+                                  text=col_text, fill=muted,
+                                  anchor='center', font=small_font)
+                    cx += col_w[i]
+                # 数据行
+                for ri, (color, row) in enumerate(rows_data):
+                    ry = ty0 + cell_h * (ri + 1)
+                    cx = tx0 + 2
+                    # 色块标识
+                    c.create_rectangle(cx, ry + 2, cx + 8,
+                                       ry + cell_h - 2,
+                                       fill=color, outline='')
+                    for i, cell in enumerate(row):
+                        anc = 'w' if i == 0 else 'e'
+                        c.create_text(cx + (8 if i == 0 else col_w[i] - 4),
+                                       ry + cell_h / 2 + 2,
+                                       text=cell, fill=fg,
+                                       anchor=anc, font=small_font)
+                        cx += col_w[i]
+                # 记录表格区域，悬停时跳过
+                plot['_table_rect'] = (tx0, ty0, tx0 + tbl_w,
+                                        ty0 + tbl_h)
+            else:
+                plot['_table_rect'] = None
+        else:
+            plot['_table_rect'] = None
 
 
     # ---- 主题 ----------------------------------------------------------
@@ -2057,6 +3019,14 @@ class MonitorPanel(ttk.Frame):
             except Exception:
                 pass
             self._redraw_id = None
+        # 销毁悬停 tooltip Toplevel
+        if self._hover_tip is not None:
+            try:
+                self._hover_tip.destroy()
+            except Exception:
+                pass
+            self._hover_tip = None
+            self._hover_canvas = None
         # 关闭所有 plot 单独显示窗口
         for plot in self._plots:
             top = plot.pop('_popout_toplevel', None)
@@ -2091,6 +3061,12 @@ class MonitorPanel(ttk.Frame):
             'x_label': p.get('x_label', '时间 (s)'),
             'y_label': p.get('y_label', '值'),
             'vars': list(p.get('vars', [])),
+            'show_max': p.get('show_max', False),
+            'show_min': p.get('show_min', False),
+            'show_avg': p.get('show_avg', False),
+            'show_last': p.get('show_last', False),
+            'show_table': p.get('show_table', False),
+            'show_hover': p.get('show_hover', True),
         }
 
 
@@ -2104,13 +3080,41 @@ class MonitorWindow(tk.Toplevel):
     PANEL_CLS = MonitorPanel
     TITLE = '数据监视'
     GEOMETRY = ''   # 空 = 动态计算半屏
+    # 配置前缀：子类覆盖为 'motor'/'bms'/'imu'，用于持久化视图状态/几何/plots
+    # 为 None 时不读写 config（避免无关子类污染配置）
+    CONFIG_PREFIX = None
 
     def __init__(self, parent, variables=None, on_change=None, plots=None):
+        # 先 withdraw 隐藏，避免 Toplevel 默认白背景在内容就绪前闪现
+        # （父类 __init__ 之后立刻 withdraw，等到 panel+menu 全部就绪再 deiconify）
         super().__init__(parent)
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        # 提前设置深色背景，避免哪怕 withdraw 失败时仍是白底
+        try:
+            t_init = _default_theme()
+            self.configure(bg=t_init.get('bg', '#1e1e1e'))
+        except Exception:
+            pass
+
         self.title(self.TITLE)
         self._is_fullscreen = False
-        # 动态计算半屏大小
-        if not self.GEOMETRY:
+        # 优先用持久化的几何，没有再动态计算半屏
+        saved_geo = ''
+        if config is not None and self.CONFIG_PREFIX:
+            try:
+                saved_geo = config.load().get(
+                    f'{self.CONFIG_PREFIX}_monitor_geometry', '')
+            except Exception:
+                saved_geo = ''
+        if saved_geo:
+            try:
+                self.geometry(saved_geo)
+            except Exception:
+                pass
+        elif not self.GEOMETRY:
             try:
                 sw = parent.winfo_screenwidth()
                 sh = parent.winfo_screenheight()
@@ -2124,20 +3128,277 @@ class MonitorWindow(tk.Toplevel):
         self.minsize(720, 480)
         self.resizable(True, True)
         # 不调用 transient：GNOME/Mutter 把 transient 窗口当对话框处理，
-        # 会禁用最大化按钮和拖到顶部的最大化手势。改用 lift+focus 保持层级。
+        # 会禁用最大化按钮和拖到顶部的最大化手势。改用 lift+focus 保持层级
+        # （在内容就绪后 lift+focus，见下方 deiconify 之后）
+
+        self.panel = self.PANEL_CLS(self, variables=variables,
+                                      on_change=on_change, plots=plots)
+        self.panel.pack(fill='both', expand=True)
+        self._build_menubar()
+        # 应用持久化的视图状态（工具栏/状态/变量列表显隐、模式、悬停）
+        self._load_view_state()
+
+        # 内容全部就绪后再显示窗口，避免初始白屏闪烁
         try:
+            self.update_idletasks()
+            self.deiconify()
             self.lift(parent)
             self.focus_force()
         except Exception:
             pass
 
-        self.panel = self.PANEL_CLS(self, variables=variables,
-                                      on_change=on_change, plots=plots)
-        self.panel.pack(fill='both', expand=True)
-
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         # Escape 退出全屏
         self.bind('<Escape>', lambda _e: self._exit_fullscreen())
+
+    def _build_menubar(self):
+        """构建菜单栏：打开/视图/工具/帮助。
+
+        菜单项直接转发到 self.panel 的对应方法，避免与工具栏按钮重复实现。
+        工具菜单覆盖工具栏全部功能：变量 / 图表 / 模式 / 悬停提示 / 清空 /
+        加载日志 / 统计 / 导出 CSV / 全屏。
+        """
+        menubar = tk.Menu(self)
+        # File / 打开
+        m_file = tk.Menu(menubar, tearoff=False)
+        m_file.add_command(label='打开日志文件…', accelerator='Ctrl+O',
+                           command=self.panel._load_history_log)
+        m_file.add_separator()
+        m_file.add_command(label='导出 CSV…', accelerator='Ctrl+S',
+                           command=self.panel._export_csv)
+        m_file.add_separator()
+        m_file.add_command(label='关闭窗口', accelerator='Ctrl+W',
+                           command=self._on_close)
+        menubar.add_cascade(label='打开', menu=m_file)
+
+        # View / 视图
+        m_view = tk.Menu(menubar, tearoff=False)
+        self._view_toolbar_var = tk.BooleanVar(value=True)
+        self._view_status_var = tk.BooleanVar(value=True)
+        self._view_varlist_var = tk.BooleanVar(value=True)
+        m_view.add_checkbutton(
+            label='工具栏', variable=self._view_toolbar_var,
+            command=self._toggle_toolbar)
+        m_view.add_checkbutton(
+            label='状态文本', variable=self._view_status_var,
+            command=self._toggle_status)
+        m_view.add_checkbutton(
+            label='变量列表', variable=self._view_varlist_var,
+            command=self._toggle_varlist)
+        m_view.add_separator()
+        # 显示模式：与工具栏 combobox 共用 panel._mode_var，菜单切换同步工具栏
+        m_mode_sub = tk.Menu(m_view, tearoff=False)
+        m_mode_sub.add_radiobutton(
+            label='曲线', variable=self.panel._mode_var, value='曲线',
+            command=self.panel._on_mode_change)
+        m_mode_sub.add_radiobutton(
+            label='数据', variable=self.panel._mode_var, value='数据',
+            command=self.panel._on_mode_change)
+        m_view.add_cascade(label='显示模式', menu=m_mode_sub)
+        # 悬停提示模式：与工具栏配置菜单共用 panel._hover_mode
+        m_hover_sub = tk.Menu(m_view, tearoff=False)
+        m_hover_sub.add_radiobutton(
+            label='仅当前曲线',
+            variable=self.panel._hover_mode, value='current')
+        m_hover_sub.add_radiobutton(
+            label='显示全部曲线',
+            variable=self.panel._hover_mode, value='all')
+        m_view.add_cascade(label='悬停提示', menu=m_hover_sub)
+        m_view.add_separator()
+        m_view.add_command(label='全屏切换', accelerator='F11',
+                           command=self.panel._toggle_fullscreen)
+        m_view.add_command(label='清空数据', command=self.panel._clear_data)
+        menubar.add_cascade(label='视图', menu=m_view)
+
+        # Tools / 工具（覆盖工具栏全部功能）
+        m_tools = tk.Menu(menubar, tearoff=False)
+        m_tools.add_command(label='添加变量…', accelerator='Ctrl+N',
+                            command=self.panel._add_var)
+        m_tools.add_command(label='编辑选中变量…',
+                            command=self.panel._edit_var)
+        m_tools.add_command(label='删除选中变量',
+                            command=self.panel._del_var)
+        m_tools.add_separator()
+        m_tools.add_command(label='添加图表…', command=self.panel._add_plot)
+        m_tools.add_command(label='编辑图表…', command=self.panel._edit_plot)
+        m_tools.add_command(label='删除图表…', command=self.panel._del_plot)
+        m_tools.add_separator()
+        m_tools.add_command(label='清空数据', command=self.panel._clear_data)
+        m_tools.add_command(label='加载日志…',
+                            command=self.panel._load_history_log)
+        m_tools.add_command(label='统计信息…',
+                            command=self.panel._show_statistics)
+        m_tools.add_command(label='导出 CSV…', accelerator='Ctrl+S',
+                            command=self.panel._export_csv)
+        m_tools.add_separator()
+        m_tools.add_command(label='全屏切换', accelerator='F11',
+                            command=self.panel._toggle_fullscreen)
+        menubar.add_cascade(label='工具', menu=m_tools)
+
+        # Help / 帮助
+        m_help = tk.Menu(menubar, tearoff=False)
+        m_help.add_command(label='关于', command=self._show_about)
+        menubar.add_cascade(label='帮助', menu=m_help)
+
+        try:
+            self.configure(menu=menubar)
+        except Exception:
+            pass
+        self._menubar = menubar
+        # 应用菜单主题（深色 / 浅色）
+        try:
+            if themes is not None:
+                t = themes.THEMES[themes.resolve(themes.load_pref())]
+                themes.apply_menu_theme(menubar, t)
+        except Exception:
+            pass
+        # 快捷键
+        self.bind('<Control-o>', lambda _e: self.panel._load_history_log())
+        self.bind('<Control-s>', lambda _e: self.panel._export_csv())
+        self.bind('<Control-w>', lambda _e: self._on_close())
+        self.bind('<Control-n>', lambda _e: self.panel._add_var())
+        self.bind('<F11>', lambda _e: self.panel._toggle_fullscreen())
+
+    def _toggle_toolbar(self):
+        try:
+            if self._view_toolbar_var.get():
+                self.panel._toolbar.pack(fill='x',
+                                          before=self.panel._content_pane)
+            else:
+                self.panel._toolbar.pack_forget()
+        except Exception:
+            pass
+
+    def _toggle_status(self):
+        try:
+            if self._view_status_var.get():
+                self.panel._status_lbl.pack(side='right')
+            else:
+                self.panel._status_lbl.pack_forget()
+        except Exception:
+            pass
+
+    def _toggle_varlist(self):
+        """显示/隐藏左侧变量列表 frame。"""
+        try:
+            pane = self.panel._content_pane
+            left = self.panel._var_list_frame
+            if self._view_varlist_var.get():
+                # 重新加入 PanedWindow（保留原 weight=0 + minsize=280）
+                if left not in pane.winfo_children():
+                    pane.add(left, weight=0)
+                    try:
+                        pane.paneconfigure(left, minsize=280)
+                    except Exception:
+                        pass
+            else:
+                pane.forget(left)
+        except Exception:
+            pass
+
+    def _load_view_state(self):
+        """从 config 读取视图状态并应用。
+
+        读 monitor_view_*（toolbar/status/varlist 显隐）+ monitor_mode +
+        monitor_hover_mode。所有 motor/bms/imu 共用一组视图键——同一用户
+        在电机里调的视图，切到 BMS 也保持一致，符合"上次设置"的预期。
+        """
+        if config is None:
+            return
+        try:
+            cfg = config.load()
+        except Exception:
+            return
+        try:
+            if cfg.get('monitor_view_toolbar', True):
+                self._view_toolbar_var.set(True)
+            else:
+                self._view_toolbar_var.set(False)
+                self._toggle_toolbar()
+            if cfg.get('monitor_view_status', True):
+                self._view_status_var.set(True)
+            else:
+                self._view_status_var.set(False)
+                self._toggle_status()
+            if cfg.get('monitor_view_varlist', True):
+                self._view_varlist_var.set(True)
+            else:
+                self._view_varlist_var.set(False)
+                self._toggle_varlist()
+            mode = cfg.get('monitor_mode', '曲线')
+            if mode in ('曲线', '数据'):
+                self.panel._mode_var.set(mode)
+                try:
+                    self.panel._on_mode_change()
+                except Exception:
+                    pass
+            hover = cfg.get('monitor_hover_mode', 'current')
+            if hover in ('current', 'all'):
+                self.panel._hover_mode.set(hover)
+        except Exception:
+            pass
+
+    def _save_state(self):
+        """关闭前持久化视图状态 + plots + variables + geometry。
+
+        视图键共用一组（monitor_view_*），按 CONFIG_PREFIX 存几何/plots/vars。
+        """
+        if config is None:
+            return
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        try:
+            cfg['monitor_view_toolbar'] = bool(
+                self._view_toolbar_var.get())
+            cfg['monitor_view_status'] = bool(
+                self._view_status_var.get())
+            cfg['monitor_view_varlist'] = bool(
+                self._view_varlist_var.get())
+            cfg['monitor_mode'] = self.panel._mode_var.get() or '曲线'
+            cfg['monitor_hover_mode'] = (
+                self.panel._hover_mode.get() or 'current')
+            if self.CONFIG_PREFIX:
+                try:
+                    cfg[f'{self.CONFIG_PREFIX}_monitor_geometry'] = (
+                        self.geometry())
+                except Exception:
+                    pass
+                try:
+                    cfg[f'{self.CONFIG_PREFIX}_vars'] = (
+                        list(self.panel.variables))
+                except Exception:
+                    pass
+                try:
+                    cfg[f'{self.CONFIG_PREFIX}_plots'] = (
+                        list(self.panel.plots))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            config.save(cfg)
+        except Exception:
+            pass
+
+    def _show_about(self):
+        dlg = tk.Toplevel(self)
+        dlg.title('关于')
+        try:
+            dlg.lift(self)
+            dlg.focus_force()
+        except Exception:
+            pass
+        dlg.resizable(True, True)
+        f = ttk.Frame(dlg, padding=20)
+        f.pack(fill='both', expand=True)
+        ttk.Label(f, text='串口调试助手 - 数据监视',
+                  font=_font('bold')).pack(pady=(0, 6))
+        ttk.Label(f, text='CH343 实时收发 / AT 命令管理 / 日志存储').pack()
+        ttk.Label(f, text='曲线绘制 + 变量监视 + 历史日志回放').pack(pady=4)
+        ttk.Button(f, text='关闭', command=dlg.destroy).pack(pady=(10, 0))
+        _size_dialog_to_content(dlg, min_w=360, min_h=180, parent=self)
 
     @property
     def variables(self):
@@ -2165,10 +3426,16 @@ class MonitorWindow(tk.Toplevel):
             self.panel.update_theme()
             t = themes.THEMES[themes.resolve(themes.load_pref())]
             self.configure(bg=t['bg'])
+            if getattr(self, '_menubar', None) is not None:
+                themes.apply_menu_theme(self._menubar, t)
         except Exception:
             pass
 
     def _on_close(self):
+        try:
+            self._save_state()
+        except Exception:
+            pass
         self.panel._stop()
         self.destroy()
 
@@ -2455,9 +3722,18 @@ class StructuredMonitorPanel(MonitorPanel):
         self._var_tree.heading('label', text='说明')
         self._var_tree.heading('tag', text='标签')
         self._var_tree.heading('pos', text='位置')
-        self._var_tree.column('label', width=180, stretch=True)
-        self._var_tree.column('tag', width=70, anchor='center', stretch=False)
-        self._var_tree.column('pos', width=80, anchor='center', stretch=False)
+        # 列宽随 treeview 宽度自动按比例分配（label:tag:pos = 3:1:1）
+        # 用户拖拽后新比例会作为下次分配的权重
+        self._var_tree.column('label', width=180, stretch=False,
+                              anchor='w', minwidth=80)
+        self._var_tree.column('tag', width=60, anchor='center',
+                              stretch=False, minwidth=40)
+        self._var_tree.column('pos', width=60, anchor='center',
+                              stretch=False, minwidth=40)
+        _enable_tree_column_stretch(
+            self._var_tree,
+            ratios={'label': 3, 'tag': 1, 'pos': 1},
+            min_widths={'label': 80, 'tag': 40, 'pos': 40})
 
         for v in self._vars:
             label = v.get('label', '') or v['name']
@@ -2684,6 +3960,7 @@ class MotorMonitorWindow(MonitorWindow):
 
     PANEL_CLS = MotorMonitorPanel
     TITLE = '电机数据监视'
+    CONFIG_PREFIX = 'motor'
 
 
 class BmsMonitorPanel(StructuredMonitorPanel):
@@ -2824,6 +4101,7 @@ class BmsMonitorWindow(MonitorWindow):
 
     PANEL_CLS = BmsMonitorPanel
     TITLE = 'BMS 数据监视'
+    CONFIG_PREFIX = 'bms'
 
 
 def _build_imu_default_vars() -> list[dict]:
@@ -2926,3 +4204,4 @@ class ImuMonitorWindow(MonitorWindow):
 
     PANEL_CLS = ImuMonitorPanel
     TITLE = 'IMU 数据监视'
+    CONFIG_PREFIX = 'imu'

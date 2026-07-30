@@ -1,0 +1,116 @@
+[
+  {
+    "cmd": "AT+ELOG=0%",
+    "desc": "关闭周期日志",
+    "seq": 0,
+    "period_ms": 10
+  },
+  {
+    "cmd": "AT+ELOG=1%",
+    "desc": "开启周期日志",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EENFAC%",
+    "desc": "ECU进入工厂模式",
+    "seq": 0,
+    "period_ms": 100
+  },
+  {
+    "cmd": "AT+EEXFAC%",
+    "desc": "ECU退出工厂模式",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EMOTORRPM=1,450,1%",
+    "desc": "ECU速度模式控制点击",
+    "seq": 0,
+    "period_ms": 5000
+  },
+  {
+    "cmd": "AT+EMOTORREAD=6%",
+    "desc": "ECU读取电机转速",
+    "seq": 0,
+    "period_ms": 20
+  },
+  {
+    "cmd": "AT+EMOTORRPM=6,3000,1%",
+    "desc": "速度环设置单电机轮速",
+    "seq": 0,
+    "period_ms": 2000
+  },
+  {
+    "cmd": "AT+EMOTORDIRECT=500,900,-900,2000,2000,0%",
+    "desc": "ECU控制整机速度",
+    "seq": 0,
+    "period_ms": 100
+  },
+  {
+    "cmd": "AT+VFAC=1,1%",
+    "desc": "VCU进入工厂模式",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VENCCALIB=3,1%",
+    "desc": "VCU舵轮自动标定",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VRESET=1,1%",
+    "desc": "VCU重启",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EHALL?%",
+    "desc": "读取霍尔状态",
+    "seq": 0,
+    "period_ms": 5
+  },
+  {
+    "cmd": "AT+EPHYKEY?%",
+    "desc": "读取物理钥匙状态",
+    "seq": 0,
+    "period_ms": 10
+  },
+  {
+    "cmd": "AT+ERESET=1%",
+    "desc": "ECU重启",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EDIS=1,1,1,1,7,2%",
+    "desc": "ECU指示灯控制",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+ESUBGCFG=s915%",
+    "desc": "设置Sub1G频段为915",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VMPARALIST=1%",
+    "desc": "查询VCU已经注册的所有电机ID",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VMPARA=1,A,264,B,264%",
+    "desc": "写入A/B电机ID",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+VMPARA=1,?%",
+    "desc": "查询当前ID",
+    "seq": 0,
+    "period_ms": 0
+  }
+]

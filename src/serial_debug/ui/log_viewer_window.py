@@ -21,6 +21,9 @@ from tkinter import ttk, messagebox, filedialog
 
 from serial_debug.infra import themes
 from serial_debug.infra import config
+from serial_debug.ui.monitor_window import (MotorMonitorWindow,
+                                            BmsMonitorWindow,
+                                            ImuMonitorWindow)
 
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')
@@ -31,7 +34,9 @@ SEARCH_SCAN_LIMIT = 2_000_000
 GLOBAL_SEARCH_MAX = 500
 FILTER_RESULT_MAX = 50000
 FILTER_INSERT_BATCH = 5000
-LIVE_POLL_MS = 500  # 实时刷新轮询间隔
+LIVE_POLL_MS = 500  # 实时刷新轮询间隔（文件持续变化时）
+LIVE_IDLE_POLL_MS = 2000  # 文件持续无新增时拉长间隔，节省 CPU
+LIVE_IDLE_THRESHOLD = 6  # 连续 N 次无新增后切到 idle 间隔
 
 
 class _LogViewTab(ttk.Frame):
@@ -58,6 +63,7 @@ class _LogViewTab(ttk.Frame):
         self._live_pos = 0  # 文件字节偏移，从上次读取位置继续
         self._live_partial = ''  # 上次读取结尾的不完整行
         self._on_lines_appended = None  # 回调：(new_count)，通知 FilterPanel 重新筛选
+        self._live_idle_count = 0  # 文件无新增计数，达阈值后拉长轮询间隔
         self._on_line_click = on_line_click  # 回调：(tab, line_idx)
 
         self._build_widgets()
@@ -233,6 +239,13 @@ class _LogViewTab(ttk.Frame):
             text=f'{len(self._all_lines)} 行 | '
                  f'{os.path.getsize(self._path)/1024:.1f} KB')
         self._render_batch(0, RENDER_BATCH)
+        # 智能检测：文件 mtime 距今 < 60 秒（说明正在被写入），自动开启实时刷新
+        try:
+            mtime = os.path.getmtime(self._path)
+            if time.time() - mtime < 60:
+                self.set_live_mode(True)
+        except Exception:
+            pass
 
     def _render_batch(self, start: int, count: int):
         total = len(self._all_lines)
@@ -261,10 +274,35 @@ class _LogViewTab(ttk.Frame):
             text.insert('end',
                         f'… 还有 {total - end} 行未加载，滚动到底自动加载 '
                         f'(已渲染 {self._rendered_count})\n',
-                        'note')
+                        ('note', 'placeholder'))
             line_no.insert('end', '\n', 'muted')
             line_no.configure(state='disabled')
             text.configure(state='disabled')
+
+    def _delete_trailing_placeholder(self):
+        """删除末尾占位符行（… 还有 N 行未加载...）。
+
+        Tk Text 末尾总保留一个空行；旧实现用 `end-1c` 计算行号会落到空行
+        而非占位符行，导致 delete 只删空行、占位符残留，后续渲染把新行
+        追加到占位符之后，造成行号错位。改用 placeholder tag 范围删除：
+        只删 tag 覆盖的占位符行本身，保留末尾空行，避免 insert('end')
+        把新内容拼到上一行末尾。
+        """
+        text = self._text
+        line_no = self._line_no
+        text.configure(state='normal')
+        line_no.configure(state='normal')
+        try:
+            ranges = text.tag_ranges('placeholder')
+            if ranges and len(ranges) >= 2:
+                start_idx, end_idx = str(ranges[0]), str(ranges[1])
+                text.delete(start_idx, end_idx)
+                # line_no 对应行：占位符那行是空（line_no 插的是 '\n'）
+                line_no.delete(start_idx, end_idx)
+        except Exception:
+            pass
+        text.configure(state='disabled')
+        line_no.configure(state='disabled')
 
     def _load_more(self):
         if not self._auto_load or self._loading:
@@ -274,16 +312,7 @@ class _LogViewTab(ttk.Frame):
             return
         self._loading = True
         try:
-            self._text.configure(state='normal')
-            self._line_no.configure(state='normal')
-            end_line = int(self._text.index('end-1c').split('.')[0])
-            self._text.delete(f'{end_line}.0', 'end')
-            # line_no 的占位行可能比 text 少，单独算
-            ln_end = int(self._line_no.index('end-1c').split('.')[0])
-            if ln_end >= end_line:
-                self._line_no.delete(f'{end_line}.0', 'end')
-            self._text.configure(state='disabled')
-            self._line_no.configure(state='disabled')
+            self._delete_trailing_placeholder()
             self._render_batch(self._rendered_count, RENDER_BATCH)
             # 加载后跳到新底部，让用户看到新内容 + 新占位符
             self._text.yview_moveto(1.0)
@@ -380,6 +409,15 @@ class _LogViewTab(ttk.Frame):
                 self._all_lines.append(ln)
                 self._line_tags.append(self._classify(ln))
                 new_count += 1
+                # 同步喂给已打开的数据监视窗口（电机/BMS/IMU），
+                # 让曲线/数值随实时日志一起更新
+                try:
+                    parent = self.winfo_toplevel()
+                    feed = getattr(parent, 'feed_monitor_from_line', None)
+                    if feed is not None:
+                        feed(ln)
+                except Exception:
+                    pass
         if new_count > 0:
             # 更新信息条
             self._info_lbl.configure(
@@ -403,18 +441,7 @@ class _LogViewTab(ttk.Frame):
             all_old_rendered = self._rendered_count >= old_total
             if all_old_rendered and at_bottom and not self._loading:
                 # 删除旧占位符（如有），追加新行
-                self._text.configure(state='normal')
-                self._line_no.configure(state='normal')
-                try:
-                    end_line = int(self._text.index('end-1c').split('.')[0])
-                    self._text.delete(f'{end_line}.0', 'end')
-                    ln_end = int(self._line_no.index('end-1c').split('.')[0])
-                    if ln_end >= end_line:
-                        self._line_no.delete(f'{end_line}.0', 'end')
-                except Exception:
-                    pass
-                self._text.configure(state='disabled')
-                self._line_no.configure(state='disabled')
+                self._delete_trailing_placeholder()
                 # 渲染新增的行（可能 total - _rendered_count > new_count，因为之前可能有占位符）
                 self._render_batch(self._rendered_count,
                                    len(self._all_lines) - self._rendered_count)
@@ -422,13 +449,21 @@ class _LogViewTab(ttk.Frame):
                 self._text.yview_moveto(1.0)
                 self.update_idletasks()
                 self._text.yview_moveto(1.0)
+        # 空闲计数：有新增则重置，无新增则累计，达到阈值后拉长轮询间隔
+        if new_count > 0:
+            self._live_idle_count = 0
+        else:
+            self._live_idle_count += 1
         self._schedule_next_poll()
 
     def _schedule_next_poll(self):
         if not self._live_mode:
             self._live_poll_id = None
             return
-        self._live_poll_id = self.after(LIVE_POLL_MS, self._poll_file)
+        interval = (LIVE_IDLE_POLL_MS
+                    if self._live_idle_count >= LIVE_IDLE_THRESHOLD
+                    else LIVE_POLL_MS)
+        self._live_poll_id = self.after(interval, self._poll_file)
 
     def stop_live(self):
         """销毁前清理轮询定时器。"""
@@ -493,13 +528,7 @@ class _LogViewTab(ttk.Frame):
             return
         # 若未渲染，加载到包含该行的批次
         if line_idx >= self._rendered_count:
-            self._text.configure(state='normal')
-            end_line = int(self._text.index('end-1c').split('.')[0])
-            self._text.delete(f'{end_line}.0', 'end')
-            self._line_no.configure(state='normal')
-            self._line_no.delete(f'{end_line}.0', 'end')
-            self._line_no.configure(state='disabled')
-            self._text.configure(state='disabled')
+            self._delete_trailing_placeholder()
             batch_end = ((line_idx // RENDER_BATCH) + 1) * RENDER_BATCH
             self._render_batch(self._rendered_count,
                                batch_end - self._rendered_count)
@@ -898,7 +927,18 @@ class LogViewerWindow(tk.Toplevel):
     def __init__(self, parent, path: str | None = None, theme=None):
         super().__init__(parent)
         self.title('日志查看')
-        self.geometry('1400x800')
+        # 优先用持久化的几何
+        try:
+            saved_geo = config.load().get('log_view_geometry', '')
+        except Exception:
+            saved_geo = ''
+        if saved_geo:
+            try:
+                self.geometry(saved_geo)
+            except Exception:
+                self.geometry('1400x800')
+        else:
+            self.geometry('1400x800')
         self.minsize(900, 540)
 
         self._theme = theme or themes.THEMES['dark']
@@ -906,10 +946,17 @@ class LogViewerWindow(tk.Toplevel):
         # 分离的 FilterPanel Toplevel（None 表示嵌入式）
         self._filter_popout: tk.Toplevel | None = None
         self._filter_panel: _FilterPanel | None = None
+        # 数据监视独立窗口单例（电机 / BMS / IMU）
+        self._motor_monitor: MotorMonitorWindow | None = None
+        self._bms_monitor: BmsMonitorWindow | None = None
+        self._imu_monitor: ImuMonitorWindow | None = None
 
         self._build_toolbar()
+        self._build_menubar()
         self._build_paned()
         self._build_global_search_bar()
+        # 应用持久化的视图状态（工具栏显隐）
+        self._load_view_state()
 
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         try:
@@ -929,11 +976,13 @@ class LogViewerWindow(tk.Toplevel):
         # 跳到末尾的快捷键在 Toplevel 层绑定，不依赖 text 焦点
         self.bind('<Control-End>', lambda _e: self._jump_to_end())
         self.bind('<Control-Key-End>', lambda _e: self._jump_to_end())
+        self.bind('<Control-w>', lambda _e: self._on_close())
 
     # ---- UI 构建 -------------------------------------------------------
     def _build_toolbar(self):
         bar = ttk.Frame(self, padding=(8, 6))
         bar.pack(fill='x')
+        self._toolbar = bar
         ttk.Button(bar, text='打开文件…',
                    command=self._open_file_dialog).pack(side='left')
         ttk.Button(bar, text='关闭当前 Tab',
@@ -958,6 +1007,15 @@ class LogViewerWindow(tk.Toplevel):
         self._live_btn = ttk.Button(bar, text='实时刷新',
                                     command=self._toggle_live_mode)
         self._live_btn.pack(side='left')
+        ttk.Separator(bar, orient='vertical').pack(
+            side='left', fill='y', padx=6)
+        # 数据监视窗口入口（与串口调试助手工具栏一致）
+        ttk.Button(bar, text='电机监视',
+                   command=self._open_motor_monitor).pack(side='left')
+        ttk.Button(bar, text='BMS 监视',
+                   command=self._open_bms_monitor).pack(side='left', padx=4)
+        ttk.Button(bar, text='IMU 监视',
+                   command=self._open_imu_monitor).pack(side='left')
         ttk.Label(bar, text='（Ctrl+Shift+F 全局，Ctrl+F 文件内搜索）',
                  foreground=self._theme['muted']
                  ).pack(side='left', padx=8)
@@ -997,6 +1055,149 @@ class LogViewerWindow(tk.Toplevel):
             tab._chain_load()
         except Exception:
             pass
+
+    def _build_menubar(self):
+        """菜单栏：文件 / 视图 / 工具 / 帮助。
+
+        工具菜单覆盖工具栏全部功能：搜索 / 跳转 / 实时刷新 / 筛选窗口分离嵌入 /
+        数据监视三窗口（电机 / BMS / IMU）。
+        """
+        menubar = tk.Menu(self)
+        self._menubar = menubar
+        # 文件
+        m_file = tk.Menu(menubar, tearoff=False)
+        m_file.add_command(label='打开文件…', accelerator='Ctrl+O',
+                           command=self._open_file_dialog)
+        m_file.add_command(label='关闭当前 Tab',
+                           command=self._close_current_tab)
+        m_file.add_separator()
+        m_file.add_command(label='关闭窗口', accelerator='Ctrl+W',
+                           command=self._on_close)
+        menubar.add_cascade(label='文件', menu=m_file)
+
+        # 视图
+        m_view = tk.Menu(menubar, tearoff=False)
+        self._view_toolbar_var = tk.BooleanVar(value=True)
+        m_view.add_checkbutton(
+            label='工具栏', variable=self._view_toolbar_var,
+            command=self._toggle_toolbar)
+        m_view.add_separator()
+        m_view.add_command(label='分离筛选窗口',
+                           command=self._popout_filter)
+        m_view.add_command(label='嵌入筛选窗口',
+                           command=self._embed_filter)
+        m_view.add_separator()
+        m_view.add_command(label='切换实时刷新',
+                           command=self._toggle_live_mode)
+        m_view.add_command(label='跳到末尾',
+                           command=self._jump_to_end)
+        menubar.add_cascade(label='视图', menu=m_view)
+
+        # 工具
+        m_tools = tk.Menu(menubar, tearoff=False)
+        m_tools.add_command(label='全局搜索',
+                            accelerator='Ctrl+Shift+F',
+                            command=lambda: self._show_global_search(True))
+        m_tools.add_command(label='文件内搜索',
+                            accelerator='Ctrl+F',
+                            command=self._focus_current_search)
+        m_tools.add_separator()
+        m_tools.add_command(label='分离筛选窗口',
+                            command=self._popout_filter)
+        m_tools.add_command(label='嵌入筛选窗口',
+                            command=self._embed_filter)
+        m_tools.add_separator()
+        m_tools.add_command(label='切换实时刷新',
+                            command=self._toggle_live_mode)
+        m_tools.add_command(label='跳到末尾',
+                            command=self._jump_to_end)
+        m_tools.add_separator()
+        # 数据监视窗口（与串口调试助手工具栏一致）
+        m_tools.add_command(label='电机监视',
+                            command=self._open_motor_monitor)
+        m_tools.add_command(label='BMS 监视',
+                            command=self._open_bms_monitor)
+        m_tools.add_command(label='IMU 监视',
+                            command=self._open_imu_monitor)
+        menubar.add_cascade(label='工具', menu=m_tools)
+
+        # 帮助
+        m_help = tk.Menu(menubar, tearoff=False)
+        m_help.add_command(label='关于', command=self._show_about)
+        menubar.add_cascade(label='帮助', menu=m_help)
+
+        try:
+            self.configure(menu=menubar)
+        except Exception:
+            pass
+        # 菜单主题
+        try:
+            t = self._theme
+            themes.apply_menu_theme(menubar, t)
+        except Exception:
+            pass
+
+    def _toggle_toolbar(self):
+        """显示/隐藏工具栏。"""
+        try:
+            if self._view_toolbar_var.get():
+                self._toolbar.pack(fill='x', before=self._paned)
+            else:
+                self._toolbar.pack_forget()
+        except Exception:
+            pass
+
+    def _load_view_state(self):
+        """从 config 读取工具栏显隐并应用。"""
+        try:
+            cfg = config.load()
+        except Exception:
+            return
+        try:
+            show_tb = cfg.get('log_view_show_toolbar', True)
+            self._view_toolbar_var.set(bool(show_tb))
+            if not show_tb:
+                self._toolbar.pack_forget()
+        except Exception:
+            pass
+
+    def _save_state(self):
+        """关闭前持久化视图状态 + 几何。"""
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        try:
+            cfg['log_view_show_toolbar'] = bool(
+                self._view_toolbar_var.get())
+            try:
+                cfg['log_view_geometry'] = self.geometry()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            config.save(cfg)
+        except Exception:
+            pass
+
+    def _show_about(self):
+        dlg = tk.Toplevel(self)
+        dlg.title('关于')
+        try:
+            dlg.lift(self)
+            dlg.focus_force()
+        except Exception:
+            pass
+        dlg.resizable(True, True)
+        f = ttk.Frame(dlg, padding=20)
+        f.pack(fill='both', expand=True)
+        ttk.Label(f, text='日志查看器', font=('', 11, 'bold')
+                  ).pack(pady=(0, 6))
+        ttk.Label(f, text='多文件 Tab + 筛选面板 + 全局搜索 + 数据监视'
+                  ).pack()
+        ttk.Button(f, text='关闭', command=dlg.destroy
+                   ).pack(pady=(10, 0))
 
     def _build_paned(self):
         # 外层 PanedWindow：左 Notebook + 右 FilterPanel
@@ -1279,17 +1480,157 @@ class LogViewerWindow(tk.Toplevel):
 
     # ---- 关闭 ----------------------------------------------------------
     def _on_close(self):
+        try:
+            self._save_state()
+        except Exception:
+            pass
         if self._filter_popout is not None:
             try:
                 self._filter_popout.destroy()
             except Exception:
                 pass
             self._filter_popout = None
+        for win in (self._motor_monitor, self._bms_monitor,
+                    self._imu_monitor):
+            if win is not None:
+                try:
+                    win._on_close()
+                except Exception:
+                    try:
+                        win.destroy()
+                    except Exception:
+                        pass
+        self._motor_monitor = None
+        self._bms_monitor = None
+        self._imu_monitor = None
         for tab in self._tabs:
             tab._all_lines = []
             tab._search_matches = []
         self._tabs = []
         self.destroy()
+
+    # ---- 数据监视窗口（电机 / BMS / IMU）------------------------------
+    def _open_motor_monitor(self):
+        """打开电机数据监视独立窗口（单例）。"""
+        if (self._motor_monitor is not None
+                and self._motor_monitor.winfo_exists()):
+            self._motor_monitor.lift()
+            self._motor_monitor.focus_force()
+            return
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        self._motor_monitor = MotorMonitorWindow(
+            self,
+            variables=cfg.get('motor_vars', []),
+            plots=cfg.get('motor_plots', []))
+        self._motor_monitor.update_theme()
+        # 先让窗口立刻渲染出来，再用 after 在下一事件循环 tick 重放日志，
+        # 避免大日志回放阻塞窗口显示（用户感觉"打开特别慢"）
+        try:
+            self._motor_monitor.update_idletasks()
+        except Exception:
+            pass
+        self._motor_monitor.after(
+            0, lambda: self._replay_current_tab_to_monitor(
+                self._motor_monitor))
+
+    def _open_bms_monitor(self):
+        if (self._bms_monitor is not None
+                and self._bms_monitor.winfo_exists()):
+            self._bms_monitor.lift()
+            self._bms_monitor.focus_force()
+            return
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        self._bms_monitor = BmsMonitorWindow(
+            self,
+            variables=cfg.get('bms_vars', []),
+            plots=cfg.get('bms_plots', []))
+        self._bms_monitor.update_theme()
+        try:
+            self._bms_monitor.update_idletasks()
+        except Exception:
+            pass
+        self._bms_monitor.after(
+            0, lambda: self._replay_current_tab_to_monitor(
+                self._bms_monitor))
+
+    def _open_imu_monitor(self):
+        if (self._imu_monitor is not None
+                and self._imu_monitor.winfo_exists()):
+            self._imu_monitor.lift()
+            self._imu_monitor.focus_force()
+            return
+        try:
+            cfg = config.load()
+        except Exception:
+            cfg = {}
+        self._imu_monitor = ImuMonitorWindow(
+            self,
+            variables=cfg.get('imu_vars', []),
+            plots=cfg.get('imu_plots', []))
+        self._imu_monitor.update_theme()
+        try:
+            self._imu_monitor.update_idletasks()
+        except Exception:
+            pass
+        self._imu_monitor.after(
+            0, lambda: self._replay_current_tab_to_monitor(
+                self._imu_monitor))
+
+    def _replay_current_tab_to_monitor(self, win):
+        """把当前 Tab 已加载的全部日志行重放给新打开的监视窗口，
+        让用户在打开窗口后立刻看到曲线/数值，无需等新日志产生。
+
+        分块重放：每 tick 处理 CHUNK 行，让出主线程响应窗口绘制与
+        用户操作。一次性 feed 完整 lines 会阻塞 UI 数十秒（大日志），
+        用户感觉"打开特别慢"。
+        """
+        tab = self._current_tab()
+        if tab is None or win is None:
+            return
+        try:
+            lines = tab._all_lines
+            feed = win.feed
+        except Exception:
+            return
+        # 每块 5000 行：在中等机器上约 30~50ms，UI 仍能响应
+        CHUNK = 5000
+        state = {'i': 0}
+
+        def _tick():
+            # 窗口被关则停止
+            if not win.winfo_exists():
+                return
+            end = min(state['i'] + CHUNK, len(lines))
+            try:
+                for line in lines[state['i']:end]:
+                    feed(line)
+            except Exception:
+                pass
+            state['i'] = end
+            # 主动让出主线程：下一 tick 在 1ms 后继续，期间可处理 expose
+            if state['i'] < len(lines):
+                win.after(1, _tick)
+        _tick()
+
+    def feed_monitor_from_line(self, line: str):
+        """把一行日志同步喂给所有已打开的监视窗口。
+
+        由 _LogViewTab 在实时刷新追加新行时调用，让监视窗口跟着
+        实时日志一起更新曲线。
+        """
+        for win in (self._motor_monitor, self._bms_monitor,
+                    self._imu_monitor):
+            if win is not None and win.winfo_exists():
+                try:
+                    win.feed(line)
+                except Exception:
+                    pass
 
 
 if __name__ == '__main__':

@@ -72,6 +72,15 @@ DEFAULTS = {
     'bms_monitor_mode': 'detached',
     'imu_monitor_mode': 'detached',
     'log_view_last_dir': '',            # 日志查看窗口上次打开目录
+    # 监视窗口视图状态（所有 motor/bms/imu 共用，下次打开恢复）
+    'monitor_view_toolbar': True,       # 工具栏显隐
+    'monitor_view_status': True,        # 状态文本显隐
+    'monitor_view_varlist': True,       # 左侧变量列表显隐
+    'monitor_mode': '曲线',              # 曲线 / 数据
+    'monitor_hover_mode': 'current',    # current / all
+    # 日志查看器视图状态
+    'log_view_show_toolbar': True,      # 日志查看器工具栏显隐
+    'log_view_geometry': '1400x800',    # 日志查看器窗口几何
 }
 
 

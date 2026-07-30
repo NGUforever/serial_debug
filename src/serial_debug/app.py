@@ -1550,7 +1550,9 @@ def main():
         return _run_log_viewer_only(files)
     try:
         root = tk.Tk()
-        SerialDebugApp(root)
+        app = SerialDebugApp(root)
+        if '--debug-monitor' in args:
+            root.after(800, app._open_motor_monitor)
         root.mainloop()
     except Exception as e:
         import traceback
@@ -1563,9 +1565,12 @@ def main():
 
 
 def _run_log_viewer_only(files: list[str]):
-    """独立模式：只启动日志查看器窗口加载给定文件。
+    """独立模式：只启动日志查看器窗口。
 
-    用于桌面文件管理器右键"打开方式"：.desktop Exec=serial_debug --view %F
+    桌面图标启动时（无文件参数）直接打开空窗口，用户在工具栏里点
+    "打开文件…" 选择日志文件；避免出现"先弹文件对话框、选完才开主窗口"
+    的反直觉流程。命令行带文件参数（如 `serial_debug --view f1.txt`）
+    仍按原方式自动加载这些文件。
     """
     import sys
     import os
@@ -1587,20 +1592,9 @@ def _run_log_viewer_only(files: list[str]):
             root._icon_img = img  # 防 GC
     except Exception:
         pass
-    if not files:
-        from tkinter import filedialog
-        cfg = config.load()
-        init_dir = cfg.get('log_view_last_dir', '') or os.path.expanduser('~')
-        paths = filedialog.askopenfilenames(
-            title='打开日志文件（可多选）',
-            initialdir=init_dir,
-            filetypes=[('文本文件', '*.txt'), ('日志', '*.log'),
-                       ('所有文件', '*.*')])
-        if not paths:
-            sys.exit(0)
-        files = list(paths)
     try:
         win = LogViewerWindow(root, path=None, theme=t)
+        # 命令行带了文件参数：自动加载；否则留空让用户在工具栏里选
         for p in files:
             win.open_file(p)
     except Exception as e:
