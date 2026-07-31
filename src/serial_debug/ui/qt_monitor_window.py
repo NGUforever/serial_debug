@@ -711,6 +711,37 @@ class QtMonitorWindow:
         btn_sidebar.clicked.connect(_toggle_sidebar)
         tb.addWidget(btn_sidebar)
 
+        tb.addSeparator()
+
+        # 统计对话框：每变量 当前/最小/最大/均值/点数
+        def _show_stats():
+            self._show_statistics(win)
+        btn_stats = QPushButton('统计…')
+        btn_stats.clicked.connect(_show_stats)
+        tb.addWidget(btn_stats)
+
+        # CSV 导出
+        def _export_csv():
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            if not self._data:
+                QMessageBox.information(win, '导出 CSV', '没有可导出的数据')
+                return
+            path, _ = QFileDialog.getSaveFileName(
+                win, '导出 CSV', os.path.expanduser('~'),
+                'CSV (*.csv);;所有文件 (*)')
+            if not path:
+                return
+            try:
+                n_rows, step = self._export_csv(path)
+                QMessageBox.information(
+                    win, '导出完成',
+                    f'已导出 {n_rows:,} 行（采样步长 {step}）\n{path}')
+            except Exception as e:
+                QMessageBox.critical(win, '导出失败', str(e))
+        btn_csv = QPushButton('导出 CSV…')
+        btn_csv.clicked.connect(_export_csv)
+        tb.addWidget(btn_csv)
+
         # 状态栏：永久显示技术栈信息
         try:
             import PySide6
@@ -1108,6 +1139,153 @@ class QtMonitorWindow:
             config.save(cfg)
         except Exception:
             pass
+
+    # ---- 统计 & CSV 导出 --------------------------------------------
+    def _get_xy(self, name: str):
+        """取一个变量的 (xs, ys) numpy 数组（list 路径会缓存回 self._data）。"""
+        import numpy as np
+        pts = self._data.get(name)
+        if pts is None:
+            return None, None
+        if (isinstance(pts, tuple) and len(pts) == 2
+                and hasattr(pts[0], '__array_interface__')):
+            return pts[0], pts[1]
+        if not pts:
+            return None, None
+        try:
+            arr = np.asarray(pts, dtype=np.float64)
+            xs = arr[:, 0]
+            ys = arr[:, 1]
+            self._data[name] = (xs, ys)
+            return xs, ys
+        except Exception:
+            return None, None
+
+    def _compute_var_stats(self, name: str) -> dict | None:
+        """计算单变量统计：current/min/max/avg/n/first_ts/last_ts/duration。"""
+        import numpy as np
+        xs, ys = self._get_xy(name)
+        if xs is None or len(ys) == 0:
+            return None
+        return {
+            'current': float(ys[-1]),
+            'min': float(np.min(ys)),
+            'max': float(np.max(ys)),
+            'avg': float(np.mean(ys)),
+            'n': int(len(ys)),
+            'first_ts': float(xs[0]),
+            'last_ts': float(xs[-1]),
+            'duration': float(xs[-1] - xs[0]),
+        }
+
+    def _show_statistics(self, parent_win):
+        """弹窗显示每变量统计信息。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QVBoxLayout, QTableWidget,
+            QTableWidgetItem, QHeaderView, QLabel,
+        )
+        dlg = QDialog(parent_win)
+        dlg.setWindowTitle('统计信息')
+        dlg.resize(720, 480)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(8, 8, 8, 8)
+        info = QLabel(f'共 {len(self._data)} 个变量，统计基于当前已加载数据')
+        info.setStyleSheet('padding: 2px 4px; color: #888;')
+        v.addWidget(info)
+
+        cols = ['变量名', '说明', '当前值', '最小', '最大', '均值',
+                '点数', '时长(s)']
+        tw = QTableWidget(len(self._data), len(cols), dlg)
+        tw.setHorizontalHeaderLabels(cols)
+        tw.setEditTriggers(QTableWidget.NoEditTriggers)
+        tw.verticalHeader().setVisible(False)
+        tw.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tw.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        tw.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for row, name in enumerate(self._data.keys()):
+            meta = self._var_meta.get(name, {})
+            stats = self._compute_var_stats(name)
+            label = meta.get('label') or name
+            if stats is None:
+                vals = [name, label, '—', '—', '—', '—', 0, '—']
+            else:
+                vals = [
+                    name,
+                    label,
+                    self._fmt_num(stats['current']),
+                    self._fmt_num(stats['min']),
+                    self._fmt_num(stats['max']),
+                    self._fmt_num(stats['avg']),
+                    f"{stats['n']:,}",
+                    f"{stats['duration']:.2f}",
+                ]
+            for col, text in enumerate(vals):
+                item = QTableWidgetItem(str(text))
+                if col == 0:
+                    item.setToolTip(name)
+                # 数值列右对齐
+                if col >= 2:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                tw.setItem(row, col, item)
+        v.addWidget(tw, 1)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(dlg.reject)
+        btns.accepted.connect(dlg.accept)
+        v.addWidget(btns)
+        dlg.exec()
+
+    @staticmethod
+    def _fmt_num(v: float) -> str:
+        if v == int(v):
+            return str(int(v))
+        return f'{v:.3f}'
+
+    def _export_csv(self, path: str, max_rows: int = 100_000) -> tuple[int, int]:
+        """导出当前 self._data 到 CSV（wide format，按行号对齐）。
+
+        每变量一列，行号对齐（不同变量长度不同时短列补空）。
+        数据量超过 max_rows 时按等间隔采样降采样到 max_rows，避免巨型 CSV。
+        返回 (实际行数, 采样步长)。
+        """
+        import numpy as np
+        names = list(self._data.keys())
+        if not names:
+            raise ValueError('没有可导出的数据')
+        # 取所有变量的 ys（不合并时间戳，按行号对齐）
+        ys_list = []
+        max_n = 0
+        for name in names:
+            _, ys = self._get_xy(name)
+            if ys is None:
+                ys_list.append([])
+                continue
+            ys_list.append(ys)
+            if len(ys) > max_n:
+                max_n = len(ys)
+        if max_n == 0:
+            raise ValueError('所有变量均为空')
+        # 采样步长（>=1）
+        step = (max_n + max_rows - 1) // max_rows if max_n > max_rows else 1
+        out_rows = (max_n + step - 1) // step
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('row,' + ','.join(names) + '\n')
+            for i in range(0, max_n, step):
+                row_idx = i // step
+                row = [str(row_idx)]
+                for j, ys in enumerate(ys_list):
+                    if i < len(ys):
+                        v = float(ys[i])
+                        # 整数显示整数，浮点保留 6 位有效
+                        if v == int(v):
+                            row.append(str(int(v)))
+                        else:
+                            row.append(f'{v:.6g}')
+                    else:
+                        row.append('')
+                f.write(','.join(row) + '\n')
+        return out_rows, step
 
     def _current_plot_idx(self) -> int | None:
         """返回当前聚焦/选中的 plot 索引。
