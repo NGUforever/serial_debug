@@ -1,21 +1,19 @@
-"""Qt 主程序 - 串口调试助手（Stage 4.1：骨架）。
+"""Qt 主程序 - 串口调试助手（Stage 4.1-4.5）。
 
-迁移自 tkinter 版 app.py。本阶段聚焦核心串口调试功能：
+迁移自 tkinter 版 app.py。功能：
   - 串口连接 / 断开（端口 + 波特率 + 数据位/校验/停止位/流控）
   - 单一日志窗口（发送 / 响应 / 周期日志，按时间顺序，颜色区分）
   - 命令输入 + 发送 + 追加 CRLF / 自动滚动 / 清空
   - 响应检测 + 超时提示 + pending 配对
   - 主题切换（VSCode Dark+ / 浅色，复用 qt_theme）
   - 状态栏：状态点（灰/绿/黄/红）+ 状态文本
-  - 菜单栏：工具（打开 Qt 监视窗口）/ 帮助
+  - 菜单栏：工具（Qt 监视窗口 / AT 命令面板 / 日志查看器 / 刷新端口）
+  - 筛选：正则表达式 + 启用开关，仅对周期日志行生效
+  - 日志落盘：独立线程写入，不影响收发显示
+  - 日志查看器：子进程启动 tkinter LogViewerWindow
 
-后续 Stage：
-  4.2  AT 命令面板（嵌入式 + 独立窗口）
-  4.3  嵌入式 motor/BMS/IMU 监视
-  4.4  日志查看器入口 / 筛选 / 日志落盘
-  4.5  拆 tkinter
-
-入口：环境变量 SERIAL_DEBUG_QT_MAIN=1 启动 Qt 主程序（默认仍走 tkinter）
+入口：默认即 Qt 主程序（Stage 4.5 起，无需环境变量）
+      SERIAL_DEBUG_TK=1 回退到 tkinter 版
 """
 from __future__ import annotations
 
@@ -94,6 +92,22 @@ class QtSerialDebugApp:
         self._connected_label: str = '未连接'
         # 子窗口引用（避免被 GC）
         self._at_window_qt = None
+        # 筛选（Stage 4.4）
+        self._filter_pattern: str = self.cfg.get('filter_pattern', '') or ''
+        self._filter_enabled: bool = bool(self.cfg.get('filter_enabled', False))
+        self._filter_compiled: re.Pattern | None = None
+        try:
+            if self._filter_pattern:
+                self._filter_compiled = re.compile(self._filter_pattern)
+        except re.error:
+            self._filter_compiled = None
+        self._filter_edit = None     # QLineEdit
+        self._filter_cb = None       # QCheckBox
+        # 日志落盘（Stage 4.4）
+        self.log_writer = None       # LogWriter 实例
+        self.log_path: str = self.cfg.get('log_path', '') or ''
+        self._log_btn = None         # QPushButton（切换落盘 / 停止）
+        self._log_status = None     # QLabel
 
     # ---- 后端回调（在工作线程触发）----------------------------------
     def _on_backend_status(self, level: str, msg: str):
@@ -248,6 +262,28 @@ class QtSerialDebugApp:
         cb_ts.stateChanged.connect(self._on_ts_convert_toggled)
         bl.addWidget(cb_ts)
 
+        bl.addSpacing(12)
+        bl.addWidget(QLabel('筛选:'))
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText('正则表达式')
+        self._filter_edit.setText(self._filter_pattern)
+        self._filter_edit.setMinimumWidth(120)
+        self._filter_edit.returnPressed.connect(self._on_filter_committed)
+        self._filter_edit.editingFinished.connect(self._on_filter_committed)
+        bl.addWidget(self._filter_edit, 1)
+        self._filter_cb = QCheckBox('启用')
+        self._filter_cb.setChecked(self._filter_enabled)
+        self._filter_cb.stateChanged.connect(self._on_filter_enable_toggled)
+        bl.addWidget(self._filter_cb)
+
+        bl.addSpacing(12)
+        self._log_btn = QPushButton('日志落盘…')
+        self._log_btn.clicked.connect(self._on_log_btn_clicked)
+        bl.addWidget(self._log_btn)
+        self._log_status = QLabel('未落盘')
+        self._log_status.setMinimumWidth(100)
+        bl.addWidget(self._log_status)
+
         btn_clear = QPushButton('清空')
         btn_clear.clicked.connect(self._on_clear_clicked)
         bl.addWidget(btn_clear)
@@ -275,6 +311,12 @@ class QtSerialDebugApp:
         # 关闭事件
         def _close_event(event):
             self._save_cfg_now()
+            try:
+                if self.log_writer is not None:
+                    self.log_writer.stop()
+                    self.log_writer = None
+            except Exception:
+                pass
             try:
                 self.backend.close()
             except Exception:
@@ -306,6 +348,10 @@ class QtSerialDebugApp:
         act_at.setShortcut('Ctrl+T')
         act_at.triggered.connect(self._open_at_window)
         m_tools.addAction(act_at)
+        act_logview = QAction('打开日志查看器…', win)
+        act_logview.setShortcut('Ctrl+L')
+        act_logview.triggered.connect(self._open_log_viewer)
+        m_tools.addAction(act_logview)
         m_tools.addSeparator()
         act_refresh_ports = QAction('刷新端口列表', win)
         act_refresh_ports.triggered.connect(self._refresh_ports)
@@ -503,6 +549,11 @@ class QtSerialDebugApp:
             tag = 'send'
         else:
             tag = 'log'
+            # 筛选：只对周期日志行生效；发送/响应行始终显示
+            if (self._filter_enabled
+                    and self._filter_compiled is not None
+                    and not self._filter_compiled.search(line)):
+                return None
         return (f'{prefix}{line}\n', tag)
 
     def _ts_prefix_if_needed(self, line: str) -> str:
@@ -530,6 +581,12 @@ class QtSerialDebugApp:
 
     def _append_log(self, text: str, tag: str = 'log'):
         """追加一段日志，按 tag 着色。"""
+        # 日志落盘：所有显示的行都写入（含发送/响应/日志/提示）
+        if self.log_writer is not None:
+            try:
+                self.log_writer.put(text)
+            except Exception:
+                pass
         if self._log_edit is None:
             return
         from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
@@ -598,14 +655,16 @@ class QtSerialDebugApp:
 
     # ---- 菜单动作 -----------------------------------------------------
     def _open_qt_monitor(self):
-        """启动 Qt 监视窗口子进程（避免双事件循环冲突）。"""
+        """启动 Qt 监视窗口子进程（避免双事件循环冲突）。
+
+        用 sys.executable + 环境变量 SERIAL_DEBUG_QT_PILOT=1 走 main()
+        里的 QtMonitorWindow 路径，兼容 PyInstaller 打包后 -m 不识别。
+        """
         import subprocess
         env = dict(os.environ)
         env['SERIAL_DEBUG_QT_PILOT'] = '1'
         try:
-            subprocess.Popen([sys.executable, '-m',
-                              'serial_debug.ui.qt_monitor_window'],
-                             env=env)
+            subprocess.Popen([sys.executable], env=env)
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self._win, '启动失败', str(e))
@@ -632,6 +691,89 @@ class QtSerialDebugApp:
             on_change=_on_change)
         self._at_window_qt.exec()
 
+    # ---- 筛选 / 日志落盘 / 日志查看器（Stage 4.3-4.4）----------------
+    def _on_filter_enable_toggled(self, state):
+        self._filter_enabled = bool(state)
+        self._save_cfg_debounced()
+
+    def _on_filter_committed(self):
+        """用户在筛选框回车或失焦：重新编译正则。"""
+        if self._filter_edit is None:
+            return
+        pat = self._filter_edit.text().strip()
+        self._filter_pattern = pat
+        if pat:
+            try:
+                self._filter_compiled = re.compile(pat)
+            except re.error as e:
+                self._filter_compiled = None
+                if self._status_lbl is not None:
+                    self._status_lbl.setText(f'筛选正则错误: {e}')
+        else:
+            self._filter_compiled = None
+        self._save_cfg_debounced()
+
+    def _on_log_btn_clicked(self):
+        if self.log_writer is not None:
+            self._stop_log_writer()
+        else:
+            self._start_log_writer()
+
+    def _start_log_writer(self):
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from serial_debug.core.log_writer import LogWriter
+        # 默认目录：上次保存路径所在目录，否则用户家目录
+        if self.log_path:
+            default_path = self.log_path
+        else:
+            default_path = os.path.expanduser('~/serial_debug.log')
+        path, _ = QFileDialog.getSaveFileName(
+            self._win, '选择日志落盘文件', default_path,
+            '日志 (*.log);;文本 (*.txt);;所有文件 (*)')
+        if not path:
+            return
+        lw = LogWriter(path)
+        if not lw.start():
+            QMessageBox.critical(self._win, '日志落盘失败',
+                                 lw.error or '无法打开文件')
+            return
+        self.log_writer = lw
+        self.log_path = path
+        if self._log_btn is not None:
+            self._log_btn.setText('停止落盘')
+        if self._log_status is not None:
+            self._log_status.setText(f'落盘中: {os.path.basename(path)}')
+        self._save_cfg_debounced()
+
+    def _stop_log_writer(self):
+        if self.log_writer is None:
+            return
+        try:
+            self.log_writer.stop()
+        except Exception:
+            pass
+        self.log_writer = None
+        if self._log_btn is not None:
+            self._log_btn.setText('日志落盘…')
+        if self._log_status is not None:
+            self._log_status.setText('已停止')
+
+    def _open_log_viewer(self):
+        """子进程启动 tkinter 日志查看器窗口。
+
+        用 sys.executable + 环境变量 SERIAL_DEBUG_LOG_VIEWER=1 走 main()
+        里的 _run_log_viewer_only([]) 路径，兼容 PyInstaller 打包后
+        -m 不识别的情况。
+        """
+        import subprocess
+        env = dict(os.environ)
+        env['SERIAL_DEBUG_LOG_VIEWER'] = '1'
+        try:
+            subprocess.Popen([sys.executable], env=env)
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self._win, '启动失败', str(e))
+
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox
         try:
@@ -641,7 +783,7 @@ class QtSerialDebugApp:
             versions = f'版本获取失败: {e}'
         QMessageBox.information(
             self._win, '关于',
-            '串口调试助手 (Qt) - Stage 4.1 骨架\n\n'
+            '串口调试助手 (Qt) - Stage 4.1-4.5\n\n'
             '技术栈:\n' + versions + '\n\n'
             '功能:\n'
             '  - 串口连接 / 断开（端口/波特率/数据位/校验/停止位/流控）\n'
@@ -650,12 +792,9 @@ class QtSerialDebugApp:
             '  - 追加 CRLF / 自动滚动 / 时间戳转换 / 清空\n'
             '  - 响应检测 + 超时提示 + pending 配对\n'
             '  - 主题切换（VSCode Dark+ / 浅色）\n'
-            '  - 工具菜单打开 Qt 监视窗口\n\n'
-            '后续 Stage 4.2-4.5:\n'
-            '  4.2  AT 命令面板\n'
-            '  4.3  嵌入式 motor/BMS/IMU 监视\n'
-            '  4.4  日志查看器入口 / 筛选 / 日志落盘\n'
-            '  4.5  拆 tkinter')
+            '  - 工具菜单：Qt 监视窗口 / AT 命令面板 / 日志查看器\n'
+            '  - 筛选（正则）+ 日志落盘（独立线程）\n'
+            '  - 默认入口即 Qt（SERIAL_DEBUG_TK=1 回退 tkinter）')
 
     # ---- 配置持久化 ---------------------------------------------------
     def _save_cfg_debounced(self):
@@ -683,6 +822,9 @@ class QtSerialDebugApp:
             cfg['parity'] = self._parity
             cfg['stopbits'] = self._stopbits
             cfg['flow_control'] = self._flow_control
+            cfg['filter_pattern'] = self._filter_pattern
+            cfg['filter_enabled'] = self._filter_enabled
+            cfg['log_path'] = self.log_path
             if self._win is not None:
                 cfg['geometry'] = f'{self._win.width()}x{self._win.height()}'
             config.save(cfg)

@@ -1599,42 +1599,55 @@ def main():
     """启动入口。
 
     用法：
-      serial_debug                    # 启动完整串口调试助手
+      serial_debug                    # 启动 Qt 主程序（Stage 4.5 起默认）
       serial_debug --view F1 [F2 ...] # 只启动日志查看器加载给定文件
 
-    环境变量 SERIAL_DEBUG_QT_PILOT=1 启动 Qt 试点曲线窗口
-    环境变量 SERIAL_DEBUG_QT_MAIN=1 启动 Qt 主程序（Stage 4.1 骨架）
+    环境变量：
+      SERIAL_DEBUG_TK=1              回退到 tkinter 主程序
+      SERIAL_DEBUG_QT_PILOT=1        启动 Qt 监视窗口（曲线）
+      SERIAL_DEBUG_QT_MAIN=1         强制 Qt 主程序（与默认等价，保留兼容）
+      SERIAL_DEBUG_LOG_VIEWER=1      启动独立日志查看器窗口
     （PyInstaller 打包后 sys.executable -m <module> 不工作，
-     改用环境变量区分入口，子进程看到此变量走 Qt 路径）。
+     改用环境变量区分入口，子进程看到此变量走对应路径）。
     """
     import sys
     import os
     if os.environ.get('SERIAL_DEBUG_QT_PILOT') == '1':
-        # Qt 试点窗口：独立子进程运行，避免与主 tkinter 事件循环冲突
+        # Qt 试点窗口：独立子进程运行，避免与主事件循环冲突
         from serial_debug.ui.qt_monitor_window import QtMonitorWindow
         sys.exit(QtMonitorWindow().run())
-    if os.environ.get('SERIAL_DEBUG_QT_MAIN') == '1':
-        # Qt 主程序（Stage 4.1 骨架）：串口连接 + 日志显示 + 发送
-        from serial_debug.ui.qt_app import QtSerialDebugApp
-        sys.exit(QtSerialDebugApp().run())
+    if os.environ.get('SERIAL_DEBUG_LOG_VIEWER') == '1':
+        # 独立日志查看器子进程（Qt 主程序的工具菜单启动）
+        return _run_log_viewer_only([])
+    if os.environ.get('SERIAL_DEBUG_TK') == '1':
+        # tkinter 主程序（回退路径，兼容老用法）
+        args = sys.argv[1:]
+        if args and args[0] == '--view':
+            files = [f for f in args[1:] if not f.startswith('-')]
+            return _run_log_viewer_only(files)
+        try:
+            root = tk.Tk()
+            app = SerialDebugApp(root)
+            if '--debug-monitor' in args:
+                root.after(800, app._open_motor_monitor)
+            root.mainloop()
+        except Exception as e:
+            import traceback
+            try:
+                from tkinter import messagebox as _mb
+                _mb.showerror('串口调试助手 - 启动错误',
+                              f'{e}\n\n{traceback.format_exc()}')
+            except Exception:
+                traceback.print_exc()
+        return
+    # 默认：Qt 主程序
     args = sys.argv[1:]
     if args and args[0] == '--view':
+        # --view 仍然走 tkinter 日志查看器（Qt 版尚未实现）
         files = [f for f in args[1:] if not f.startswith('-')]
         return _run_log_viewer_only(files)
-    try:
-        root = tk.Tk()
-        app = SerialDebugApp(root)
-        if '--debug-monitor' in args:
-            root.after(800, app._open_motor_monitor)
-        root.mainloop()
-    except Exception as e:
-        import traceback
-        try:
-            from tkinter import messagebox as _mb
-            _mb.showerror('串口调试助手 - 启动错误',
-                          f'{e}\n\n{traceback.format_exc()}')
-        except Exception:
-            traceback.print_exc()
+    from serial_debug.ui.qt_app import QtSerialDebugApp
+    sys.exit(QtSerialDebugApp().run())
 
 
 def _run_log_viewer_only(files: list[str]):
