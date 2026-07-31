@@ -48,6 +48,51 @@ def _resource_path(relative_path: str) -> str:
         return str(base / relative_path)
 
 
+def _make_status_dot_class():
+    """返回 _StatusDot 类（延迟构造，避免模块导入即 init Qt）。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtWidgets import QWidget
+    from serial_debug.infra import themes
+
+    class _StatusDot(QWidget):
+        """自绘圆形状态点：idle 灰 / ok 绿 / wait 黄 / err 红。"""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._state = 'idle'
+            self._theme_resolved = 'dark'
+            self.setFixedSize(18, 18)
+
+        def set_state(self, state: str, theme_resolved: str):
+            self._state = state
+            self._theme_resolved = theme_resolved
+            self.update()
+
+        def paintEvent(self, event):
+            t = themes.THEMES.get(self._theme_resolved, themes.THEMES['dark'])
+            color_map = {
+                'idle': t.get('status_idle', t.get('muted', '#888')),
+                'ok': t.get('status_ok', '#4ec9b0'),
+                'wait': t.get('status_wait', '#dcdcaa'),
+                'err': t.get('status_err', '#f48771'),
+            }
+            color = color_map.get(self._state, color_map['idle'])
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # 外圈柔和光晕（更淡的同色半透明）
+            halo = QColor(color)
+            halo.setAlpha(60)
+            p.setBrush(halo)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(0, 0, 18, 18)
+            # 内圈实心圆点
+            p.setBrush(QColor(color))
+            p.drawEllipse(4, 4, 10, 10)
+
+    return _StatusDot
+
+
 class QtSerialDebugApp:
     """Qt 主程序（包装类，UI 在 _create() 延迟构建）。"""
 
@@ -92,6 +137,11 @@ class QtSerialDebugApp:
         self._connected_label: str = '未连接'
         # 子窗口引用（避免被 GC）
         self._at_window_qt = None
+        # 连接按钮图标缓存（_create 内填充）
+        self._connect_icon = None
+        self._disconnect_icon = None
+        # 工具栏引用（视图菜单显隐用）
+        self._toolbar = None
         # 筛选（Stage 4.4）
         self._filter_pattern: str = self.cfg.get('filter_pattern', '') or ''
         self._filter_enabled: bool = bool(self.cfg.get('filter_enabled', False))
@@ -151,11 +201,16 @@ class QtSerialDebugApp:
         except Exception:
             pass
 
-        # 顶栏：串口 / 波特率 / 数据位 / 校验 / 停止位 / 流控 / 连接 / 状态点
+        # 顶栏：端口 / 波特率 / 连接 / 状态点 / 主题切换
+        from PySide6.QtCore import QSize
         tb = QToolBar('串口')
         tb.setMovable(False)
+        tb.setIconSize(QSize(16, 16))
         win.addToolBar(tb)
+        self._toolbar = tb
 
+        # 组1：连接组
+        tb.addWidget(QLabel('端口'))
         self._port_combo = QComboBox()
         self._port_combo.setEditable(True)
         self._port_combo.setMinimumWidth(180)
@@ -165,8 +220,8 @@ class QtSerialDebugApp:
         if cur_port:
             self._port_combo.setCurrentText(cur_port)
         tb.addWidget(self._port_combo)
-        tb.addWidget(QLabel('  波特率: '))
 
+        tb.addWidget(QLabel('波特率'))
         self._baud_combo = QComboBox()
         self._baud_combo.setEditable(True)
         for b in ('9600', '19200', '38400', '57600', '115200', '230400',
@@ -186,25 +241,37 @@ class QtSerialDebugApp:
                 self._do_connect()
         self._connect_btn = QPushButton('连接')
         self._connect_btn.setProperty('primary', True)
+        # 连接按钮图标：用 SP_MediaPlay（连接）/ SP_MediaStop（断开）
+        try:
+            from PySide6.QtWidgets import QStyle
+            self._connect_icon = win.style().standardIcon(
+                QStyle.SP_MediaPlay)
+            self._disconnect_icon = win.style().standardIcon(
+                QStyle.SP_MediaStop)
+            self._connect_btn.setIcon(self._connect_icon)
+        except Exception:
+            self._connect_icon = None
+            self._disconnect_icon = None
         self._connect_btn.clicked.connect(_toggle_connect)
         tb.addWidget(self._connect_btn)
 
-        # 分隔
+        # 分组2：状态点 + 文本
         tb.addSeparator()
-
-        # 状态点（用 QLabel + 圆形 stylesheet）
-        self._status_dot = QLabel('●')
-        self._status_dot.setStyleSheet(
-            'color: #888; font-size: 16pt; padding: 0 8px 0 12px;')
+        StatusDot = _make_status_dot_class()
+        self._status_dot = StatusDot()
+        self._status_dot.setToolTip('连接状态')
         tb.addWidget(self._status_dot)
 
         self._status_lbl = QLabel('未连接')
         self._status_lbl.setMinimumWidth(120)
         tb.addWidget(self._status_lbl)
 
-        tb.addSeparator()
+        # 弹簧把主题按钮推到最右
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
 
-        # 主题切换
+        # 组3：主题切换
         def _toggle_theme():
             cur = themes.resolve(self.theme_name)
             self.theme_name = 'light' if cur == 'dark' else 'dark'
@@ -213,6 +280,12 @@ class QtSerialDebugApp:
             self._apply_theme_to_log()
             self._save_cfg_debounced()
         btn_theme = QPushButton('切换主题')
+        try:
+            from PySide6.QtWidgets import QStyle
+            btn_theme.setIcon(win.style().standardIcon(
+                QStyle.SP_DialogResetButton))
+        except Exception:
+            pass
         btn_theme.clicked.connect(_toggle_theme)
         tb.addWidget(btn_theme)
 
@@ -224,29 +297,47 @@ class QtSerialDebugApp:
         mono = QFont(qt_theme.QT_MONO_FAMILY, qt_theme.QT_MONO_SIZE)
         self._log_edit.setFont(mono)
         self._log_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        # 自动滚动到底时留 4 行空间，避免贴底视觉压迫
+        try:
+            self._log_edit.setCenterOnScroll(True)
+        except Exception:
+            pass
         # 滚动条跟随
         sb = self._log_edit.verticalScrollBar()
         sb.valueChanged.connect(self._on_scroll)
-        win.setCentralWidget(self._log_edit)
 
-        # 底栏：命令输入 + 发送 + 选项
+        # 欢迎提示
+        self._append_log('串口调试助手 (Qt) 就绪\n', tag='note')
+        self._append_log('请选择端口并点击「连接」开始调试\n\n', tag='note')
+
+        # 底栏：卡片容器 + 分组分隔
         bottom = QFrame()
-        bottom.setProperty('panel', True)
+        bottom.setProperty('card', True)
         bl = QHBoxLayout(bottom)
-        bl.setContentsMargins(8, 6, 8, 6)
-        bl.setSpacing(6)
+        bl.setContentsMargins(10, 8, 10, 8)
+        bl.setSpacing(8)
 
+        # 命令组：命令 + 发送
         bl.addWidget(QLabel('命令:'))
         self._cmd_edit = QLineEdit()
+        self._cmd_edit.setPlaceholderText('输入命令，回车发送')
         self._cmd_edit.returnPressed.connect(self._on_send_clicked)
-        bl.addWidget(self._cmd_edit, 1)
+        bl.addWidget(self._cmd_edit, 2)
 
         btn_send = QPushButton('发送')
         btn_send.setProperty('primary', True)
+        try:
+            from PySide6.QtWidgets import QStyle
+            btn_send.setIcon(win.style().standardIcon(
+                QStyle.SP_ArrowRight))
+        except Exception:
+            pass
         btn_send.clicked.connect(self._on_send_clicked)
         bl.addWidget(btn_send)
 
-        bl.addSpacing(12)
+        bl.addWidget(self._make_divider())
+
+        # 选项组：追加 CRLF / 自动滚动 / 时间戳
         cb_crlf = QCheckBox('追加 CRLF')
         cb_crlf.setChecked(self.append_crlf)
         cb_crlf.stateChanged.connect(self._on_crlf_toggled)
@@ -262,7 +353,9 @@ class QtSerialDebugApp:
         cb_ts.stateChanged.connect(self._on_ts_convert_toggled)
         bl.addWidget(cb_ts)
 
-        bl.addSpacing(12)
+        bl.addWidget(self._make_divider())
+
+        # 筛选组
         bl.addWidget(QLabel('筛选:'))
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText('正则表达式')
@@ -276,25 +369,39 @@ class QtSerialDebugApp:
         self._filter_cb.stateChanged.connect(self._on_filter_enable_toggled)
         bl.addWidget(self._filter_cb)
 
-        bl.addSpacing(12)
+        bl.addWidget(self._make_divider())
+
+        # 落盘组
         self._log_btn = QPushButton('日志落盘…')
+        try:
+            from PySide6.QtWidgets import QStyle
+            self._log_btn.setIcon(win.style().standardIcon(
+                QStyle.SP_DialogSaveButton))
+        except Exception:
+            pass
         self._log_btn.clicked.connect(self._on_log_btn_clicked)
         bl.addWidget(self._log_btn)
         self._log_status = QLabel('未落盘')
         self._log_status.setMinimumWidth(100)
         bl.addWidget(self._log_status)
 
+        # 清空按钮（次要，靠右）
+        bl.addStretch(1)
         btn_clear = QPushButton('清空')
+        try:
+            from PySide6.QtWidgets import QStyle
+            btn_clear.setIcon(win.style().standardIcon(
+                QStyle.SP_DialogDiscardButton))
+        except Exception:
+            pass
         btn_clear.clicked.connect(self._on_clear_clicked)
         bl.addWidget(btn_clear)
 
-        # 把底栏挂到主窗口下方（QMainWindow 的 central 只能一个，用 dock 风格）
-        # 用 QFrame 作为 QWidget 添加到 QMainWindow 底部
-        # 简化：把 centralWidget 替换为包含 log + bottom 的容器
+        # 把底栏挂到主窗口下方
         central = QWidget()
         cv = QVBoxLayout(central)
-        cv.setContentsMargins(0, 0, 0, 0)
-        cv.setSpacing(0)
+        cv.setContentsMargins(6, 6, 6, 6)
+        cv.setSpacing(6)
         cv.addWidget(self._log_edit, 1)
         cv.addWidget(bottom)
         win.setCentralWidget(central)
@@ -334,32 +441,75 @@ class QtSerialDebugApp:
         return win
 
     def _build_menubar(self, win):
-        from PySide6.QtGui import QAction
-        from PySide6.QtWidgets import QMenuBar
+        from PySide6.QtGui import QAction, QIcon
+        from PySide6.QtWidgets import QMenuBar, QStyle
         mb = win.menuBar()
+        style = win.style()
+
+        def _icon(sp):
+            try:
+                return style.standardIcon(sp)
+            except Exception:
+                return QIcon()
 
         # 工具菜单
         m_tools = mb.addMenu('工具')
-        act_qt_monitor = QAction('Qt 监视窗口…', win)
+        act_qt_monitor = QAction(_icon(QStyle.SP_ComputerIcon),
+                                  'Qt 监视窗口…', win)
         act_qt_monitor.setShortcut('Ctrl+M')
         act_qt_monitor.triggered.connect(self._open_qt_monitor)
         m_tools.addAction(act_qt_monitor)
-        act_at = QAction('AT 命令面板…', win)
+        act_at = QAction(_icon(QStyle.SP_FileDialogListView),
+                         'AT 命令面板…', win)
         act_at.setShortcut('Ctrl+T')
         act_at.triggered.connect(self._open_at_window)
         m_tools.addAction(act_at)
-        act_logview = QAction('打开日志查看器…', win)
+        act_logview = QAction(_icon(QStyle.SP_DialogOpenButton),
+                               '打开日志查看器…', win)
         act_logview.setShortcut('Ctrl+L')
         act_logview.triggered.connect(self._open_log_viewer)
         m_tools.addAction(act_logview)
         m_tools.addSeparator()
-        act_refresh_ports = QAction('刷新端口列表', win)
+        act_refresh_ports = QAction(_icon(QStyle.SP_BrowserReload),
+                                     '刷新端口列表', win)
         act_refresh_ports.triggered.connect(self._refresh_ports)
         m_tools.addAction(act_refresh_ports)
 
+        # 视图菜单
+        m_view = mb.addMenu('视图')
+        # AT 命令面板：独立窗口 / 隐藏
+        act_at_show = QAction('AT 命令面板（独立窗口）', win)
+        act_at_show.setShortcut('Ctrl+T')
+        act_at_show.triggered.connect(self._open_at_window)
+        m_view.addAction(act_at_show)
+        # 监视窗口
+        act_monitor = QAction('数据监视窗口…', win)
+        act_monitor.setShortcut('Ctrl+M')
+        act_monitor.triggered.connect(self._open_qt_monitor)
+        m_view.addAction(act_monitor)
+        # 日志查看器
+        act_logview = QAction('日志查看器…', win)
+        act_logview.setShortcut('Ctrl+L')
+        act_logview.triggered.connect(self._open_log_viewer)
+        m_view.addAction(act_logview)
+        m_view.addSeparator()
+        # 工具栏显隐
+        self._act_toolbar = QAction('工具栏', win)
+        self._act_toolbar.setCheckable(True)
+        self._act_toolbar.setChecked(True)
+        self._act_toolbar.triggered.connect(self._toggle_toolbar)
+        m_view.addAction(self._act_toolbar)
+        # 状态栏显隐
+        self._act_statusbar = QAction('状态栏', win)
+        self._act_statusbar.setCheckable(True)
+        self._act_statusbar.setChecked(True)
+        self._act_statusbar.triggered.connect(self._toggle_statusbar)
+        m_view.addAction(self._act_statusbar)
+
         # 帮助菜单
         m_help = mb.addMenu('帮助')
-        act_about = QAction('关于…', win)
+        act_about = QAction(_icon(QStyle.SP_MessageBoxInformation),
+                             '关于…', win)
         act_about.triggered.connect(self._show_about)
         m_help.addAction(act_about)
 
@@ -369,6 +519,15 @@ class QtSerialDebugApp:
         sb = {1: '1', 2: '2', 1.5: '1.5'}.get(self._stopbits, '1')
         fc = 'RTS/CTS' if self._flow_control == 'rtscts' else 'None'
         return f'{bs}{par}{sb}  流控: {fc}'
+
+    @staticmethod
+    def _make_divider():
+        """底栏分组用的竖直分隔条。"""
+        from PySide6.QtWidgets import QFrame
+        line = QFrame()
+        line.setProperty('divider', True)
+        line.setFixedWidth(1)
+        return line
 
     # ---- 串口连接 -----------------------------------------------------
     def _do_connect(self):
@@ -394,6 +553,8 @@ class QtSerialDebugApp:
             rtscts=(self._flow_control == 'rtscts'))
         if ok:
             self._connect_btn.setText('断开')
+            if self._disconnect_icon is not None:
+                self._connect_btn.setIcon(self._disconnect_icon)
             self._connected_label = f'已连接 {port} @ {baud}'
             self._dot_state = 'ok'
             self._update_status()
@@ -404,6 +565,8 @@ class QtSerialDebugApp:
     def _do_disconnect(self):
         self.backend.close()
         self._connect_btn.setText('连接')
+        if self._connect_icon is not None:
+            self._connect_btn.setIcon(self._connect_icon)
         self._connected_label = '已断开'
         self._dot_state = 'idle'
         self._update_status()
@@ -417,6 +580,14 @@ class QtSerialDebugApp:
             self._port_combo.addItem(p)
         if cur:
             self._port_combo.setCurrentText(cur)
+
+    def _toggle_toolbar(self, checked):
+        if self._toolbar is not None:
+            self._toolbar.setVisible(checked)
+
+    def _toggle_statusbar(self, checked):
+        if self._win is not None:
+            self._win.statusBar().setVisible(checked)
 
     # ---- 发送 / 日志显示 ---------------------------------------------
     def _on_send_clicked(self):
@@ -514,6 +685,8 @@ class QtSerialDebugApp:
             self._connected_label = msg
         if closed:
             self._connect_btn.setText('连接')
+            if self._connect_icon is not None:
+                self._connect_btn.setIcon(self._connect_icon)
             self._connected_label = '连接已断开'
             self._status_lbl.setText(self._connected_label)
             self._dot_state = 'idle'
@@ -629,17 +802,11 @@ class QtSerialDebugApp:
     def _update_status(self):
         if self._status_dot is None:
             return
-        t = themes.THEMES.get(self._theme_name_resolved,
-                              themes.THEMES['dark'])
-        color_map = {
-            'idle': t.get('muted', '#888'),
-            'ok': t.get('status_ok', '#4ec9b0'),
-            'wait': t.get('status_wait', '#dcdcaa'),
-            'err': t.get('status_err', '#f48771'),
-        }
-        color = color_map.get(self._dot_state, color_map['idle'])
-        self._status_dot.setStyleSheet(
-            f'color: {color}; font-size: 16pt; padding: 0 8px 0 12px;')
+        try:
+            self._status_dot.set_state(self._dot_state,
+                                      self._theme_name_resolved)
+        except Exception:
+            pass
 
     def _apply_theme_to_log(self):
         """主题切换后重新着色日志区背景。"""

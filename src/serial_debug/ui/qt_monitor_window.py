@@ -616,8 +616,6 @@ class QtMonitorWindow:
             ) != QMessageBox.Yes:
                 return
             del self._plots[idx]
-            if not self._plots:
-                self._plots.append(_default_plot())
             self._rebuild_plots_ui()
             self._save_plots()
             self._refresh_plot()

@@ -41,7 +41,7 @@ _COL_LABELS = {
     'seq': '顺序', 'period_ms': '间隔(ms)', 'op': '操作',
 }
 _COL_WIDTHS = {'cmd': 220, 'desc': 220, 'seq': 60,
-               'period_ms': 80, 'op': 140}
+               'period_ms': 80, 'op': 180}
 
 
 class AtCmdPanelQt:
@@ -153,11 +153,11 @@ class AtCmdPanelQt:
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
         hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(4, QHeaderView.Fixed)
+        hh.setSectionResizeMode(4, QHeaderView.Interactive)
         # 行高紧凑
         vh = self._table.verticalHeader()
         vh.setVisible(False)
-        vh.setDefaultSectionSize(28)
+        vh.setDefaultSectionSize(32)
 
         v.addWidget(self._table, 1)
 
@@ -208,7 +208,7 @@ class AtCmdPanelQt:
             op_l.addWidget(btn_del)
             op_l.addStretch(1)
             self._table.setCellWidget(row, 4, op_w)
-            self._table.setRowHeight(row, 28)
+            self._table.setRowHeight(row, 32)
 
     def _sync_from_table(self):
         """把表格当前编辑的内容同步回 self.commands（批量重建前调用）。"""

@@ -73,6 +73,55 @@ def build_qss(theme_name: str) -> str:
         border-radius: 4px;
     }}
 
+    /* 卡片（底栏等需要明显层级感的容器） */
+    QFrame[card="true"] {{
+        background-color: {panel_bg};
+        border: 1px solid {border};
+        border-radius: 6px;
+    }}
+
+    /* 竖直分隔条 */
+    QFrame[divider="true"] {{
+        background-color: {border};
+        max-width: 1px;
+        min-width: 1px;
+        margin: 4px 8px;
+    }}
+
+    /* 工具栏（顶栏） */
+    QToolBar {{
+        background-color: {panel_bg};
+        border: none;
+        border-bottom: 1px solid {border};
+        spacing: 4px;
+        padding: 4px 6px;
+        font-family: '{QT_FONT_FAMILY}';
+        font-size: {QT_FONT_SIZE}pt;
+    }}
+    QToolBar QLabel {{
+        background: transparent;
+        color: {muted};
+        padding: 0 4px 0 8px;
+    }}
+    QToolBar::separator {{
+        width: 1px;
+        height: 20px;
+        background-color: {border};
+        margin: 0 6px;
+    }}
+    QToolBar QToolButton {{
+        background: transparent;
+        border: none;
+        padding: 4px 8px;
+        border-radius: 4px;
+    }}
+    QToolBar QToolButton:hover {{
+        background-color: {btn_hover};
+    }}
+    QToolBar QToolButton:pressed {{
+        background-color: {btn_active};
+    }}
+
     /* 按钮（普通） */
     QPushButton {{
         background-color: {btn_bg};
@@ -116,14 +165,37 @@ def build_qss(theme_name: str) -> str:
         color: {fg};
         border: 1px solid {border};
         border-radius: 4px;
-        padding: 4px 8px;
+        padding: 5px 8px;
         selection-background-color: {select_bg};
         selection-color: {fg};
         font-family: '{QT_MONO_FAMILY}';
         font-size: {QT_MONO_SIZE}pt;
     }}
+    QPlainTextEdit {{
+        padding: 6px 8px;
+        background-color: {panel_bg};
+    }}
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
     QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
+        border: 1px solid {accent};
+    }}
+
+    /* CheckBox / RadioButton：indicator 紧凑，文字留白 */
+    QCheckBox, QRadioButton {{
+        spacing: 6px;
+        background: transparent;
+        color: {fg};
+        padding: 2px 4px;
+    }}
+    QCheckBox::indicator, QRadioButton::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {border};
+        background-color: {panel_bg};
+        border-radius: 3px;
+    }}
+    QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+        background-color: {accent};
         border: 1px solid {accent};
     }}
 
@@ -217,14 +289,18 @@ def build_qss(theme_name: str) -> str:
         color: {fg};
         border-bottom: 1px solid {border};
         padding: 2px;
+        spacing: 2px;
     }}
     QMenuBar::item {{
         background: transparent;
-        padding: 4px 10px;
+        padding: 6px 12px;
         border-radius: 4px;
     }}
     QMenuBar::item:selected {{
         background-color: {btn_bg};
+    }}
+    QMenuBar::item:pressed {{
+        background-color: {btn_active};
     }}
     QMenu {{
         background-color: {panel_bg};
@@ -233,11 +309,20 @@ def build_qss(theme_name: str) -> str:
         padding: 4px;
     }}
     QMenu::item {{
-        padding: 4px 24px 4px 16px;
+        padding: 6px 28px 6px 20px;
         border-radius: 4px;
     }}
     QMenu::item:selected {{
         background-color: {select_bg};
+        color: #ffffff;
+    }}
+    QMenu::item:disabled {{
+        color: {muted};
+    }}
+    /* shortcut 右侧灰色显示（Qt 自动布局，无需手动 column） */
+    QMenu::right-arrow {{
+        width: 8px;
+        height: 8px;
     }}
     QMenu::separator {{
         height: 1px;
@@ -250,7 +335,9 @@ def build_qss(theme_name: str) -> str:
         background-color: {bg};
         color: {muted};
         border-top: 1px solid {border};
+        padding: 2px 6px;
     }}
+    QStatusBar::item {{ border: none; }}
 
     /* Tab */
     QTabWidget::pane {{
