@@ -33,7 +33,9 @@ hiddenimports += ['pyqtgraph', 'pyqtgraph.functions',
                   'pyqtgraph.graphicsItems.PlotDataItem',
                   'pyqtgraph.graphicsItems.ViewBox',
                   'pyqtgraph.graphicsItems.AxisItem',
-                  'numpy', 'numpy.core', 'numpy.core._multiarray_umath']
+                  'numpy', 'numpy.core', 'numpy.core._multiarray_umath',
+                  # OpenGL 加速：pyqtgraph useOpenGL=True 需要 PyOpenGL
+                  'OpenGL', 'OpenGL.GL', 'OpenGL_accelerate']
 
 # 仓库根目录（spec 在 packaging/ 下，向上一层）
 _here = os.path.dirname(os.path.abspath(SPEC))

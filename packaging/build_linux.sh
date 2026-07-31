@@ -28,7 +28,7 @@ if [ "$1" = "--appimage" ]; then
 fi
 
 # 安装 Python 依赖
-pip install --quiet pyinstaller pyserial PySide6 pyqtgraph numpy
+pip install --quiet pyinstaller pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate
 
 # PyInstaller 构建
 echo "==> PyInstaller 构建中..."

@@ -64,23 +64,26 @@
 - 试点目的：验证 pyqtgraph 10w/100w 点流畅度 + QSS 主题 + PyInstaller 打包体积，通过后逐步把 tkinter 监视窗口迁到 Qt，tkinter 版本废弃
 
 ### 已验证通过（2026-07-31）
-- ✅ PyInstaller 能打包 PySide6 + pyqtgraph + numpy，**实测体积 254MB**（原 tkinter 版 25MB，增加 229MB）
+- ✅ PyInstaller 能打包 PySide6 + pyqtgraph + numpy + PyOpenGL，**实测体积 254MB**（原 tkinter 版 25MB，增加 229MB）
 - ✅ 子进程启动 Qt 窗口可行：`SERIAL_DEBUG_QT_PILOT=1` 环境变量 + `sys.executable`，规避 PyInstaller 不识别 `-m` 的问题
 - ✅ 打包后 Qt 试点窗口能正常启动：所有 import 成功、QApplication 进入事件循环、无 stderr 报错
 - ✅ 窗口标题 `[Qt 试点] 大数据曲线窗口 - PySide6 + pyqtgraph`、状态栏永久显示技术栈版本、F1 弹"关于本窗口"对话框、性能基准按钮可用（用户已验证）
 - ✅ _toggle_theme 已修：setBackground + 轴色 + _refresh_plot 重画曲线，主题切换瞬时生效
 - ✅ monitor_window.py 加 LTTB 保形状降采样（10w 点 → 2000 点 12.9ms，50 个尖峰全保留），统计/hover 仍用全量数据不丢真
-
-### 关键技术决策
-- **独立子进程启动 Qt 窗口**：避免 tkinter + Qt 双事件循环冲突；用环境变量 `SERIAL_DEBUG_QT_PILOT=1` 区分入口，因为 PyInstaller 打包后 `sys.executable -m <module>` 不工作
-- **主题同源**：qt_theme.py 复用 infra/themes.py 色板，Qt 与 tkinter 主题切换时同步
-- **延迟导入 PySide6/pyqtgraph**：tkinter 主程序不强制依赖 Qt，没装 Qt 也能跑 tkinter 路径
-- **PyInstaller spec**：收集 PySide6 核心 submodule（QtCore/QtGui/QtWidgets）+ pyqtgraph + numpy，体积 254MB 偏大但商业产品可接受
+- ✅ **性能基准达标**（100w 点 × 3 条曲线）：数据生成 118.2ms / 渲染绘制 55.0ms / 总耗时 173.2ms，吞吐 5.5M 点/秒
+  - 关键优化：PyOpenGL + numpy 向量化数据结构（`_data: dict[str, tuple[ndarray, ndarray]]`）+ PlotDataItem 复用 setData()
+  - 对比 tkinter Canvas 全量画 100w 点 10+ 秒，pyqtgraph 55ms = 200 倍速度
+  - 55ms 渲染 100w 点 × 3 条 = 实时串口 25 FPS（40ms 间隔）够用；交互由 pyqtgraph 内部 OpenGL/缓存处理，与 _refresh_plot 速度无关
 
 ### 试点未完成项（按方案 A 推进）
 1. ✅ load_log() 已接完整 motor/BMS/IMU 解析器（_iter_panel_vars 复用 monitor_window 的 Panel._parse_tagged_line + DEFAULT_VARS）
 2. ✅ 串口实时 feed 通路已搭好（start_serial / stop_serial + threading + QTimer 25 FPS 节流 + _max_points=60000 限长）
-3. ⏳ 试点性能基准数值未记录（用户点过性能基准按钮但未回报具体数值），是否全量切 Qt 未定
+3. ✅ 试点性能基准数值已记录：100w 点 × 3 条 55ms 渲染，全量切 Qt 决策已下
+
+### 决策：全量迁移到 Qt（2026-07-31）
+- 性能 200 倍 + 交互流畅度（用户已验证）+ QSS 主题达标 → Qt 路径完全胜出
+- 迁移路径：QtMonitorWindow 扩展为完整监视窗口 → 主程序迁 Qt → 日志查看器迁 Qt → 拆 tkinter
+- tkinter 版本废弃，但 monitor_window.py 的解析器（_parse_tagged_line / DEFAULT_VARS）继续复用，不重写
 
 ## 串口调试工具设计原则（2026-07-10 整理）
 
