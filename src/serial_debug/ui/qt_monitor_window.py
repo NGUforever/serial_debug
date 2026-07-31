@@ -300,12 +300,22 @@ class QtMonitorWindow:
         self._win = None
         # 变量数据：{var_name: (xs_array, ys_array) | list[(ts, val)]}
         self._data: dict = {}
+        # 变量元数据：{name: {color, label, y_min, y_max, warn_min, warn_max}}
+        # 自动从 self._data 派生（load_log / gen_mock_data 加新 var 时同步登记）
+        # 用户可改 color/label，持久化到 qt_monitor_vars
+        self._var_meta: dict[str, dict] = self._load_var_meta()
         # 配置：plots list（每项 = {title, x_label, y_label, vars, show_*}）
         self._plots: list[dict] = self._load_plots()
         # UI：PlotWidget 列表 + 每个对应的 curves dict（name -> PlotDataItem）
         self._plot_widgets: list = []
         self._curves: list[dict] = []
         self._plots_layout = None
+        # 侧栏 UI
+        self._sidebar = None        # QTreeWidget
+        self._sidebar_container = None  # QWidget（splitter 左侧）
+        self._splitter = None
+        # 侧栏显隐状态（独立于 Qt 实际 isVisible，避免 win 未 show 时误存 False）
+        self._sidebar_visible: bool = True
         self._palette = [
             '#569cd6', '#ce9178', '#4ec9b0', '#dcdcaa',
             '#c586c0', '#f48771', '#6a9955', '#9cdcfe',
@@ -330,6 +340,44 @@ class QtMonitorWindow:
             return [_normalize_plot(p) for p in raw]
         except Exception:
             return [_default_plot()]
+
+    def _load_var_meta(self) -> dict[str, dict]:
+        from serial_debug.infra import config
+        out: dict[str, dict] = {}
+        try:
+            cfg = config.load()
+            for v in cfg.get('qt_monitor_vars', []):
+                if isinstance(v, dict) and 'name' in v:
+                    out[v['name']] = {
+                        'color': v.get('color', ''),
+                        'label': v.get('label', ''),
+                        'y_min': v.get('y_min'),
+                        'y_max': v.get('y_max'),
+                        'warn_min': v.get('warn_min'),
+                        'warn_max': v.get('warn_max'),
+                    }
+        except Exception:
+            pass
+        return out
+
+    def _save_var_meta(self) -> None:
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            cfg['qt_monitor_vars'] = [
+                {'name': n, **m} for n, m in self._var_meta.items()
+            ]
+            if self._splitter is not None:
+                try:
+                    sizes = self._splitter.sizes()
+                    if sizes:
+                        cfg['qt_monitor_sidebar_width'] = int(sizes[0])
+                except Exception:
+                    pass
+            cfg['qt_monitor_sidebar_visible'] = self._sidebar_visible
+            config.save(cfg)
+        except Exception:
+            pass
 
     def _save_plots(self) -> None:
         from serial_debug.infra import config
@@ -369,6 +417,26 @@ class QtMonitorWindow:
             pass
 
     # ---- 数据加载 ----------------------------------------------------
+    def _register_var(self, name: str) -> None:
+        """新变量首次出现时登记到 self._var_meta（自动分配调色板下一色）。"""
+        if name in self._var_meta:
+            return
+        idx = len(self._var_meta)
+        # 中文 label：从静态注册表查
+        label = name
+        for v in _ALL_VARS:
+            if v['name'] == name:
+                label = v.get('label', name)
+                break
+        self._var_meta[name] = {
+            'color': self._palette[idx % len(self._palette)],
+            'label': label,
+            'y_min': None,
+            'y_max': None,
+            'warn_min': None,
+            'warn_max': None,
+        }
+
     def load_log(self, path: str) -> int:
         """加载日志文件，复用 monitor_window 的 motor/BMS/IMU 解析器。
 
@@ -382,6 +450,7 @@ class QtMonitorWindow:
                     hit = False
                     for ts, name, val in _iter_panel_vars(line):
                         self._data.setdefault(name, []).append((ts, val))
+                        self._register_var(name)
                         hit = True
                     if hit:
                         n += 1
@@ -407,6 +476,9 @@ class QtMonitorWindow:
             'cos_with_spikes': (t.copy(), data2),
             'ramp': (t.copy(), data3),
         }
+        # 同步登记到 var_meta
+        for name in self._data:
+            self._register_var(name)
 
     # ---- UI ----------------------------------------------------------
     def _create(self):
@@ -439,9 +511,19 @@ class QtMonitorWindow:
         win.setWindowTitle('[Qt 试点] 数据监视窗口 - PySide6 + pyqtgraph')
         win.resize(1400, 800)
 
-        # 中央：可滚动容器 + 垂直布局放多个 PlotWidget
-        central = QWidget()
-        outer = QVBoxLayout(central)
+        # 中央：QSplitter 横向分栏，左侧变量列表，右侧 plot 滚动区
+        from PySide6.QtWidgets import QSplitter
+        central = QSplitter(Qt.Horizontal)
+        central.setHandleWidth(4)
+        central.setChildrenCollapsible(False)
+
+        # 左侧：变量列表侧栏
+        self._sidebar_container = self._build_sidebar()
+        central.addWidget(self._sidebar_container)
+
+        # 右侧：可滚动容器 + 垂直布局放多个 PlotWidget
+        right_pane = QWidget()
+        outer = QVBoxLayout(right_pane)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(8)
 
@@ -453,12 +535,29 @@ class QtMonitorWindow:
         self._plots_layout = QVBoxLayout(plots_container)
         self._plots_layout.setContentsMargins(0, 0, 0, 0)
         self._plots_layout.setSpacing(8)
-        # 末尾 stretch，让空余空间不强制撑开 plot
         self._plots_layout.addStretch(1)
 
         scroll.setWidget(plots_container)
         outer.addWidget(scroll)
+        central.addWidget(right_pane)
+
+        # 让右侧 plot 区占大头，侧栏按持久化宽度
+        from serial_debug.infra import config as _cfg
+        try:
+            sb_w = int(_cfg.load().get('qt_monitor_sidebar_width', 260))
+        except Exception:
+            sb_w = 260
+        central.setSizes([sb_w, 1400 - sb_w])
+        # 持久化侧栏可见状态
+        try:
+            sb_visible = bool(_cfg.load().get('qt_monitor_sidebar_visible', True))
+        except Exception:
+            sb_visible = True
+        self._sidebar_visible = sb_visible
+        self._sidebar_container.setVisible(sb_visible)
+
         win.setCentralWidget(central)
+        self._splitter = central
 
         # 工具栏
         tb = QToolBar('工具')
@@ -606,6 +705,12 @@ class QtMonitorWindow:
         btn_theme.clicked.connect(_toggle_theme)
         tb.addWidget(btn_theme)
 
+        def _toggle_sidebar():
+            self._toggle_sidebar()
+        btn_sidebar = QPushButton('切换侧栏')
+        btn_sidebar.clicked.connect(_toggle_sidebar)
+        tb.addWidget(btn_sidebar)
+
         # 状态栏：永久显示技术栈信息
         try:
             import PySide6
@@ -723,10 +828,11 @@ class QtMonitorWindow:
         btn_disc.clicked.connect(_disconnect_serial)
         tb.addWidget(btn_disc)
 
-        # 关闭时保存几何 + plots
+        # 关闭时保存几何 + plots + var_meta
         def _close_event(event):
             self._save_geometry()
             self._save_plots()
+            self._save_var_meta()
             try:
                 self.stop_serial()
             except Exception:
@@ -738,6 +844,9 @@ class QtMonitorWindow:
 
         # 构建初始 plots UI
         self._rebuild_plots_ui()
+        # 填充侧栏（var_meta 已在 __init__ 加载）
+        self._refresh_sidebar()
+        self._refresh_sidebar_visibility()
         # 恢复持久化的窗口几何
         self._restore_geometry()
         return win
@@ -754,6 +863,251 @@ class QtMonitorWindow:
                     break
             out.append({'name': name, 'label': label})
         return out
+
+    def _build_sidebar(self):
+        """构建左侧变量列表侧栏：颜色 | 名称 | 当前值 | 在图。
+
+        - 颜色格点击 → QColorDialog 改色
+        - 右键菜单：添加到当前 plot / 从当前 plot 移除 / 删除变量
+        - 自动从 self._var_meta 派生行
+        """
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QAction
+        from PySide6.QtWidgets import (
+            QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
+            QHeaderView, QMenu, QLabel,
+        )
+
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        title = QLabel('变量列表')
+        title.setStyleSheet('padding: 6px 10px; font-weight: bold;')
+        v.addWidget(title)
+
+        tree = QTreeWidget()
+        tree.setColumnCount(4)
+        tree.setHeaderLabels(['颜色', '名称', '当前值', '在图'])
+        tree.setRootIsDecorated(False)
+        tree.setUniformRowHeights(True)
+        tree.setAllColumnsShowFocus(True)
+        # 列宽策略：颜色窄、名称宽、当前值中、在图窄
+        hdr = tree.header()
+        hdr.setSectionResizeMode(0, QHeaderView.Fixed)
+        hdr.resizeSection(0, 36)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
+        hdr.resizeSection(3, 28)
+        # 整行选中
+        tree.setSelectionMode(QTreeWidget.SingleSelection)
+        tree.setSelectionBehavior(QTreeWidget.SelectRows)
+
+        tree.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        def _ctx_menu(pos):
+            item = tree.itemAt(pos)
+            if item is None:
+                return
+            name = item.data(0, Qt.UserRole)
+            if not name:
+                return
+            menu = QMenu(tree)
+
+            def _add_to_current_plot():
+                idx = self._current_plot_idx()
+                if idx is None:
+                    return
+                vars_list = self._plots[idx].setdefault('vars', [])
+                if name not in vars_list:
+                    vars_list.append(name)
+                self._save_plots()
+                self._refresh_plot()
+                self._refresh_sidebar_visibility()
+
+            def _remove_from_current_plot():
+                idx = self._current_plot_idx()
+                if idx is None:
+                    return
+                vars_list = self._plots[idx].get('vars', [])
+                while name in vars_list:
+                    vars_list.remove(name)
+                self._save_plots()
+                self._refresh_plot()
+                self._refresh_sidebar_visibility()
+
+            def _add_to_all_plots():
+                for p in self._plots:
+                    if name not in p.get('vars', []):
+                        p.setdefault('vars', []).append(name)
+                self._save_plots()
+                self._refresh_plot()
+                self._refresh_sidebar_visibility()
+
+            def _remove_var():
+                # 删除变量：从 var_meta / data / 所有 plot.vars 清理
+                self._var_meta.pop(name, None)
+                self._data.pop(name, None)
+                for p in self._plots:
+                    while name in p.get('vars', []):
+                        p['vars'].remove(name)
+                self._save_plots()
+                self._save_var_meta()
+                self._refresh_plot()
+                self._refresh_sidebar()
+
+            act_add = QAction('添加到当前图表', menu)
+            act_add.triggered.connect(_add_to_current_plot)
+            menu.addAction(act_add)
+            act_rm = QAction('从当前图表移除', menu)
+            act_rm.triggered.connect(_remove_from_current_plot)
+            menu.addAction(act_rm)
+            act_all = QAction('添加到全部图表', menu)
+            act_all.triggered.connect(_add_to_all_plots)
+            menu.addAction(act_all)
+            menu.addSeparator()
+            act_del = QAction('删除变量', menu)
+            act_del.triggered.connect(_remove_var)
+            menu.addAction(act_del)
+            menu.exec(tree.viewport().mapToGlobal(pos))
+
+        tree.customContextMenuRequested.connect(_ctx_menu)
+
+        # 颜色格点击 → 改色
+        def _item_clicked(item, column):
+            if column != 0:
+                return
+            name = item.data(0, Qt.UserRole)
+            if not name:
+                return
+            from PySide6.QtWidgets import QColorDialog
+            cur = self._var_meta.get(name, {}).get('color', '#ffffff')
+            c = QColorDialog.getColor(QColor(cur), tree, '选择颜色')
+            if c.isValid():
+                self._var_meta.setdefault(name, {}).update(
+                    {'color': c.name()})
+                self._save_var_meta()
+                self._refresh_sidebar()
+                self._refresh_plot()
+
+        tree.itemClicked.connect(_item_clicked)
+
+        v.addWidget(tree, 1)
+        self._sidebar = tree
+        return container
+
+    def _refresh_sidebar(self):
+        """根据 self._var_meta 重建侧栏行。"""
+        if self._sidebar is None:
+            return
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QTreeWidgetItem
+        tree = self._sidebar
+        # 记住选中行
+        sel_name = None
+        cur = tree.currentItem()
+        if cur is not None:
+            sel_name = cur.data(0, Qt.UserRole)
+        tree.clear()
+        for name, meta in self._var_meta.items():
+            it = QTreeWidgetItem()
+            color = meta.get('color', '#569cd6') or '#569cd6'
+            it.setData(0, Qt.UserRole, name)
+            it.setText(0, '   ')
+            it.setBackground(0, QColor(color))
+            it.setText(1, meta.get('label') or name)
+            it.setText(2, '—')   # 当前值，_refresh_sidebar_values 更新
+            it.setTextAlignment(2, Qt.AlignRight | Qt.AlignVCenter)
+            it.setText(3, '')    # 在图标记，_refresh_sidebar_visibility 更新
+            it.setToolTip(1, name)
+            tree.addTopLevelItem(it)
+        # 恢复选中
+        if sel_name is not None:
+            for i in range(tree.topLevelItemCount()):
+                it = tree.topLevelItem(i)
+                if it.data(0, Qt.UserRole) == sel_name:
+                    tree.setCurrentItem(it)
+                    break
+
+    def _refresh_sidebar_values(self):
+        """更新侧栏各行的"当前值"列。"""
+        if self._sidebar is None:
+            return
+        from PySide6.QtCore import Qt
+        tree = self._sidebar
+        for i in range(tree.topLevelItemCount()):
+            it = tree.topLevelItem(i)
+            name = it.data(0, Qt.UserRole)
+            if not name or name not in self._data:
+                continue
+            pts = self._data[name]
+            try:
+                if (isinstance(pts, tuple) and len(pts) == 2):
+                    ys = pts[1]
+                    if len(ys) == 0:
+                        continue
+                    val = float(ys[-1])
+                else:
+                    if not pts:
+                        continue
+                    val = float(pts[-1][1])
+                # 数值格式：整数显示整数，浮点保留 3 位
+                if val == int(val):
+                    s = str(int(val))
+                else:
+                    s = f'{val:.3f}'
+                it.setText(2, s)
+            except Exception:
+                pass
+
+    def _refresh_sidebar_visibility(self):
+        """更新侧栏"在图"列的勾选标记。
+
+        plot.vars 为空 = 显示全部已加载变量，故所有 var 都算"在该 plot"。
+        """
+        if self._sidebar is None:
+            return
+        tree = self._sidebar
+        # 把所有 plot 的 vars 并集，标记在哪些图出现
+        # （空 vars 计为"全部 var 都在该 plot"）
+        all_names = set(self._data.keys())
+        counts: dict[str, int] = {n: 0 for n in all_names}
+        for p in self._plots:
+            vs = p.get('vars', [])
+            if not vs:
+                # 显示全部：每个已加载变量 +1
+                for n in all_names:
+                    counts[n] = counts.get(n, 0) + 1
+            else:
+                for name in vs:
+                    if name in all_names:
+                        counts[name] = counts.get(name, 0) + 1
+        from PySide6.QtCore import Qt
+        for i in range(tree.topLevelItemCount()):
+            it = tree.topLevelItem(i)
+            name = it.data(0, Qt.UserRole)
+            if not name:
+                continue
+            c = counts.get(name, 0)
+            it.setText(3, '✓' if c > 0 else '')
+            it.setToolTip(3, f'在 {c} 个图表中')
+
+    def _toggle_sidebar(self):
+        """切换侧栏显隐。"""
+        from serial_debug.infra import config
+        if self._sidebar_container is None:
+            return
+        self._sidebar_visible = not self._sidebar_visible
+        self._sidebar_container.setVisible(self._sidebar_visible)
+        try:
+            cfg = config.load()
+            cfg['qt_monitor_sidebar_visible'] = self._sidebar_visible
+            config.save(cfg)
+        except Exception:
+            pass
 
     def _current_plot_idx(self) -> int | None:
         """返回当前聚焦/选中的 plot 索引。
@@ -848,6 +1202,7 @@ class QtMonitorWindow:
                             buf.append((ts, val))
                             if len(buf) > self._max_points:
                                 del buf[:len(buf) - self._max_points]
+                            self._register_var(name)
                     except Exception:
                         pass
             try:
@@ -888,14 +1243,25 @@ class QtMonitorWindow:
 
     # ---- 绘制 -------------------------------------------------------
     def _refresh_plot(self):
-        """刷新所有 plot 的曲线。
+        """刷新所有 plot 的曲线 + 侧栏当前值/在图标记。
 
         对每个 plot：
           - plot.vars 为空 = 显示 self._data 里全部变量
           - plot.vars 非空 = 只显示指定变量
         复用 PlotDataItem：setData() 比每次 plot()+clear() 快 5-10 倍。
         """
+        # 若侧栏行数与 var_meta 不一致（load_log/gen_mock_data 新增了变量）
+        # 则先重建侧栏行
+        if self._sidebar is not None:
+            try:
+                cur_rows = self._sidebar.topLevelItemCount()
+            except Exception:
+                cur_rows = 0
+            if cur_rows != len(self._var_meta):
+                self._refresh_sidebar()
         if not self._plot_widgets:
+            self._refresh_sidebar_values()
+            self._refresh_sidebar_visibility()
             return
         import numpy as np
         import pyqtgraph as pg
@@ -937,14 +1303,16 @@ class QtMonitorWindow:
                     except Exception:
                         xs = np.array([p[0] for p in pts], dtype=float)
                         ys = np.array([p[1] for p in pts], dtype=float)
-                color = self._palette[
+                # 颜色：优先 var_meta，缺省回退到调色板
+                meta = self._var_meta.get(name, {})
+                color = meta.get('color') or self._palette[
                     (all_data_keys.index(name)
                      if name in all_data_keys else 0)
                     % len(self._palette)]
                 if name in curves:
                     item = curves[name]
                     try:
-                        item.setData(xs, ys)
+                        item.setData(xs, ys, pen=pg.mkPen(color, width=1.5))
                     except Exception:
                         pass
                 else:
@@ -953,6 +1321,9 @@ class QtMonitorWindow:
                                    name=name)
                     curves[name] = item
             pw.enableAutoRange()
+        # 同步侧栏当前值 + 在图标记
+        self._refresh_sidebar_values()
+        self._refresh_sidebar_visibility()
 
     def run(self):
         win = self._create()

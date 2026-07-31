@@ -85,6 +85,10 @@ DEFAULTS = {
     'qt_monitor_plots': [],            # list[dict]：每个 plot 的配置
     'qt_monitor_geometry': '',          # 窗口几何（'WxH+X+Y'）
     'qt_monitor_view_toolbar': True,   # 工具栏显隐
+    # Qt 监视窗口 Stage 2：变量列表侧栏
+    'qt_monitor_vars': [],            # list[dict]：每变量元数据（color/label/y_min/max/warn_min/max）
+    'qt_monitor_sidebar_visible': True, # 侧栏显隐
+    'qt_monitor_sidebar_width': 260,   # 侧栏宽度（QSplitter 持久化）
 }
 
 
