@@ -299,6 +299,9 @@ class SerialDebugApp:
         # 帮助
         m_help = tk.Menu(menubar, tearoff=False)
         menubar.add_cascade(label='帮助(H)', menu=m_help)
+        m_help.add_command(label='Qt 试点曲线窗口…',
+                           command=self._open_qt_monitor_pilot)
+        m_help.add_separator()
         m_help.add_command(label='关于', command=self._show_about)
 
         # 快捷键
@@ -353,6 +356,35 @@ class SerialDebugApp:
     def _on_menu_autoscroll_toggle(self):
         self.autoscroll_var.set(self._auto_scroll_menu_var.get())
         self._on_autoscroll_toggle()
+
+    def _open_qt_monitor_pilot(self):
+        """启动 Qt + pyqtgraph 试点窗口（独立进程）。
+
+        与 tkinter 主应用隔离，避免双事件循环冲突。
+
+        实现方式：用环境变量 SERIAL_DEBUG_QT_PILOT=1 启动 sys.executable
+        子进程。PyInstaller 打包后 sys.executable 是 bootloader，不识别
+        `-m <module>` 参数，所以不能用 `python -m` 方式启动。改用环境变量
+        让主入口 main() 在子进程里走 Qt 试点路径。
+        """
+        import subprocess
+        env = os.environ.copy()
+        env['SERIAL_DEBUG_QT_PILOT'] = '1'
+        try:
+            subprocess.Popen(
+                [sys.executable],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True)
+        except Exception as e:
+            try:
+                messagebox.showerror(
+                    'Qt 试点启动失败',
+                    f'启动 Qt 试点窗口失败：{e}\n'
+                    '请确认已安装 PySide6 + pyqtgraph（pip install PySide6 pyqtgraph）')
+            except Exception:
+                pass
 
     def _show_about(self):
         messagebox.showinfo(
@@ -1542,8 +1574,17 @@ def main():
     用法：
       serial_debug                    # 启动完整串口调试助手
       serial_debug --view F1 [F2 ...] # 只启动日志查看器加载给定文件
+
+    环境变量 SERIAL_DEBUG_QT_PILOT=1 启动 Qt 试点曲线窗口
+    （PyInstaller 打包后 sys.executable -m <module> 不工作，
+     改用环境变量区分入口，子进程看到此变量走 Qt 试点路径）。
     """
     import sys
+    import os
+    if os.environ.get('SERIAL_DEBUG_QT_PILOT') == '1':
+        # Qt 试点窗口：独立子进程运行，避免与主 tkinter 事件循环冲突
+        from serial_debug.ui.qt_monitor_window import QtMonitorWindow
+        sys.exit(QtMonitorWindow().run())
     args = sys.argv[1:]
     if args and args[0] == '--view':
         files = [f for f in args[1:] if not f.startswith('-')]

@@ -51,10 +51,36 @@
 - ❌ 纯文字状态（不直观）
 - ❌ 所有按钮同色（无主次区分）
 
-### tkinter UI 天花板
+### tkinter UI 天花板（2026-07-13 第一版结论，2026-07-31 修订）
 - ttk + clam theme + 自定义 style map 能做到 VSCode 风格的"专业感"
 - 做不到 Qt/QML 那种细腻效果（圆角、阴影、动画）
-- 后续在此基础上逐步丰富，不换框架
+- ~~后续在此基础上逐步丰富，不换框架~~ ← 2026-07-31 修订：tkinter Canvas 曲线在 10w 点开始卡，决定试点 PySide6 + pyqtgraph 替换曲线显示路径
+
+## Qt 迁移试点（2026-07-31 启动）
+
+### 节点
+- 主干已完成商业化重构（src/serial_debug 包结构 + VSCode Dark+ 双主题 + AT 命令面板 + 日志查看器 + 数据监视窗口 + 视图状态持久化），已提交到 0996d47
+- 当前分支 feature/at-command-window-theme，未提交：qt_monitor_window.py、qt_theme.py、app.py 入口、packaging 依赖、monitor_window.py LTTB 降采样 + apply_theme 修复
+- 试点目的：验证 pyqtgraph 10w/100w 点流畅度 + QSS 主题 + PyInstaller 打包体积，通过后逐步把 tkinter 监视窗口迁到 Qt，tkinter 版本废弃
+
+### 已验证通过（2026-07-31）
+- ✅ PyInstaller 能打包 PySide6 + pyqtgraph + numpy，**实测体积 254MB**（原 tkinter 版 25MB，增加 229MB）
+- ✅ 子进程启动 Qt 窗口可行：`SERIAL_DEBUG_QT_PILOT=1` 环境变量 + `sys.executable`，规避 PyInstaller 不识别 `-m` 的问题
+- ✅ 打包后 Qt 试点窗口能正常启动：所有 import 成功、QApplication 进入事件循环、无 stderr 报错
+- ✅ 窗口标题 `[Qt 试点] 大数据曲线窗口 - PySide6 + pyqtgraph`、状态栏永久显示技术栈版本、F1 弹"关于本窗口"对话框、性能基准按钮可用（用户已验证）
+- ✅ _toggle_theme 已修：setBackground + 轴色 + _refresh_plot 重画曲线，主题切换瞬时生效
+- ✅ monitor_window.py 加 LTTB 保形状降采样（10w 点 → 2000 点 12.9ms，50 个尖峰全保留），统计/hover 仍用全量数据不丢真
+
+### 关键技术决策
+- **独立子进程启动 Qt 窗口**：避免 tkinter + Qt 双事件循环冲突；用环境变量 `SERIAL_DEBUG_QT_PILOT=1` 区分入口，因为 PyInstaller 打包后 `sys.executable -m <module>` 不工作
+- **主题同源**：qt_theme.py 复用 infra/themes.py 色板，Qt 与 tkinter 主题切换时同步
+- **延迟导入 PySide6/pyqtgraph**：tkinter 主程序不强制依赖 Qt，没装 Qt 也能跑 tkinter 路径
+- **PyInstaller spec**：收集 PySide6 核心 submodule（QtCore/QtGui/QtWidgets）+ pyqtgraph + numpy，体积 254MB 偏大但商业产品可接受
+
+### 试点未完成项（按方案 A 推进）
+1. load_log() 还是简化版（每行抓所有整数按位置赋 v0/v1…），需接完整 motor/BMS/IMU 解析器
+2. 无串口实时 feed 通路，只能加载静态日志或 mock 数据
+3. 试点性能基准数值未记录（用户点过性能基准按钮但未回报具体数值），是否全量切 Qt 未定
 
 ## 串口调试工具设计原则（2026-07-10 整理）
 

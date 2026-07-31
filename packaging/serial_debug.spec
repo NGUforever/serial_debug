@@ -20,6 +20,20 @@ from PyInstaller.utils.hooks import collect_submodules
 
 # pyserial 延迟导入 list_ports 平台子模块，必须显式收集
 hiddenimports = collect_submodules('serial')
+# PySide6 + pyqtgraph：Qt 试点曲线窗口依赖（延迟导入，主程序不强制）
+# 只收集核心子模块，避免 PySide6 全量打包膨胀体积（仍 ~80MB，可接受）
+try:
+    hiddenimports += collect_submodules('PySide6.QtCore')
+    hiddenimports += collect_submodules('PySide6.QtGui')
+    hiddenimports += collect_submodules('PySide6.QtWidgets')
+except Exception:
+    pass
+hiddenimports += ['pyqtgraph', 'pyqtgraph.functions',
+                  'pyqtgraph.graphicsItems', 'pyqtgraph.graphicsItems.PlotItem',
+                  'pyqtgraph.graphicsItems.PlotDataItem',
+                  'pyqtgraph.graphicsItems.ViewBox',
+                  'pyqtgraph.graphicsItems.AxisItem',
+                  'numpy', 'numpy.core', 'numpy.core._multiarray_umath']
 
 # 仓库根目录（spec 在 packaging/ 下，向上一层）
 _here = os.path.dirname(os.path.abspath(SPEC))
@@ -50,7 +64,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=['matplotlib', 'numpy', 'pytest', 'IPython',
+    excludes=['matplotlib', 'pytest', 'IPython',
               'setuptools', 'pip', 'distutils'],
     noarchive=False,
 )

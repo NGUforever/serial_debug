@@ -45,6 +45,79 @@ except Exception:
 _LOG_TS_RE = re.compile(r'(?<!\d)(\d{10,13})(?!\d)')
 
 
+def _downsample_lttb(data, threshold: int):
+    """LTTB (Largest Triangle Three Buckets) 保形状降采样。
+
+    输入 data: list[(x, y)]，按 x 升序。
+    返回不超过 threshold 个点的子集，保留尖峰/突变等形状特征。
+
+    原理：把数据分 threshold 个 bucket，每 bucket 选一个让"前一个选中点
+    → 当前 bucket 内候选点 → 下一 bucket 平均点"三角形面积最大的点。
+    面积大 = 该点对形状贡献大 = 保留它最不损失视觉特征。
+
+    相比等距抽样：
+    - 平稳段不丢点（连续相同值不会丢一个导致视觉断点）
+    - 尖峰段能保留极值（即使尖峰只占 1 个点也大概率被选）
+    - 复杂度 O(n)，纯 Python 实现，10w 点 ~30ms。
+
+    threshold < 3 或 data 长度本身 <= threshold 时直接返回原数据。
+    """
+    n = len(data)
+    if n <= threshold or threshold < 3 or n < 3:
+        return data
+    # 桶大小（浮点，避免整数除法丢精度）。首尾各保留 1 个点，中间分 threshold-2 桶
+    step = (n - 2) / (threshold - 2)
+    sampled = [data[0]]
+    a = 0  # 上一个被选中点的索引
+    n_minus_1 = n - 1
+    for i in range(threshold - 2):
+        # 当前 bucket 的范围 [bucket_start, bucket_end)
+        bucket_start = int((i + 1) * step) + 1
+        bucket_end = int((i + 2) * step) + 1
+        if bucket_end > n:
+            bucket_end = n
+        if bucket_start >= bucket_end:
+            bucket_start = bucket_end - 1
+        # 下一 bucket 的平均点（用于三角形面积计算）
+        next_start = bucket_end
+        next_end = int((i + 3) * step) + 1
+        if next_end > n:
+            next_end = n
+        # 最后一个 bucket 后面没数据了：用最后一点作为"下一 bucket 平均"
+        if next_start >= n_minus_1:
+            avg_x, avg_y = data[n_minus_1]
+        else:
+            if next_end <= next_start:
+                next_end = next_start + 1
+            avg_x = 0.0
+            avg_y = 0.0
+            for j in range(next_start, next_end):
+                avg_x += data[j][0]
+                avg_y += data[j][1]
+            cnt = next_end - next_start
+            if cnt > 0:
+                avg_x /= cnt
+                avg_y /= cnt
+        # 在当前 bucket 内找三角形面积最大的点
+        max_area = -1.0
+        max_idx = bucket_start
+        ax, ay = data[a]
+        # 三角形面积 = |(x-ax)*(avg_y-ay) - (y-ay)*(avg_x-ax)|
+        # 不乘 0.5，比较只需要相对大小
+        for j in range(bucket_start, bucket_end):
+            p = data[j]
+            area = abs((p[0] - ax) * (avg_y - ay)
+                       - (p[1] - ay) * (avg_x - ax))
+            if area > max_area:
+                max_area = area
+                max_idx = j
+        sampled.append(data[max_idx])
+        a = max_idx
+    sampled.append(data[n_minus_1])
+    return sampled
+
+
+
 def _extract_log_ts(line: str) -> float | None:
     """从日志行中提取时间戳，返回秒（float）。提取失败返回 None。"""
     m = _LOG_TS_RE.search(line)
@@ -2673,18 +2746,8 @@ class MonitorPanel(ttk.Frame):
         else:
             n_grid_y = 5
 
-        # 降采样：点数超过 plot_w * 1.5 时按步长抽样
-        max_pts = max(200, int(plot_w * 1.5))
-        for i, (v, pts) in enumerate(series):
-            if len(pts) > max_pts:
-                step = len(pts) / max_pts
-                sampled = [pts[0]]
-                idx = step
-                while idx < len(pts) - 1:
-                    sampled.append(pts[int(idx)])
-                    idx += step
-                sampled.append(pts[-1])
-                series[i] = (v, sampled)
+        # 注：不在 series 层面降采样。统计/hover 需要全量极值，降采样只用于画线。
+        # 画线处的 LTTB 降采样见下方 c.create_line 之前。
 
         # 跳过完全相同的重绘：几何/范围/数据均未变 → 直接返回。
         sig = (w, h, pad_l, pad_r, pad_t, pad_b, t_min, t_max, y_lo, y_hi,
@@ -2783,13 +2846,18 @@ class MonitorPanel(ttk.Frame):
         _tmn = t_min
         _yhi = y_hi
 
+        # 画线前对每条 series 降采样：阈值 = 像素宽 × 2（每像素 2 个点足够平滑）
+        # LTTB 保形状，10w 点降到 ~2*plot_w 个点，绘制 create_line 性能从 O(n) 降到 O(plot_w)
+        max_pts = max(200, int(plot_w * 2))
+
         for v, pts in series:
             n = len(pts)
             if n >= 2:
+                draw_pts = _downsample_lttb(pts, max_pts) if n > max_pts else pts
                 # array.array 批量构建坐标，比 list.extend 在大列表上更快
                 arr = _farray('d')
                 ap = arr.append
-                for ts, val in pts:
+                for ts, val in draw_pts:
                     ap(_pl + _pw * (ts - _tmn) * inv_t)
                     ap(_pt + _ph * (_yhi - val) * inv_y)
                 c.create_line(*arr, fill=v['color'], width=1.5)
@@ -2999,6 +3067,18 @@ class MonitorPanel(ttk.Frame):
                 except Exception:
                     pass
             self._rebuild_data_grid()
+            # 曲线/坐标轴/网格/标签是 create_line/create_text 一次性 baked 的颜色，
+            # 不会跟随主题自动更新。必须清掉每个 plot 的 _draw_cache（否则下次
+            # _draw_curves 因 sig 命中提前 return，画面停在旧主题），并强制下一帧重绘。
+            for plot in self._plots:
+                cache = plot.get('_draw_cache')
+                if isinstance(cache, dict):
+                    cache.clear()
+            self._force_redraw()
+            try:
+                self.after(0, self._draw_curves)
+            except Exception:
+                pass
         except Exception:
             pass
 
