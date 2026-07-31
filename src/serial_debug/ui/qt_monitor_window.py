@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 
 # 延迟导入 PySide6/pyqtgraph：仅 Qt 窗口实际启动时才加载
 # 让 tkinter 主程序不强制依赖 Qt（即便没装 Qt 也能跑 tkinter 路径）
@@ -298,8 +299,11 @@ class QtMonitorWindow:
         self.theme_name = theme_name
         self._app = None
         self._win = None
-        # 变量数据：{var_name: (xs_array, ys_array) | list[(ts, val)]}
+        # 变量数据：{var_name: list[(ts, val)]}——始终是 list，实时 feed 依赖 append
         self._data: dict = {}
+        # numpy 缓存：{var_name: (xs_array, ys_array, list_len)}
+        # list_len 记录缓存时的 list 长度，新数据 append 后长度变化→缓存失效
+        self._data_cache: dict = {}
         # 变量元数据：{name: {color, label, y_min, y_max, warn_min, warn_max}}
         # 自动从 self._data 派生（load_log / gen_mock_data 加新 var 时同步登记）
         # 用户可改 color/label，持久化到 qt_monitor_vars
@@ -328,6 +332,7 @@ class QtMonitorWindow:
         self._serial_buf = ''
         self._refresh_timer = None
         self._max_points = 60_000
+        self._data_lock = threading.Lock()  # 保护 _data 的线程安全
 
     # ---- 配置持久化 -------------------------------------------------
     def _load_plots(self) -> list[dict]:
@@ -486,7 +491,7 @@ class QtMonitorWindow:
         from PySide6.QtGui import QAction
         from PySide6.QtWidgets import (
             QApplication, QMainWindow, QToolBar, QPushButton, QStatusBar,
-            QVBoxLayout, QWidget, QScrollArea, QSizePolicy, QLabel,
+            QVBoxLayout, QGridLayout, QWidget, QScrollArea, QSizePolicy, QLabel,
         )
         import pyqtgraph as pg
 
@@ -521,21 +526,20 @@ class QtMonitorWindow:
         self._sidebar_container = self._build_sidebar()
         central.addWidget(self._sidebar_container)
 
-        # 右侧：可滚动容器 + 垂直布局放多个 PlotWidget
+        # 右侧：可滚动容器 + 网格布局放多个 PlotWidget（自动排版）
         right_pane = QWidget()
         outer = QVBoxLayout(right_pane)
         outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(8)
+        outer.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
 
         plots_container = QWidget()
-        self._plots_layout = QVBoxLayout(plots_container)
+        self._plots_layout = QGridLayout(plots_container)
         self._plots_layout.setContentsMargins(0, 0, 0, 0)
-        self._plots_layout.setSpacing(8)
-        self._plots_layout.addStretch(1)
+        self._plots_layout.setSpacing(6)
 
         scroll.setWidget(plots_container)
         outer.addWidget(scroll)
@@ -559,12 +563,7 @@ class QtMonitorWindow:
         win.setCentralWidget(central)
         self._splitter = central
 
-        # 工具栏
-        tb = QToolBar('工具')
-        win.addToolBar(tb)
-        self._toolbar = tb
-
-        # 图表管理：添加 / 编辑 / 删除
+        # ---- 回调定义（工具栏 + 菜单栏共用）----
         def _add_plot():
             dlg = _QtPlotDialog(
                 win, self._loaded_var_meta(),
@@ -578,15 +577,9 @@ class QtMonitorWindow:
                 win.statusBar().showMessage(
                     f'已添加图表：{res["title"]}（{len(res["vars"])} 变量）')
 
-        btn_add = QPushButton('添加图表…')
-        btn_add.clicked.connect(_add_plot)
-        tb.addWidget(btn_add)
-
         def _edit_plot():
-            idx = self._current_plot_idx()
+            idx = self._select_plot_idx(win, '编辑图表')
             if idx is None:
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.information(win, '编辑图表', '请先选中一个图表')
                 return
             dlg = _QtPlotDialog(
                 win, self._loaded_var_meta(),
@@ -599,15 +592,10 @@ class QtMonitorWindow:
                 self._refresh_plot()
                 win.statusBar().showMessage(f'已更新图表：{res["title"]}')
 
-        btn_edit = QPushButton('编辑图表…')
-        btn_edit.clicked.connect(_edit_plot)
-        tb.addWidget(btn_edit)
-
         def _del_plot():
             from PySide6.QtWidgets import QMessageBox
-            idx = self._current_plot_idx()
+            idx = self._select_plot_idx(win, '删除图表')
             if idx is None:
-                QMessageBox.information(win, '删除图表', '请先选中一个图表')
                 return
             title = self._plots[idx].get('title', '数据曲线')
             if QMessageBox.question(
@@ -621,13 +609,6 @@ class QtMonitorWindow:
             self._refresh_plot()
             win.statusBar().showMessage('已删除图表')
 
-        btn_del = QPushButton('删除图表')
-        btn_del.clicked.connect(_del_plot)
-        tb.addWidget(btn_del)
-
-        tb.addSeparator()
-
-        # 打开日志
         def _open_log():
             from PySide6.QtWidgets import QFileDialog
             path, _ = QFileDialog.getOpenFileName(
@@ -639,36 +620,21 @@ class QtMonitorWindow:
                 win.statusBar().showMessage(
                     f'加载 {n} 行，{len(self._data)} 变量')
 
-        btn_open = QPushButton('打开日志…')
-        btn_open.clicked.connect(_open_log)
-        tb.addWidget(btn_open)
-
         def _mock_10w():
             self.gen_mock_data(100_000)
             self._refresh_plot()
             win.statusBar().showMessage('已生成 10w 模拟数据')
-
-        btn_mock10 = QPushButton('模拟 10w 点')
-        btn_mock10.clicked.connect(_mock_10w)
-        tb.addWidget(btn_mock10)
 
         def _mock_100w():
             self.gen_mock_data(1_000_000)
             self._refresh_plot()
             win.statusBar().showMessage('已生成 100w 模拟数据')
 
-        btn_mock100 = QPushButton('模拟 100w 点')
-        btn_mock100.clicked.connect(_mock_100w)
-        tb.addWidget(btn_mock100)
-
         def _clear():
             self._data.clear()
+            self._data_cache.clear()
             self._refresh_plot()
             win.statusBar().showMessage('已清空')
-
-        btn_clear = QPushButton('清空')
-        btn_clear.clicked.connect(_clear)
-        tb.addWidget(btn_clear)
 
         def _toggle_theme():
             cur = qt_theme.palette(self.theme_name).get('bg', '#1e1e1e')
@@ -684,7 +650,6 @@ class QtMonitorWindow:
                 pg.setConfigOption('foreground', t.get('fg', '#cccccc'))
             except Exception:
                 pass
-            # 主题切换后：重设每个 PlotWidget 的背景/轴色，并重画曲线
             for pw in self._plot_widgets:
                 try:
                     pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
@@ -695,30 +660,15 @@ class QtMonitorWindow:
                             axis.setTextPen(t.get('fg', '#cccccc'))
                 except Exception:
                     pass
-            # 清缓存 PlotDataItem，重画曲线（pen 颜色需重设）
             self._curves = [{} for _ in self._plots]
             self._refresh_plot()
 
-        btn_theme = QPushButton('切换主题')
-        btn_theme.clicked.connect(_toggle_theme)
-        tb.addWidget(btn_theme)
-
         def _toggle_sidebar():
             self._toggle_sidebar()
-        btn_sidebar = QPushButton('切换侧栏')
-        btn_sidebar.clicked.connect(_toggle_sidebar)
-        tb.addWidget(btn_sidebar)
 
-        tb.addSeparator()
-
-        # 统计对话框：每变量 当前/最小/最大/均值/点数
         def _show_stats():
             self._show_statistics(win)
-        btn_stats = QPushButton('统计…')
-        btn_stats.clicked.connect(_show_stats)
-        tb.addWidget(btn_stats)
 
-        # CSV 导出
         def _export_csv():
             from PySide6.QtWidgets import QFileDialog, QMessageBox
             if not self._data:
@@ -736,82 +686,7 @@ class QtMonitorWindow:
                     f'已导出 {n_rows:,} 行（采样步长 {step}）\n{path}')
             except Exception as e:
                 QMessageBox.critical(win, '导出失败', str(e))
-        btn_csv = QPushButton('导出 CSV…')
-        btn_csv.clicked.connect(_export_csv)
-        tb.addWidget(btn_csv)
 
-        # 状态栏：永久显示技术栈信息
-        try:
-            import PySide6
-            import pyqtgraph
-            tech_label = QLabel(
-                f'PySide6 {PySide6.__version__} | pyqtgraph {pyqtgraph.__version__} | '
-                f'Qt 试点窗口（非 tkinter）')
-        except Exception:
-            tech_label = QLabel('Qt 试点窗口')
-        win.statusBar().addPermanentWidget(tech_label)
-        win.statusBar().showMessage('就绪 - 按 F1 查看窗口信息')
-
-        # F1：关于本窗口
-        def _show_about():
-            from PySide6.QtWidgets import QMessageBox
-            try:
-                import PySide6
-                import pyqtgraph
-                versions = (f'PySide6: {PySide6.__version__}\n'
-                            f'pyqtgraph: {pyqtgraph.__version__}\n'
-                            f'Python: {sys.version.split()[0]}')
-            except Exception as e:
-                versions = f'版本信息获取失败: {e}'
-            QMessageBox.information(
-                win, '关于本窗口',
-                'Qt 数据监视窗口（Stage 1：多 plot + 配置持久化）\n\n'
-                '技术栈:\n' + versions + '\n\n'
-                '功能:\n'
-                '  - 多 plot 子图（QScrollArea + QVBoxLayout）\n'
-                '  - 添加/编辑/删除 plot 对话框\n'
-                '  - 配置持久化（qt_monitor_plots / qt_monitor_geometry）\n'
-                '  - 加载日志 / 模拟数据 / 串口实时 feed / 主题切换\n\n'
-                '后续 Stage:\n'
-                '  2. 变量列表侧栏 / 显示模式（曲线/数据）\n'
-                '  3. 统计对话框 / CSV 导出\n'
-                '  4. 主程序迁 Qt / 日志查看器迁 Qt / 拆 tkinter')
-
-        act_about = QAction('关于本窗口', win)
-        act_about.setShortcut('F1')
-        act_about.triggered.connect(_show_about)
-        win.addAction(act_about)
-
-        # 性能基准按钮
-        def _perf_test():
-            import time
-            n = 1_000_000
-            win.statusBar().showMessage(f'生成 {n} 点...')
-            self._app.processEvents()
-            t0 = time.perf_counter()
-            self.gen_mock_data(n)
-            t_gen = (time.perf_counter() - t0) * 1000
-            win.statusBar().showMessage(f'渲染 {n} 点...')
-            self._app.processEvents()
-            t0 = time.perf_counter()
-            self._refresh_plot()
-            self._app.processEvents()
-            t_draw = (time.perf_counter() - t0) * 1000
-            msg = (f'性能基准（{n} 点 × 3 条曲线）:\n'
-                   f'  数据生成: {t_gen:.1f} ms\n'
-                   f'  渲染绘制: {t_draw:.1f} ms\n'
-                   f'  总耗时:   {t_gen + t_draw:.1f} ms\n\n'
-                   f'用鼠标拖动/滚轮缩放测试交互流畅度。')
-            win.statusBar().showMessage(
-                f'渲染 {n} 点完成: 数据 {t_gen:.0f}ms + 绘制 {t_draw:.0f}ms')
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.information(win, '性能基准', msg)
-
-        btn_perf = QPushButton('性能基准（100w 点）')
-        btn_perf.clicked.connect(_perf_test)
-        tb.addWidget(btn_perf)
-
-        # 实时串口 feed
         def _connect_serial():
             from PySide6.QtWidgets import (
                 QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
@@ -842,10 +717,6 @@ class QtMonitorWindow:
             except Exception as e:
                 QMessageBox.critical(win, '连接失败', str(e))
 
-        btn_serial = QPushButton('连串口实时 feed')
-        btn_serial.clicked.connect(_connect_serial)
-        tb.addWidget(btn_serial)
-
         def _disconnect_serial():
             try:
                 self.stop_serial()
@@ -853,9 +724,81 @@ class QtMonitorWindow:
             except Exception:
                 pass
 
+        def _perf_test():
+            import time
+            n = 1_000_000
+            win.statusBar().showMessage(f'生成 {n} 点...')
+            self._app.processEvents()
+            t0 = time.perf_counter()
+            self.gen_mock_data(n)
+            t_gen = (time.perf_counter() - t0) * 1000
+            win.statusBar().showMessage(f'渲染 {n} 点...')
+            self._app.processEvents()
+            t0 = time.perf_counter()
+            self._refresh_plot()
+            self._app.processEvents()
+            t_draw = (time.perf_counter() - t0) * 1000
+            msg = (f'性能基准（{n} 点 × 3 条曲线）:\n'
+                   f'  数据生成: {t_gen:.1f} ms\n'
+                   f'  渲染绘制: {t_draw:.1f} ms\n'
+                   f'  总耗时:   {t_gen + t_draw:.1f} ms\n\n'
+                   f'用鼠标拖动/滚轮缩放测试交互流畅度。')
+            win.statusBar().showMessage(
+                f'渲染 {n} 点完成: 数据 {t_gen:.0f}ms + 绘制 {t_draw:.0f}ms')
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(win, '性能基准', msg)
+
+        # ---- 工具栏（精简：只保留最常用操作）----
+        tb = QToolBar('工具')
+        win.addToolBar(tb)
+        self._toolbar = tb
+
+        btn_add = QPushButton('添加图表…')
+        btn_add.clicked.connect(_add_plot)
+        tb.addWidget(btn_add)
+        btn_edit = QPushButton('编辑图表…')
+        btn_edit.clicked.connect(_edit_plot)
+        tb.addWidget(btn_edit)
+        btn_del = QPushButton('删除图表')
+        btn_del.clicked.connect(_del_plot)
+        tb.addWidget(btn_del)
+        tb.addSeparator()
+        btn_open = QPushButton('打开日志…')
+        btn_open.clicked.connect(_open_log)
+        tb.addWidget(btn_open)
+        tb.addSeparator()
+        btn_theme = QPushButton('切换主题')
+        btn_theme.clicked.connect(_toggle_theme)
+        tb.addWidget(btn_theme)
+        btn_sidebar = QPushButton('切换侧栏')
+        btn_sidebar.clicked.connect(_toggle_sidebar)
+        tb.addWidget(btn_sidebar)
+        tb.addSeparator()
+        btn_serial = QPushButton('连串口实时 feed')
+        btn_serial.clicked.connect(_connect_serial)
+        tb.addWidget(btn_serial)
         btn_disc = QPushButton('断开串口')
         btn_disc.clicked.connect(_disconnect_serial)
         tb.addWidget(btn_disc)
+
+        # ---- 菜单栏 ----
+        self._build_menubar(win, _add_plot, _edit_plot, _del_plot,
+                            _open_log, _mock_10w, _mock_100w, _clear,
+                            _toggle_theme, _toggle_sidebar,
+                            _show_stats, _export_csv,
+                            _connect_serial, _disconnect_serial,
+                            _perf_test)
+
+        # 状态栏
+        try:
+            import PySide6
+            import pyqtgraph
+            tech_label = QLabel(
+                f'PySide6 {PySide6.__version__} | pyqtgraph {pyqtgraph.__version__}')
+        except Exception:
+            tech_label = QLabel('Qt 数据监视窗口')
+        win.statusBar().addPermanentWidget(tech_label)
+        win.statusBar().showMessage('就绪')
 
         # 关闭时保存几何 + plots + var_meta
         def _close_event(event):
@@ -892,6 +835,118 @@ class QtMonitorWindow:
                     break
             out.append({'name': name, 'label': label})
         return out
+
+    def _build_menubar(self, win, _add_plot, _edit_plot, _del_plot,
+                        _open_log, _mock_10w, _mock_100w, _clear,
+                        _toggle_theme, _toggle_sidebar,
+                        _show_stats, _export_csv,
+                        _connect_serial, _disconnect_serial,
+                        _perf_test):
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QStyle
+        mb = win.menuBar()
+        style = win.style()
+
+        def _icon(sp):
+            try:
+                return style.standardIcon(sp)
+            except Exception:
+                from PySide6.QtGui import QIcon
+                return QIcon()
+
+        # 文件菜单
+        m_file = mb.addMenu('文件')
+        act_open = QAction(_icon(QStyle.SP_DialogOpenButton), '打开日志…', win)
+        act_open.setShortcut('Ctrl+O')
+        act_open.triggered.connect(_open_log)
+        m_file.addAction(act_open)
+        m_file.addSeparator()
+        act_csv = QAction(_icon(QStyle.SP_DialogSaveButton), '导出 CSV…', win)
+        act_csv.triggered.connect(_export_csv)
+        m_file.addAction(act_csv)
+
+        # 视图菜单
+        m_view = mb.addMenu('视图')
+        self._act_sidebar = QAction('变量列表侧栏', win)
+        self._act_sidebar.setCheckable(True)
+        self._act_sidebar.setChecked(self._sidebar_visible)
+        self._act_sidebar.triggered.connect(_toggle_sidebar)
+        m_view.addAction(self._act_sidebar)
+        self._act_toolbar = QAction('工具栏', win)
+        self._act_toolbar.setCheckable(True)
+        self._act_toolbar.setChecked(True)
+        self._act_toolbar.triggered.connect(
+            lambda checked: self._toolbar.setVisible(checked) if self._toolbar else None)
+        m_view.addAction(self._act_toolbar)
+        m_view.addSeparator()
+        act_theme = QAction('切换主题', win)
+        act_theme.setShortcut('Ctrl+T')
+        act_theme.triggered.connect(_toggle_theme)
+        m_view.addAction(act_theme)
+
+        # 工具菜单
+        m_tools = mb.addMenu('工具')
+        act_add = QAction('添加图表…', win)
+        act_add.setShortcut('Ctrl+N')
+        act_add.triggered.connect(_add_plot)
+        m_tools.addAction(act_add)
+        act_edit = QAction('编辑图表…', win)
+        act_edit.triggered.connect(_edit_plot)
+        m_tools.addAction(act_edit)
+        act_del = QAction('删除图表…', win)
+        act_del.triggered.connect(_del_plot)
+        m_tools.addAction(act_del)
+        m_tools.addSeparator()
+        act_stats = QAction('统计…', win)
+        act_stats.triggered.connect(_show_stats)
+        m_tools.addAction(act_stats)
+        m_tools.addSeparator()
+        act_mock10 = QAction('模拟 10w 点', win)
+        act_mock10.triggered.connect(_mock_10w)
+        m_tools.addAction(act_mock10)
+        act_mock100 = QAction('模拟 100w 点', win)
+        act_mock100.triggered.connect(_mock_100w)
+        m_tools.addAction(act_mock100)
+        act_perf = QAction('性能基准（100w 点）', win)
+        act_perf.triggered.connect(_perf_test)
+        m_tools.addAction(act_perf)
+        m_tools.addSeparator()
+        act_serial = QAction('连接串口实时 feed…', win)
+        act_serial.triggered.connect(_connect_serial)
+        m_tools.addAction(act_serial)
+        act_disc = QAction('断开串口', win)
+        act_disc.triggered.connect(_disconnect_serial)
+        m_tools.addAction(act_disc)
+        m_tools.addSeparator()
+        act_clear = QAction('清空数据', win)
+        act_clear.triggered.connect(_clear)
+        m_tools.addAction(act_clear)
+
+        # 帮助菜单
+        m_help = mb.addMenu('帮助')
+        act_about = QAction(_icon(QStyle.SP_MessageBoxInformation), '关于…', win)
+        act_about.triggered.connect(self._show_about_dialog)
+        m_help.addAction(act_about)
+
+    def _show_about_dialog(self):
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            import PySide6
+            import pyqtgraph
+            versions = (f'PySide6: {PySide6.__version__}\n'
+                        f'pyqtgraph: {pyqtgraph.__version__}\n'
+                        f'Python: {sys.version.split()[0]}')
+        except Exception as e:
+            versions = f'版本信息获取失败: {e}'
+        QMessageBox.information(
+            self._win, '关于',
+            'Qt 数据监视窗口\n\n'
+            '技术栈:\n' + versions + '\n\n'
+            '功能:\n'
+            '  - 多 plot 子图（自动排版，左右分栏优先）\n'
+            '  - 添加/编辑/删除 plot 对话框\n'
+            '  - 配置持久化 / 加载日志 / 模拟数据\n'
+            '  - 串口实时 feed / 主题切换 / 统计 / CSV 导出')
 
     def _build_sidebar(self):
         """构建左侧变量列表侧栏：颜色 | 名称 | 当前值 | 在图。
@@ -946,7 +1001,7 @@ class QtMonitorWindow:
             menu = QMenu(tree)
 
             def _add_to_current_plot():
-                idx = self._current_plot_idx()
+                idx = self._select_plot_idx(tree, '添加到图表')
                 if idx is None:
                     return
                 vars_list = self._plots[idx].setdefault('vars', [])
@@ -957,7 +1012,7 @@ class QtMonitorWindow:
                 self._refresh_sidebar_visibility()
 
             def _remove_from_current_plot():
-                idx = self._current_plot_idx()
+                idx = self._select_plot_idx(tree, '从图表移除')
                 if idx is None:
                     return
                 vars_list = self._plots[idx].get('vars', [])
@@ -1074,7 +1129,8 @@ class QtMonitorWindow:
                 continue
             pts = self._data[name]
             try:
-                if (isinstance(pts, tuple) and len(pts) == 2):
+                if (isinstance(pts, tuple) and len(pts) >= 2
+                        and hasattr(pts[0], '__array_interface__')):
                     ys = pts[1]
                     if len(ys) == 0:
                         continue
@@ -1131,6 +1187,8 @@ class QtMonitorWindow:
             return
         self._sidebar_visible = not self._sidebar_visible
         self._sidebar_container.setVisible(self._sidebar_visible)
+        if hasattr(self, '_act_sidebar') and self._act_sidebar is not None:
+            self._act_sidebar.setChecked(self._sidebar_visible)
         try:
             cfg = config.load()
             cfg['qt_monitor_sidebar_visible'] = self._sidebar_visible
@@ -1140,24 +1198,34 @@ class QtMonitorWindow:
 
     # ---- 统计 & CSV 导出 --------------------------------------------
     def _get_xy(self, name: str):
-        """取一个变量的 (xs, ys) numpy 数组（list 路径会缓存回 self._data）。"""
+        """取一个变量的 (xs, ys) numpy 数组。
+
+        优先从 _data_cache 取；缓存为空或 list 长度变化则重新转换。
+        _data 可以是 list[(ts, val)] 或 numpy 元组（gen_mock_data）。
+        """
         import numpy as np
-        pts = self._data.get(name)
-        if pts is None:
-            return None, None
-        if (isinstance(pts, tuple) and len(pts) == 2
-                and hasattr(pts[0], '__array_interface__')):
-            return pts[0], pts[1]
-        if not pts:
-            return None, None
-        try:
-            arr = np.asarray(pts, dtype=np.float64)
-            xs = arr[:, 0]
-            ys = arr[:, 1]
-            self._data[name] = (xs, ys)
-            return xs, ys
-        except Exception:
-            return None, None
+        with self._data_lock:
+            pts = self._data.get(name)
+            if pts is None:
+                return None, None
+            # numpy 元组直接用（gen_mock_data 路径）
+            if (isinstance(pts, tuple) and len(pts) >= 2
+                    and hasattr(pts[0], '__array_interface__')):
+                return pts[0], pts[1]
+            # list 路径：优先用缓存（检查 list 长度是否变化）
+            cached = self._data_cache.get(name)
+            if cached is not None and len(pts) == cached[2]:
+                return cached[0], cached[1]
+            if not pts:
+                return None, None
+            try:
+                arr = np.asarray(pts, dtype=np.float64)
+                xs = arr[:, 0]
+                ys = arr[:, 1]
+                self._data_cache[name] = (xs, ys, len(pts))
+                return xs, ys
+            except Exception:
+                return None, None
 
     def _compute_var_stats(self, name: str) -> dict | None:
         """计算单变量统计：current/min/max/avg/n/first_ts/last_ts/duration。"""
@@ -1285,6 +1353,40 @@ class QtMonitorWindow:
                 f.write(','.join(row) + '\n')
         return out_rows, step
 
+    def _select_plot_idx(self, parent, title: str) -> int | None:
+        """弹出对话框让用户选择一个图表，返回索引；取消返回 None。"""
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QVBoxLayout, QComboBox, QLabel,
+        )
+        if not self._plots:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(parent, title, '没有可操作的图表')
+            return None
+        dlg = QDialog(parent)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumWidth(320)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
+        v.addWidget(QLabel('选择图表：'))
+        combo = QComboBox()
+        for i, p in enumerate(self._plots):
+            vars_info = ''
+            pv = p.get('vars', [])
+            if pv:
+                vars_info = f'（{len(pv)} 变量）'
+            else:
+                vars_info = '（全部变量）'
+            combo.addItem(f'{i + 1}. {p.get("title", "数据曲线")}{vars_info}')
+        v.addWidget(combo)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return combo.currentIndex()
+
     def _current_plot_idx(self) -> int | None:
         """返回当前聚焦/选中的 plot 索引。
 
@@ -1296,7 +1398,12 @@ class QtMonitorWindow:
         return 0
 
     def _rebuild_plots_ui(self):
-        """根据 self._plots 重建 PlotWidget 列表（增删改 plot 后调用）。"""
+        """根据 self._plots 重建 PlotWidget 列表（增删改 plot 后调用）。
+
+        自动排版：优先左右分栏，然后上下分栏。
+        1 个图 → 1 列，2 个图 → 2 列，3 个图 → 2 列 + 1 行，
+        4 个图 → 2×2，5 个图 → 3 列 + 2 行，以此类推。
+        """
         import pyqtgraph as pg
         from PySide6.QtWidgets import QSizePolicy
 
@@ -1307,7 +1414,6 @@ class QtMonitorWindow:
         layout = self._plots_layout
         if layout is None:
             return
-        # 先移除末尾的 stretch
         for i in reversed(range(layout.count())):
             item = layout.itemAt(i)
             if item is None:
@@ -1319,8 +1425,21 @@ class QtMonitorWindow:
         self._plot_widgets = []
         self._curves = []
 
+        n = len(self._plots)
+        # 计算列数：优先左右分栏
+        if n <= 1:
+            cols = 1
+        elif n <= 2:
+            cols = 2
+        elif n <= 4:
+            cols = 2
+        elif n <= 6:
+            cols = 3
+        else:
+            cols = max(3, (n + 1) // 2)
+
         # 重建
-        for p in self._plots:
+        for idx, p in enumerate(self._plots):
             pw = pg.PlotWidget()
             pw.showGrid(x=True, y=True, alpha=0.2)
             pw.setLabel('left', p.get('y_label', '值'))
@@ -1332,16 +1451,18 @@ class QtMonitorWindow:
                 if axis is not None:
                     axis.setPen(t.get('muted', '#cccccc'))
                     axis.setTextPen(t.get('fg', '#cccccc'))
-            # 每个 plot 给一个合理最小高度，避免被压缩到 0
-            pw.setMinimumHeight(220)
+            # 可调节宽高：最小高度 180，默认 280
+            pw.setMinimumHeight(180)
+            pw.setMinimumWidth(200)
             sp = pw.sizePolicy()
-            sp.setVerticalPolicy(QSizePolicy.Preferred)
+            sp.setVerticalPolicy(QSizePolicy.Expanding)
+            sp.setHorizontalPolicy(QSizePolicy.Expanding)
             pw.setSizePolicy(sp)
             self._plot_widgets.append(pw)
             self._curves.append({})
-            layout.addWidget(pw)
-        # 末尾 stretch
-        layout.addStretch(1)
+            row = idx // cols
+            col = idx % cols
+            layout.addWidget(pw, row, col)
 
     # ---- 实时串口 feed ----------------------------------------------
     def start_serial(self, port: str, baudrate: int = 921600):
@@ -1374,10 +1495,14 @@ class QtMonitorWindow:
                         continue
                     try:
                         for ts, name, val in _iter_panel_vars(line + '\n'):
-                            buf = self._data.setdefault(name, [])
-                            buf.append((ts, val))
-                            if len(buf) > self._max_points:
-                                del buf[:len(buf) - self._max_points]
+                            with self._data_lock:
+                                buf = self._data.setdefault(name, [])
+                                if isinstance(buf, tuple):
+                                    buf = list(zip(buf[0], buf[1]))
+                                    self._data[name] = buf
+                                buf.append((ts, val))
+                                if len(buf) > self._max_points:
+                                    del buf[:len(buf) - self._max_points]
                             self._register_var(name)
                     except Exception:
                         pass
@@ -1435,6 +1560,10 @@ class QtMonitorWindow:
                 cur_rows = 0
             if cur_rows != len(self._var_meta):
                 self._refresh_sidebar()
+        # 如果有数据但没有图表，自动创建一个默认图表
+        if not self._plot_widgets and self._data:
+            self._plots = [_default_plot()]
+            self._rebuild_plots_ui()
         if not self._plot_widgets:
             self._refresh_sidebar_values()
             self._refresh_sidebar_visibility()
@@ -1442,7 +1571,8 @@ class QtMonitorWindow:
         import numpy as np
         import pyqtgraph as pg
 
-        all_data_keys = list(self._data.keys())
+        with self._data_lock:
+            all_data_keys = list(self._data.keys())
         for plot_idx, p in enumerate(self._plots):
             if plot_idx >= len(self._plot_widgets):
                 continue
@@ -1463,22 +1593,10 @@ class QtMonitorWindow:
                 pts = self._data[name]
                 if not pts:
                     continue
-                # 双路径：numpy 元组直接用；list 批量转 numpy
-                if (isinstance(pts, tuple) and len(pts) == 2
-                        and hasattr(pts[0], '__array_interface__')):
-                    xs, ys = pts
-                else:
-                    n = len(pts)
-                    if n == 0:
-                        continue
-                    try:
-                        arr = np.asarray(pts, dtype=np.float64)
-                        xs = arr[:, 0]
-                        ys = arr[:, 1]
-                        self._data[name] = (xs, ys)
-                    except Exception:
-                        xs = np.array([p[0] for p in pts], dtype=float)
-                        ys = np.array([p[1] for p in pts], dtype=float)
+                # 始终通过 _get_xy 获取 numpy 数组，不覆盖 self._data
+                xs, ys = self._get_xy(name)
+                if xs is None or len(xs) == 0:
+                    continue
                 # 颜色：优先 var_meta，缺省回退到调色板
                 meta = self._var_meta.get(name, {})
                 color = meta.get('color') or self._palette[

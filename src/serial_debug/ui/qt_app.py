@@ -109,6 +109,7 @@ class QtSerialDebugApp:
         self.pending_cmd: str | None = None
         self.pending_ts: float = 0.0
         self.auto_scroll: bool = True
+        self._scroll_suppress: bool = False
         self.append_crlf: bool = bool(self.cfg.get('append_crlf', False))
         self.ts_convert: bool = bool(self.cfg.get('ts_convert_enabled', False))
         # 串口参数
@@ -142,6 +143,11 @@ class QtSerialDebugApp:
         self._disconnect_icon = None
         # 工具栏引用（视图菜单显隐用）
         self._toolbar = None
+        # AT 命令面板嵌入/独立/隐藏
+        self._at_mode: str = self.cfg.get('at_window_mode', 'detached')
+        self._at_panel_qt = None     # AtCmdPanelQt 实例（嵌入或独立）
+        self._at_panel_widget = None # 嵌入时的 QWidget
+        self._main_splitter = None   # QSplitter（日志 | AT 面板）
         # 筛选（Stage 4.4）
         self._filter_pattern: str = self.cfg.get('filter_pattern', '') or ''
         self._filter_enabled: bool = bool(self.cfg.get('filter_enabled', False))
@@ -297,11 +303,6 @@ class QtSerialDebugApp:
         mono = QFont(qt_theme.QT_MONO_FAMILY, qt_theme.QT_MONO_SIZE)
         self._log_edit.setFont(mono)
         self._log_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
-        # 自动滚动到底时留 4 行空间，避免贴底视觉压迫
-        try:
-            self._log_edit.setCenterOnScroll(True)
-        except Exception:
-            pass
         # 滚动条跟随
         sb = self._log_edit.verticalScrollBar()
         sb.valueChanged.connect(self._on_scroll)
@@ -398,13 +399,21 @@ class QtSerialDebugApp:
         bl.addWidget(btn_clear)
 
         # 把底栏挂到主窗口下方
-        central = QWidget()
-        cv = QVBoxLayout(central)
-        cv.setContentsMargins(6, 6, 6, 6)
-        cv.setSpacing(6)
-        cv.addWidget(self._log_edit, 1)
-        cv.addWidget(bottom)
-        win.setCentralWidget(central)
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(6, 6, 6, 6)
+        lv.setSpacing(6)
+        lv.addWidget(self._log_edit, 1)
+        lv.addWidget(bottom)
+
+        # 主 Splitter：左侧日志 + 右侧 AT 面板（嵌入时）
+        from PySide6.QtWidgets import QSplitter
+        self._main_splitter = QSplitter()
+        self._main_splitter.addWidget(left)
+        win.setCentralWidget(self._main_splitter)
+
+        # 按配置恢复 AT 面板模式
+        self._apply_at_mode(self._at_mode)
 
         # 菜单栏
         self._build_menubar(win)
@@ -432,6 +441,15 @@ class QtSerialDebugApp:
         win.closeEvent = _close_event
 
         self._win = win
+        # 恢复窗口几何
+        try:
+            from PySide6.QtCore import QByteArray
+            geo_hex = self.cfg.get('qt_main_geometry', '')
+            if geo_hex:
+                ba = QByteArray.fromHex(bytes(geo_hex, 'ascii'))
+                win.restoreGeometry(ba)
+        except Exception:
+            pass
         # 应用主题色到日志区
         self._apply_theme_to_log()
         # 启动 drain timer
@@ -477,11 +495,20 @@ class QtSerialDebugApp:
 
         # 视图菜单
         m_view = mb.addMenu('视图')
-        # AT 命令面板：独立窗口 / 隐藏
-        act_at_show = QAction('AT 命令面板（独立窗口）', win)
-        act_at_show.setShortcut('Ctrl+T')
-        act_at_show.triggered.connect(self._open_at_window)
-        m_view.addAction(act_at_show)
+        # AT 命令面板模式
+        from PySide6.QtWidgets import QMenu
+        at_mode_menu = QMenu('AT 命令面板', win)
+        self._act_at_embedded = at_mode_menu.addAction('嵌入侧栏')
+        self._act_at_embedded.setCheckable(True)
+        self._act_at_embedded.triggered.connect(lambda: self._apply_at_mode('embedded'))
+        self._act_at_detached = at_mode_menu.addAction('独立窗口')
+        self._act_at_detached.setCheckable(True)
+        self._act_at_detached.triggered.connect(lambda: self._apply_at_mode('detached'))
+        self._act_at_hidden = at_mode_menu.addAction('隐藏')
+        self._act_at_hidden.setCheckable(True)
+        self._act_at_hidden.triggered.connect(lambda: self._apply_at_mode('hidden'))
+        m_view.addMenu(at_mode_menu)
+        m_view.addSeparator()
         # 监视窗口
         act_monitor = QAction('数据监视窗口…', win)
         act_monitor.setShortcut('Ctrl+M')
@@ -589,6 +616,69 @@ class QtSerialDebugApp:
         if self._win is not None:
             self._win.statusBar().setVisible(checked)
 
+    # ---- AT 面板模式切换（嵌入 / 独立 / 隐藏）-----------------------
+    def _apply_at_mode(self, mode: str):
+        """切换 AT 命令面板呈现模式：embedded / detached / hidden。"""
+        self._at_mode = mode
+        # 更新菜单勾选
+        if hasattr(self, '_act_at_embedded') and self._act_at_embedded is not None:
+            self._act_at_embedded.setChecked(mode == 'embedded')
+            self._act_at_detached.setChecked(mode == 'detached')
+            self._act_at_hidden.setChecked(mode == 'hidden')
+        # 关闭旧独立窗口
+        if mode != 'detached' and self._at_window_qt is not None:
+            try:
+                dlg = self._at_window_qt._dlg
+                if dlg is not None:
+                    dlg.close()
+                self._at_window_qt.panel._widget = None
+            except Exception:
+                pass
+            self._at_window_qt = None
+        # 移除旧嵌入面板
+        if self._at_panel_widget is not None:
+            try:
+                self._at_panel_widget.setVisible(False)
+                self._main_splitter.removeWidget(self._at_panel_widget)
+                self._at_panel_widget.setParent(None)
+                self._at_panel_widget.deleteLater()
+            except Exception:
+                pass
+            self._at_panel_widget = None
+            self._at_panel_qt = None
+
+        if mode == 'embedded':
+            self._build_at_embedded()
+        elif mode == 'detached':
+            self._open_at_window()
+        # hidden: 什么都不做
+
+        self._save_cfg_debounced()
+
+    def _build_at_embedded(self):
+        """在主 Splitter 右侧嵌入 AT 命令面板。"""
+        if self._main_splitter is None:
+            return
+        from serial_debug.ui.qt_at_cmd_window import AtCmdPanelQt
+        initial = self.cfg.get('at_commands', [])
+
+        def _on_change(cmds: list):
+            try:
+                self.cfg['at_commands'] = cmds
+                config.save(self.cfg)
+            except Exception:
+                pass
+
+        self._at_panel_qt = AtCmdPanelQt(
+            send_callback=self._send_cmd_external,
+            initial_cmds=initial,
+            on_change=_on_change)
+        self._at_panel_widget = self._at_panel_qt._build(parent=self._main_splitter)
+        self._main_splitter.addWidget(self._at_panel_widget)
+        # 设置 splitter 初始比例：日志 70% : AT 30%
+        total = self._main_splitter.width() or 1000
+        self._main_splitter.setSizes([int(total * 0.7), int(total * 0.3)])
+
     # ---- 发送 / 日志显示 ---------------------------------------------
     def _on_send_clicked(self):
         if self._cmd_edit is None:
@@ -640,12 +730,19 @@ class QtSerialDebugApp:
         self._save_cfg_debounced()
 
     def _on_scroll(self, val):
-        # 用户主动滚动时关闭自动滚动（滚到底再开启）
+        """用户上滚时关闭自动滚动（参照 tkinter 版 _check_scroll）。
+
+        注意：只在用户上滚时关闭 auto_scroll，不在滚到底时自动开启。
+        开启 auto_scroll 由用户 checkbox 或 _append_log 末尾的 setValue 触发。
+        """
         if self._log_edit is None:
             return
+        if self._scroll_suppress:
+            return
         sb = self._log_edit.verticalScrollBar()
-        if sb.maximum() - val <= 2:
-            self.auto_scroll = True
+        # 用户上滚（距底部远）→关闭自动滚动
+        if sb.maximum() - val > sb.singleStep() * 3:
+            self.auto_scroll = False
 
     # ---- drain（QTimer 替代 root.after）------------------------------
     def _drain(self):
@@ -753,8 +850,13 @@ class QtSerialDebugApp:
             self._append_log(text, tag)
 
     def _append_log(self, text: str, tag: str = 'log'):
-        """追加一段日志，按 tag 着色。"""
-        # 日志落盘：所有显示的行都写入（含发送/响应/日志/提示）
+        """追加一段日志，按 tag 着色。
+
+        参照 tkinter 版 _append 的逻辑：
+          1. insert 到文档末尾
+          2. _trim() 从顶部删除旧行
+          3. auto_scroll 时滚到底部
+        """
         if self.log_writer is not None:
             try:
                 self.log_writer.put(text)
@@ -774,30 +876,38 @@ class QtSerialDebugApp:
         }
         fmt = QTextCharFormat()
         fmt.setForeground(QColor(color_map.get(tag, color_map['log'])))
-        cursor = self._log_edit.textCursor()
-        # PySide6 6.6+ 枚举作用域化：MoveOperation.End / SelectionType.BlockUnderCursor
+        doc = self._log_edit.document()
+        # 1. 在文档末尾追加文本（用独立 cursor，不依赖 widget 的 cursor 位置）
+        cursor = QTextCursor(doc)
         try:
             cursor.movePosition(QTextCursor.MoveOperation.End)
         except AttributeError:
             cursor.movePosition(QTextCursor.End)
         cursor.insertText(text, fmt)
-        # 限制行数
-        if self._log_edit.blockCount() > MAX_LINES:
-            excess = self._log_edit.blockCount() - MAX_LINES
-            cursor = self._log_edit.textCursor()
+        # 2. 限制行数：从顶部一次性删除旧行（参照 tkinter _trim）
+        if doc.blockCount() > MAX_LINES:
+            excess = doc.blockCount() - MAX_LINES
+            self._scroll_suppress = True
             try:
-                cursor.movePosition(QTextCursor.MoveOperation.Start)
-            except AttributeError:
-                cursor.movePosition(QTextCursor.Start)
-            for _ in range(excess):
-                cursor.select(QTextCursor.SelectionType.BlockUnderCursor
-                              if hasattr(QTextCursor, 'SelectionType')
-                              else QTextCursor.BlockUnderCursor)
-                cursor.removeSelectedText()
-                cursor.deleteChar()
+                trim_cursor = QTextCursor(doc)
+                # 选中从文档开头到第 excess 行末尾
+                block = doc.firstBlock()
+                for _ in range(excess - 1):
+                    block = block.next()
+                trim_cursor.setPosition(doc.firstBlock().position())
+                trim_cursor.setPosition(block.position() + block.length(),
+                                        QTextCursor.MoveMode.KeepAnchor)
+                trim_cursor.removeSelectedText()
+            finally:
+                self._scroll_suppress = False
+        # 3. auto_scroll 时滚到底部
         if self.auto_scroll:
-            self._log_edit.verticalScrollBar().setValue(
-                self._log_edit.verticalScrollBar().maximum())
+            self._scroll_suppress = True
+            try:
+                self._log_edit.verticalScrollBar().setValue(
+                    self._log_edit.verticalScrollBar().maximum())
+            finally:
+                self._scroll_suppress = False
 
     def _update_status(self):
         if self._status_dot is None:
@@ -837,11 +947,17 @@ class QtSerialDebugApp:
             QMessageBox.critical(self._win, '启动失败', str(e))
 
     def _open_at_window(self):
-        """打开 AT 命令面板（QDialog，模态可选）。
-
-        send_callback 调用 self._send_cmd 把命令通过串口送出；
-        on_change 持久化命令列表到 config（at_commands 键）。
-        """
+        """打开 AT 命令面板（独立非模态窗口）。"""
+        # 如果已有独立窗口，直接激活
+        if self._at_window_qt is not None:
+            try:
+                dlg = self._at_window_qt._dlg
+                if dlg is not None and dlg.isVisible():
+                    dlg.activateWindow()
+                    dlg.raise_()
+                    return
+            except Exception:
+                pass
         from serial_debug.ui.qt_at_cmd_window import AtCmdWindowQt
         initial = self.cfg.get('at_commands', [])
 
@@ -856,7 +972,26 @@ class QtSerialDebugApp:
             send_callback=self._send_cmd_external,
             initial_cmds=initial,
             on_change=_on_change)
-        self._at_window_qt.exec()
+        dlg = self._at_window_qt._build(parent=self._win)
+        # 恢复几何
+        try:
+            from PySide6.QtCore import QByteArray
+            geo_hex = self.cfg.get('qt_at_geometry', '')
+            if geo_hex:
+                ba = QByteArray.fromHex(bytes(geo_hex, 'ascii'))
+                dlg.restoreGeometry(ba)
+        except Exception:
+            pass
+        # 关闭时保存几何
+        def _on_close(event):
+            try:
+                self.cfg['qt_at_geometry'] = dlg.saveGeometry().data().hex()
+                config.save(self.cfg)
+            except Exception:
+                pass
+            event.accept()
+        dlg.closeEvent = _on_close
+        dlg.show()
 
     # ---- 筛选 / 日志落盘 / 日志查看器（Stage 4.3-4.4）----------------
     def _on_filter_enable_toggled(self, state):
@@ -992,8 +1127,13 @@ class QtSerialDebugApp:
             cfg['filter_pattern'] = self._filter_pattern
             cfg['filter_enabled'] = self._filter_enabled
             cfg['log_path'] = self.log_path
+            cfg['at_window_mode'] = self._at_mode
             if self._win is not None:
                 cfg['geometry'] = f'{self._win.width()}x{self._win.height()}'
+                try:
+                    cfg['qt_main_geometry'] = self._win.saveGeometry().data().hex()
+                except Exception:
+                    pass
             config.save(cfg)
         except Exception:
             pass

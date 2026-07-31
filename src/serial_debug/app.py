@@ -1614,8 +1614,20 @@ def main():
     import os
     if os.environ.get('SERIAL_DEBUG_QT_PILOT') == '1':
         # Qt 试点窗口：独立子进程运行，避免与主事件循环冲突
-        from serial_debug.ui.qt_monitor_window import QtMonitorWindow
-        sys.exit(QtMonitorWindow().run())
+        try:
+            from serial_debug.ui.qt_monitor_window import QtMonitorWindow
+            sys.exit(QtMonitorWindow().run())
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            try:
+                from PySide6.QtWidgets import QMessageBox, QApplication
+                app = QApplication.instance() or QApplication(sys.argv)
+                QMessageBox.critical(None, '启动失败',
+                                     f'Qt 监视窗口启动失败:\n{e}\n\n{traceback.format_exc()}')
+            except Exception:
+                pass
+            sys.exit(1)
     if os.environ.get('SERIAL_DEBUG_LOG_VIEWER') == '1':
         # 独立日志查看器子进程（Qt 主程序的工具菜单启动）
         return _run_log_viewer_only([])
