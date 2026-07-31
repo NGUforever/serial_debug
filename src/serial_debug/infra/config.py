@@ -81,6 +81,10 @@ DEFAULTS = {
     # 日志查看器视图状态
     'log_view_show_toolbar': True,      # 日志查看器工具栏显隐
     'log_view_geometry': '1400x800',    # 日志查看器窗口几何
+    # Qt 监视窗口（Stage 1：多 plot 子图 + 配置持久化）
+    'qt_monitor_plots': [],            # list[dict]：每个 plot 的配置
+    'qt_monitor_geometry': '',          # 窗口几何（'WxH+X+Y'）
+    'qt_monitor_view_toolbar': True,   # 工具栏显隐
 }
 
 
