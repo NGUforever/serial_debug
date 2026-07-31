@@ -92,6 +92,8 @@ class QtSerialDebugApp:
         # 状态点状态：idle / ok / wait / err
         self._dot_state: str = 'idle'
         self._connected_label: str = '未连接'
+        # 子窗口引用（避免被 GC）
+        self._at_window_qt = None
 
     # ---- 后端回调（在工作线程触发）----------------------------------
     def _on_backend_status(self, level: str, msg: str):
@@ -300,6 +302,10 @@ class QtSerialDebugApp:
         act_qt_monitor.setShortcut('Ctrl+M')
         act_qt_monitor.triggered.connect(self._open_qt_monitor)
         m_tools.addAction(act_qt_monitor)
+        act_at = QAction('AT 命令面板…', win)
+        act_at.setShortcut('Ctrl+T')
+        act_at.triggered.connect(self._open_at_window)
+        m_tools.addAction(act_at)
         m_tools.addSeparator()
         act_refresh_ports = QAction('刷新端口列表', win)
         act_refresh_ports.triggered.connect(self._refresh_ports)
@@ -373,18 +379,33 @@ class QtSerialDebugApp:
         cmd = self._cmd_edit.text()
         if not cmd:
             return
+        if not self._send_cmd(cmd):
+            return
+        self._cmd_edit.clear()
+
+    def _send_cmd(self, cmd: str) -> bool:
+        """发送一条命令到串口。返回 True=已发送，False=未连接。
+
+        同时把命令回显到日志（带 → 前缀和时间戳转换），设置 pending_cmd
+        等待响应。供命令输入框和 AT 命令面板共用。
+        """
+        if not cmd:
+            return False
         if not self.backend.is_open:
-            self._status_lbl.setText('未连接，无法发送')
+            if self._status_lbl is not None:
+                self._status_lbl.setText('未连接，无法发送')
             self._dot_state = 'wait'
             self._update_status()
-            return
-        # 显示发送命令（带时间戳前缀）
+            return False
         self._append_log(f'{self._ts_prefix_if_needed(cmd)}→ {cmd}\n',
                          tag='send')
         self.pending_cmd = cmd
         self.pending_ts = time.time()
         self.backend.send(cmd, append_crlf=self.append_crlf)
-        self._cmd_edit.clear()
+        return True
+
+    # 别名供 AT 命令面板调用（语义更明确）
+    _send_cmd_external = _send_cmd
 
     def _on_clear_clicked(self):
         if self._log_edit is not None:
@@ -588,6 +609,28 @@ class QtSerialDebugApp:
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self._win, '启动失败', str(e))
+
+    def _open_at_window(self):
+        """打开 AT 命令面板（QDialog，模态可选）。
+
+        send_callback 调用 self._send_cmd 把命令通过串口送出；
+        on_change 持久化命令列表到 config（at_commands 键）。
+        """
+        from serial_debug.ui.qt_at_cmd_window import AtCmdWindowQt
+        initial = self.cfg.get('at_commands', [])
+
+        def _on_change(cmds: list):
+            try:
+                self.cfg['at_commands'] = cmds
+                config.save(self.cfg)
+            except Exception:
+                pass
+
+        self._at_window_qt = AtCmdWindowQt(
+            send_callback=self._send_cmd_external,
+            initial_cmds=initial,
+            on_change=_on_change)
+        self._at_window_qt.exec()
 
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox
