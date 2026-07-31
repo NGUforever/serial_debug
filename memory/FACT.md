@@ -78,9 +78,9 @@
 - **PyInstaller spec**：收集 PySide6 核心 submodule（QtCore/QtGui/QtWidgets）+ pyqtgraph + numpy，体积 254MB 偏大但商业产品可接受
 
 ### 试点未完成项（按方案 A 推进）
-1. load_log() 还是简化版（每行抓所有整数按位置赋 v0/v1…），需接完整 motor/BMS/IMU 解析器
-2. 无串口实时 feed 通路，只能加载静态日志或 mock 数据
-3. 试点性能基准数值未记录（用户点过性能基准按钮但未回报具体数值），是否全量切 Qt 未定
+1. ✅ load_log() 已接完整 motor/BMS/IMU 解析器（_iter_panel_vars 复用 monitor_window 的 Panel._parse_tagged_line + DEFAULT_VARS）
+2. ✅ 串口实时 feed 通路已搭好（start_serial / stop_serial + threading + QTimer 25 FPS 节流 + _max_points=60000 限长）
+3. ⏳ 试点性能基准数值未记录（用户点过性能基准按钮但未回报具体数值），是否全量切 Qt 未定
 
 ## 串口调试工具设计原则（2026-07-10 整理）
 
