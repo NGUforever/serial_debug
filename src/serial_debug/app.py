@@ -301,6 +301,8 @@ class SerialDebugApp:
         menubar.add_cascade(label='帮助(H)', menu=m_help)
         m_help.add_command(label='Qt 试点曲线窗口…',
                            command=self._open_qt_monitor_pilot)
+        m_help.add_command(label='Qt 主程序（Stage 4 试点）…',
+                           command=self._open_qt_main_pilot)
         m_help.add_separator()
         m_help.add_command(label='关于', command=self._show_about)
 
@@ -383,6 +385,31 @@ class SerialDebugApp:
                     'Qt 试点启动失败',
                     f'启动 Qt 试点窗口失败：{e}\n'
                     '请确认已安装 PySide6 + pyqtgraph（pip install PySide6 pyqtgraph）')
+            except Exception:
+                pass
+
+    def _open_qt_main_pilot(self):
+        """启动 Qt 主程序试点（独立进程）。
+
+        环境变量 SERIAL_DEBUG_QT_MAIN=1 让 main() 走 qt_app.QtSerialDebugApp
+        路径，与 tkinter 主事件循环隔离。
+        """
+        import subprocess
+        env = os.environ.copy()
+        env['SERIAL_DEBUG_QT_MAIN'] = '1'
+        try:
+            subprocess.Popen(
+                [sys.executable],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True)
+        except Exception as e:
+            try:
+                messagebox.showerror(
+                    'Qt 主程序启动失败',
+                    f'启动 Qt 主程序失败：{e}\n'
+                    '请确认已安装 PySide6（pip install PySide6）')
             except Exception:
                 pass
 
@@ -1576,8 +1603,9 @@ def main():
       serial_debug --view F1 [F2 ...] # 只启动日志查看器加载给定文件
 
     环境变量 SERIAL_DEBUG_QT_PILOT=1 启动 Qt 试点曲线窗口
+    环境变量 SERIAL_DEBUG_QT_MAIN=1 启动 Qt 主程序（Stage 4.1 骨架）
     （PyInstaller 打包后 sys.executable -m <module> 不工作，
-     改用环境变量区分入口，子进程看到此变量走 Qt 试点路径）。
+     改用环境变量区分入口，子进程看到此变量走 Qt 路径）。
     """
     import sys
     import os
@@ -1585,6 +1613,10 @@ def main():
         # Qt 试点窗口：独立子进程运行，避免与主 tkinter 事件循环冲突
         from serial_debug.ui.qt_monitor_window import QtMonitorWindow
         sys.exit(QtMonitorWindow().run())
+    if os.environ.get('SERIAL_DEBUG_QT_MAIN') == '1':
+        # Qt 主程序（Stage 4.1 骨架）：串口连接 + 日志显示 + 发送
+        from serial_debug.ui.qt_app import QtSerialDebugApp
+        sys.exit(QtSerialDebugApp().run())
     args = sys.argv[1:]
     if args and args[0] == '--view':
         files = [f for f in args[1:] if not f.startswith('-')]
