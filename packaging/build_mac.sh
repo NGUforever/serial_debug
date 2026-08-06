@@ -21,7 +21,7 @@ PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
 # 安装依赖
-pip install --quiet pyinstaller pyserial
+pip install --quiet pyinstaller pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate
 
 # PyInstaller 构建
 pyinstaller --clean --noconfirm packaging/serial_debug.spec

@@ -240,6 +240,9 @@ class AtCmdPanelQt:
 
     # ---- 行操作 ------------------------------------------------------
     def _send_row(self, row: int):
+        # 必须先把表格当前编辑的内容同步回 self.commands，否则用户编辑
+        # 后点发送读到的是旧值（新增行读到空串被 if not cmd 拦截不发）。
+        self._sync_from_table()
         if row >= len(self.commands):
             return
         cmd = self.commands[row].get('cmd', '').strip()

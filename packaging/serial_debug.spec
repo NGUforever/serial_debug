@@ -66,10 +66,101 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=['matplotlib', 'pytest', 'IPython',
-              'setuptools', 'pip', 'distutils'],
+    excludes=[
+        # 通用不用的库
+        'matplotlib', 'pytest', 'IPython',
+        'setuptools', 'pip', 'distutils',
+        # Qt 不用的模块（保留 Core/Gui/Widgets/OpenGL/Svg/Network/DBus/Wayland）
+        # QML / Quick：不用 Qt 声明式 UI，省 ~22MB
+        'PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtQuick3D',
+        'PySide6.QtQuickWidgets', 'PySide6.QtQuickControls2',
+        'PySide6.QtQuickParticles', 'PySide6.QtQuickTemplates2',
+        # PDF：不渲染 PDF，省 ~5MB
+        'PySide6.QtPdf', 'PySide6.QtPdfWidgets',
+        # 虚拟键盘：桌面应用不用，省 ~0.6MB
+        'PySide6.QtVirtualKeyboard',
+        # 其他不用的 Qt 模块
+        'PySide6.QtTest',              # 单元测试框架
+        'PySide6.QtMultimedia',        # 多媒体
+        'PySide6.QtMultimediaWidgets',
+        'PySide6.QtSql',               # SQL 数据库
+        'PySide6.QtWebEngine',         # WebEngine（巨大）
+        'PySide6.QtWebEngineCore',
+        'PySide6.QtWebEngineWidgets',
+        'PySide6.QtWebSockets',
+        'PySide6.QtWebChannel',
+        'PySide6.QtCharts',
+        'PySide6.QtDataVisualization',
+        'PySide6.QtBluetooth',
+        'PySide6.QtNfc',
+        'PySide6.QtPositioning',
+        'PySide6.QtLocation',
+        'PySide6.QtSensors',
+        'PySide6.QtSerialPort',        # 我们用 pyserial，不用 Qt 串口
+        'PySide6.QtSerialBus',
+        'PySide6.QtRemoteObjects',
+        'PySide6.QtScxml',
+        'PySide6.QtStateMachines',
+        'PySide6.QtHelp',
+        'PySide6.QtPrintSupport',
+        'PySide6.QtUiTools',
+        'PySide6.QtDesigner',
+        'PySide6.QtUiPlugin',
+        'PySide6.QtLinguistTools',
+        'PySide6.QtQmlDevTools',
+        'PySide6.QtAxContainer',
+        # 旧版 Qt bindings（不混用）
+        'PyQt5', 'PyQt6', 'PySide2',
+    ],
     noarchive=False,
 )
+
+# 手动从 binaries 移除 PySide6 hook 强制拉入但我们不用的 Qt 库
+# （PyInstaller excludes 只对 Python 模块生效，对 .so 库无效）
+_qt_strip_libs = (
+    'libQt6Qml', 'libQt6Quick', 'libQt6Quick3D', 'libQt6QuickParticles',
+    'libQt6QuickTemplates2', 'libQt6QuickControls2', 'libQt6QuickShapes',
+    'libQt6QuickEffects', 'libQt6QuickDialogs2', 'libQt6QuickLayouts',
+    'libQt6QmlMeta', 'libQt6QmlModels', 'libQt6QmlWorkerScript',
+    'libQt6Pdf', 'libQt6PdfWidgets',
+    'libQt6VirtualKeyboard', 'libQt6VirtualKeyboardQml',
+    'libQt6Test',
+    'libQt6Multimedia', 'libQt6MultimediaWidgets',
+    'libQt6Sql',
+    'libQt6WebEngine', 'libQt6WebEngineCore', 'libQt6WebEngineWidgets',
+    'libQt6WebSockets', 'libQt6WebChannel',
+    'libQt6Charts', 'libQt6DataVisualization',
+    'libQt6Bluetooth', 'libQt6Nfc',
+    'libQt6Positioning', 'libQt6Location',
+    'libQt6Sensors', 'libQt6SerialPort', 'libQt6SerialBus',
+    'libQt6RemoteObjects', 'libQt6Scxml',
+    'libQt6Help', 'libQt6PrintSupport',
+    'libQt6UiTools', 'libQt6Designer',
+    # 注意：ICU（libicudata/libicui18n/libicuuc）不能去，Qt 字符串处理基础依赖
+    # 去掉会 ImportError: libicui18n.so.73 无法启动
+)
+
+
+def _strip_binaries(binaries):
+    """过滤掉 PySide6 hook 强制拉入但不用的 Qt 库。"""
+    filtered = []
+    for item in binaries:
+        # item 是 (dest_name, source_path) 元组
+        name = item[0] if isinstance(item, tuple) else str(item)
+        # 取文件名（去路径）
+        base = name.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
+        # 去掉版本号前缀，如 libQt6Qml.so.6 → libQt6Qml
+        stem = base.split('.so')[0].split('.dylib')[0]
+        if stem.endswith('.dll'):
+            stem = stem[:-4]
+        # 检查是否在剥离列表中
+        if any(stem == lib or stem.startswith(lib + '.') for lib in _qt_strip_libs):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+a.binaries = _strip_binaries(a.binaries)
 
 pyz = PYZ(a.pure, a.zipped_data)
 

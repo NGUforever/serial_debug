@@ -1,67 +1,91 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#2a2d3a"/>
-      <stop offset="55%" stop-color="#1e1e1e"/>
-      <stop offset="100%" stop-color="#181818"/>
+    <!-- 主背景：深蓝 → 青蓝渐变，科技感 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a2540"/>
+      <stop offset="50%" stop-color="#0d3a5c"/>
+      <stop offset="100%" stop-color="#0e5374"/>
     </linearGradient>
+    <!-- 数据流渐变：青 → 绿 -->
+    <linearGradient id="waveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#00ff9c"/>
+    </linearGradient>
+    <!-- USB 金属渐变 -->
     <linearGradient id="metalGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#c8c8c8"/>
-      <stop offset="45%" stop-color="#f0f0f0"/>
-      <stop offset="55%" stop-color="#c8c8c8"/>
-      <stop offset="100%" stop-color="#7a7a7a"/>
+      <stop offset="0%" stop-color="#e8e8e8"/>
+      <stop offset="50%" stop-color="#b0b0b0"/>
+      <stop offset="100%" stop-color="#707070"/>
     </linearGradient>
-    <linearGradient id="plasticGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#1a1a2e"/>
-      <stop offset="100%" stop-color="#0a0a14"/>
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="1.5"/>
+    <!-- 发光滤镜 -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.2"/>
     </filter>
   </defs>
 
-  <rect width="256" height="256" rx="48" ry="48" fill="url(#bgGrad)"/>
-  <!-- 顶部 accent 条 -->
-  <rect x="48" y="44" width="160" height="5" rx="2.5" fill="#007acc"/>
+  <!-- 圆角背景 -->
+  <rect width="256" height="256" rx="44" ry="44" fill="url(#bgGrad)"/>
+  <!-- 顶部高光条 -->
+  <rect x="20" y="20" width="216" height="3" rx="1.5" fill="#00d4ff" opacity="0.6"/>
 
-  <!-- 顶部时间戳（模拟串口日志行） -->
-  <text x="48" y="76" font-family="monospace" font-size="11" fill="#6a9955">[12:34:56.789]</text>
-  <text x="48" y="92" font-family="monospace" font-size="11" fill="#dcdcaa">TX:&#gt; AT+ELOG=0%</text>
+  <!-- 顶部终端窗口栏（深色，带红黄绿三点） -->
+  <rect x="28" y="40" width="200" height="36" rx="6" fill="#0a1a2a" stroke="#1a3a5a" stroke-width="1"/>
+  <circle cx="44" cy="58" r="4" fill="#ff5f56"/>
+  <circle cx="58" cy="58" r="4" fill="#ffbd2e"/>
+  <circle cx="72" cy="58" r="4" fill="#27c93f"/>
+  <!-- 终端提示符 > 和光标 -->
+  <text x="92" y="63" font-family="monospace" font-size="14" fill="#00ff9c" font-weight="bold">&gt;_</text>
+  <rect x="118" y="50" width="8" height="16" fill="#00ff9c" opacity="0.8">
+    <animate attributeName="opacity" values="0.8;0.1;0.8" dur="1.2s" repeatCount="indefinite"/>
+  </rect>
 
-  <!-- USB Type-A 接头（左侧主体，黄金分割 0.382 左留白） -->
-  <!-- 金属外壳 -->
-  <rect x="44" y="120" width="78" height="58" rx="6" fill="url(#metalGrad)" stroke="#5a5a5a" stroke-width="1.2"/>
-  <!-- 内部黑色塑料芯 -->
-  <rect x="52" y="129" width="62" height="40" rx="2" fill="url(#plasticGrad)"/>
+  <!-- USB Type-A 接头（左侧） -->
+  <rect x="32" y="100" width="78" height="56" rx="6" fill="url(#metalGrad)" stroke="#404040" stroke-width="1.5"/>
+  <rect x="40" y="110" width="62" height="36" rx="2" fill="#0a0a14"/>
   <!-- 4 个金色触点 -->
-  <rect x="58" y="137" width="3" height="24" rx="0.5" fill="#d4af37"/>
-  <rect x="66" y="137" width="3" height="24" rx="0.5" fill="#d4af37"/>
-  <rect x="74" y="137" width="3" height="24" rx="0.5" fill="#d4af37"/>
-  <rect x="82" y="137" width="3" height="24" rx="0.5" fill="#d4af37"/>
+  <rect x="46" y="118" width="3.5" height="20" rx="0.5" fill="#d4af37"/>
+  <rect x="54" y="118" width="3.5" height="20" rx="0.5" fill="#d4af37"/>
+  <rect x="62" y="118" width="3.5" height="20" rx="0.5" fill="#d4af37"/>
+  <rect x="70" y="118" width="3.5" height="20" rx="0.5" fill="#d4af37"/>
   <!-- USB 接头上沿高光 -->
-  <rect x="44" y="120" width="78" height="3" rx="1.5" fill="#ffffff" opacity="0.35"/>
+  <rect x="32" y="100" width="78" height="3" rx="1.5" fill="#ffffff" opacity="0.5"/>
 
-  <!-- 数据流方波：从 USB 接口右侧涌出 -->
-  <path d="M 122 149 L 138 149 L 138 128 L 158 128 L 158 170 L 178 170 L 178 128 L 198 128 L 198 149 L 218 149"
-        fill="none" stroke="#4ec9b0" stroke-width="3.5"
+  <!-- 数据流方波：从 USB 接口涌出，向右延伸 -->
+  <path d="M 116 128 L 132 128 L 132 108 L 152 108 L 152 148 L 172 148 L 172 108 L 192 108 L 192 128 L 220 128"
+        fill="none" stroke="url(#waveGrad)" stroke-width="4"
         stroke-linejoin="round" stroke-linecap="round"
         filter="url(#glow)"/>
-  <path d="M 122 149 L 138 149 L 138 128 L 158 128 L 158 170 L 178 170 L 178 128 L 198 128 L 198 149 L 218 149"
-        fill="none" stroke="#4ec9b0" stroke-width="3.5"
-        stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- 第二条数据线（更细，错位） -->
+  <path d="M 116 142 L 134 142 L 134 162 L 154 162 L 154 122 L 174 122 L 174 162 L 194 162 L 194 142 L 220 142"
+        fill="none" stroke="#00d4ff" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"
+        opacity="0.5" filter="url(#softGlow)"/>
 
-  <!-- RX/TX 双向箭头（底部） -->
-  <!-- TX 箭头：向右青色 -->
-  <path d="M 138 206 L 218 206 M 210 200 L 218 206 L 210 212"
-        stroke="#4ec9b0" stroke-width="2.5" fill="none"
+  <!-- 底部 TX/RX 双向箭头 -->
+  <!-- TX 向右 -->
+  <path d="M 130 186 L 218 186 M 208 180 L 218 186 L 208 192"
+        stroke="#00ff9c" stroke-width="2.5" fill="none"
         stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="170" y="200" font-family="monospace" font-size="11"
-        fill="#4ec9b0" text-anchor="middle" font-weight="bold">TX</text>
-  <!-- RX 箭头：向左蓝色 -->
-  <path d="M 122 224 L 42 224 M 50 218 L 42 224 L 50 230"
-        stroke="#569cd6" stroke-width="2.5" fill="none"
+  <text x="174" y="180" font-family="monospace" font-size="11"
+        fill="#00ff9c" text-anchor="middle" font-weight="bold">TX</text>
+  <!-- RX 向左 -->
+  <path d="M 126 206 L 38 206 M 48 200 L 38 206 L 48 212"
+        stroke="#00d4ff" stroke-width="2.5" fill="none"
         stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="90" y="240" font-family="monospace" font-size="11"
-        fill="#569cd6" text-anchor="middle" font-weight="bold">RX</text>
+  <text x="82" y="200" font-family="monospace" font-size="11"
+        fill="#00d4ff" text-anchor="middle" font-weight="bold">RX</text>
+
+  <!-- 底部状态点（运行中） -->
+  <circle cx="128" cy="226" r="4" fill="#27c93f" filter="url(#softGlow)">
+    <animate attributeName="opacity" values="1;0.3;1" dur="1.5s" repeatCount="indefinite"/>
+  </circle>
+  <text x="140" y="230" font-family="monospace" font-size="9" fill="#27c93f">LIVE</text>
 </svg>
