@@ -1606,7 +1606,7 @@ def main():
       SERIAL_DEBUG_TK=1              回退到 tkinter 主程序
       SERIAL_DEBUG_QT_PILOT=1        启动 Qt 监视窗口（曲线）
       SERIAL_DEBUG_QT_MAIN=1         强制 Qt 主程序（与默认等价，保留兼容）
-      SERIAL_DEBUG_LOG_VIEWER=1      启动独立日志查看器窗口
+      SERIAL_DEBUG_LOG_VIEWER=1      启动独立 Qt 日志查看器窗口
     （PyInstaller 打包后 sys.executable -m <module> 不工作，
      改用环境变量区分入口，子进程看到此变量走对应路径）。
     """
@@ -1655,7 +1655,7 @@ def main():
     # 默认：Qt 主程序
     args = sys.argv[1:]
     if args and args[0] == '--view':
-        # --view 仍然走 tkinter 日志查看器（Qt 版尚未实现）
+        # --view 走 Qt 日志查看器
         files = [f for f in args[1:] if not f.startswith('-')]
         return _run_log_viewer_only(files)
     from serial_debug.ui.qt_app import QtSerialDebugApp
@@ -1663,13 +1663,59 @@ def main():
 
 
 def _run_log_viewer_only(files: list[str]):
-    """独立模式：只启动日志查看器窗口。
+    """独立模式：只启动 Qt 日志查看器窗口。
 
     桌面图标启动时（无文件参数）直接打开空窗口，用户在工具栏里点
     "打开文件…" 选择日志文件；避免出现"先弹文件对话框、选完才开主窗口"
     的反直觉流程。命令行带文件参数（如 `serial_debug --view f1.txt`）
     仍按原方式自动加载这些文件。
+
+    走 Qt 路径（PySide6 QPlainTextEdit + QTabWidget），与 Qt 主程序
+    qt_app.QtSerialDebugApp 一致；环境变量 SERIAL_DEBUG_LOG_VIEWER=1
+    由 qt_app._open_log_viewer 子进程注入，PyInstaller 打包后
+    sys.executable -m 不识别，改用环境变量区分入口。
     """
+    import sys
+    import os
+    from serial_debug.infra import themes
+    pref = themes.load_pref()
+    resolved = themes.resolve(pref)
+    try:
+        from PySide6.QtWidgets import QApplication
+        from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    except Exception as e:
+        import traceback
+        # Qt 不可用时回退到 tkinter
+        try:
+            import tkinter as _tk
+            from tkinter import messagebox as _mb
+            _tk.Tk().withdraw()
+            _mb.showerror('日志查看 - Qt 启动失败',
+                          f'Qt 不可用：{e}\n回退到 tkinter 版本。\n'
+                          '请确认已安装 PySide6（pip install PySide6）')
+        except Exception:
+            pass
+        return _run_log_viewer_only_tk(files)
+    app = QApplication.instance() or QApplication(sys.argv)
+    from serial_debug.ui import qt_theme
+    qt_theme.apply_qss(app, resolved)
+    win = QtLogViewerWindow(theme_name=resolved)
+    # 独立图标
+    try:
+        icon_path = resource_path(os.path.join('assets', 'icon_view.png'))
+        if os.path.exists(icon_path):
+            from PySide6.QtGui import QIcon
+            app.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        pass
+    for p in files:
+        win.open_file(p)
+    win.show()
+    sys.exit(app.exec())
+
+
+def _run_log_viewer_only_tk(files: list[str]):
+    """tkinter 兜底路径（Qt 不可用时使用）。"""
     import sys
     import os
     from serial_debug.infra import config
@@ -1680,7 +1726,6 @@ def _run_log_viewer_only(files: list[str]):
     resolved = themes.resolve(pref)
     t = themes.THEMES[resolved]
     themes.apply_theme(root, resolved)
-    # 日志查看器窗口加载独立图标
     try:
         icon_path = resource_path(
             os.path.join('assets', 'icon_view.png'))
@@ -1692,7 +1737,6 @@ def _run_log_viewer_only(files: list[str]):
         pass
     try:
         win = LogViewerWindow(root, path=None, theme=t)
-        # 命令行带了文件参数：自动加载；否则留空让用户在工具栏里选
         for p in files:
             win.open_file(p)
     except Exception as e:

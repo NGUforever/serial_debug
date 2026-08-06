@@ -1061,11 +1061,12 @@ class QtSerialDebugApp:
             self._log_status.setText('已停止')
 
     def _open_log_viewer(self):
-        """子进程启动 tkinter 日志查看器窗口。
+        """子进程启动 Qt 日志查看器窗口。
 
         用 sys.executable + 环境变量 SERIAL_DEBUG_LOG_VIEWER=1 走 main()
-        里的 _run_log_viewer_only([]) 路径，兼容 PyInstaller 打包后
-        -m 不识别的情况。
+        里的 _run_log_viewer_only([]) 路径，子进程内启动 QtLogViewerWindow
+        （PySide6 + QPlainTextEdit + QTabWidget），与主程序 Qt 路径一致；
+        兼容 PyInstaller 打包后 -m 不识别的情况。
         """
         import subprocess
         env = dict(os.environ)

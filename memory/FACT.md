@@ -85,6 +85,20 @@
 - 迁移路径：QtMonitorWindow 扩展为完整监视窗口 → 主程序迁 Qt → 日志查看器迁 Qt → 拆 tkinter
 - tkinter 版本废弃，但 monitor_window.py 的解析器（_parse_tagged_line / DEFAULT_VARS）继续复用，不重写
 
+### Qt 迁移里程碑（2026-08-06 完成）
+
+- ✅ **qt_monitor_window.py** 1971 行：完整监视窗口（多 plot / sidebar / 统计 / CSV 导出 / 实时串口 feed / popout 单图 / 持久化）
+- ✅ **qt_log_viewer_window.py** 1573 行：完整日志查看器（多 Tab + 行号 + 50k 批渲染 + 滚动加载更多 + 文件内/全局搜索 + 高亮 + 筛选面板 DockWidget 嵌入/分离 + 双向定位 + 实时刷新 + 视图状态持久化 + 主题切换 + 电机/BMS/IMU 监视入口 + 菜单/工具栏/快捷键）
+- ✅ **qt_app.py** 1154 行：Qt 主程序（串口连接 + 日志显示 + 发送 + AT 命令面板 + 筛选 + 日志落盘 + 日志查看器入口）
+- ✅ **qt_theme.py** 427 行：VSCode Dark+ 双主题 QSS
+- ✅ **app.py** 1754 行：菜单 / 入口 / env 分流（SERIAL_DEBUG_QT_PILOT / SERIAL_DEBUG_QT_MAIN / SERIAL_DEBUG_LOG_VIEWER）
+- ✅ Phase 1-5 全部测试通过：10w 行日志 + 50k 批 + 滚动加载 + 2000 搜索高亮 + 2966 筛选 + 500 全局搜索 + 实时刷新 + 几何持久化 + popout 单图 + motor/bms/imu 各 40 变量 5000 点 replay
+
+### Phase 5 关键 bug 修复（2026-08-06）
+- `_iter_panel_vars` 原本在 `_open_monitor` 内 local import，但 `_replay_to_monitor` 是另一个方法作用域拿不到 → NameError 被 `except Exception: pass` 吞掉 → vars=0
+- 修复：移到 module level import
+- 教训：`except Exception: pass` 会吞所有错，调试时先去掉或加 print；method 间不共享 local scope
+
 ## 串口调试工具设计原则（2026-07-10 整理）
 
 ### 设备端协议本质

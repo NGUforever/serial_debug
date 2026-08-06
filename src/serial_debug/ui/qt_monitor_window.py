@@ -131,6 +131,8 @@ def _default_plot() -> dict:
         'show_last': False,
         'show_table': False,
         'show_hover': True,
+        'legend_pos': 'top-right',    # top-left / top-right / bottom-left / bottom-right / hidden
+        'hover_mode': 'current',      # current / all
     }
 
 
@@ -164,7 +166,7 @@ class _QtPlotDialog:
         from PySide6.QtWidgets import (
             QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
             QCheckBox, QListWidget, QListWidgetItem, QVBoxLayout,
-            QHBoxLayout, QPushButton, QGroupBox, QLabel,
+            QHBoxLayout, QPushButton, QGroupBox, QLabel, QComboBox,
         )
 
         dlg = QDialog(self.parent)
@@ -207,6 +209,34 @@ class _QtPlotDialog:
             self._show_checks[key] = cb
         opts.addStretch(1)
         v.addWidget(opts_box)
+
+        # 图例位置 + 悬停模式
+        extra_box = QGroupBox('图例与悬停')
+        extra = QHBoxLayout(extra_box)
+        extra.setContentsMargins(8, 8, 8, 8)
+        extra.addWidget(QLabel('图例位置:'))
+        self._legend_combo = QComboBox()
+        legend_items = [('top-right', '右上角'), ('top-left', '左上角'),
+                        ('bottom-right', '右下角'), ('bottom-left', '左下角'),
+                        ('hidden', '隐藏')]
+        for val, label in legend_items:
+            self._legend_combo.addItem(label, val)
+        cur_legend = init.get('legend_pos', 'top-right')
+        for i, (val, _) in enumerate(legend_items):
+            if val == cur_legend:
+                self._legend_combo.setCurrentIndex(i)
+                break
+        extra.addWidget(self._legend_combo)
+        extra.addSpacing(16)
+        extra.addWidget(QLabel('悬停模式:'))
+        self._hover_combo = QComboBox()
+        self._hover_combo.addItem('仅当前曲线', 'current')
+        self._hover_combo.addItem('全部曲线', 'all')
+        cur_hover = init.get('hover_mode', 'current')
+        self._hover_combo.setCurrentIndex(0 if cur_hover == 'current' else 1)
+        extra.addWidget(self._hover_combo)
+        extra.addStretch(1)
+        v.addWidget(extra_box)
 
         # 包含变量（多选）
         vars_box = QGroupBox('包含变量（多选，空 = 显示全部已加载变量）')
@@ -280,6 +310,8 @@ class _QtPlotDialog:
             'show_last': self._show_checks['show_last'].isChecked(),
             'show_table': self._show_checks['show_table'].isChecked(),
             'show_hover': self._show_checks['show_hover'].isChecked(),
+            'legend_pos': self._legend_combo.currentData() or 'top-right',
+            'hover_mode': self._hover_combo.currentData() or 'current',
         }
         if self._dlg is not None:
             self._dlg.accept()
@@ -314,6 +346,8 @@ class QtMonitorWindow:
         self._plot_widgets: list = []
         self._curves: list[dict] = []
         self._plots_layout = None
+        # popout 单图独立窗口列表：[(plot_idx, QDialog, PlotWidget, curves_dict)]
+        self._popout_dialogs: list = []
         # 侧栏 UI
         self._sidebar = None        # QTreeWidget
         self._sidebar_container = None  # QWidget（splitter 左侧）
@@ -762,6 +796,9 @@ class QtMonitorWindow:
         btn_del = QPushButton('删除图表')
         btn_del.clicked.connect(_del_plot)
         tb.addWidget(btn_del)
+        btn_popout = QPushButton('放大当前图…')
+        btn_popout.clicked.connect(self._popout_current_plot)
+        tb.addWidget(btn_popout)
         tb.addSeparator()
         btn_open = QPushButton('打开日志…')
         btn_open.clicked.connect(_open_log)
@@ -1570,6 +1607,7 @@ class QtMonitorWindow:
             return
         import numpy as np
         import pyqtgraph as pg
+        from PySide6.QtCore import Qt
 
         with self._data_lock:
             all_data_keys = list(self._data.keys())
@@ -1587,6 +1625,29 @@ class QtMonitorWindow:
                     except Exception:
                         pass
                     del curves[name]
+            # 图例：必须在曲线创建之前添加，pyqtgraph 才会自动把曲线加入图例
+            # pyqtgraph 0.14 起 PlotWidget 不直接暴露 .legend，用 try/except 兼容
+            legend_pos = p.get('legend_pos', 'top-right')
+            if legend_pos != 'hidden':
+                try:
+                    legend = getattr(pw, 'legend', None) or getattr(
+                        getattr(pw, 'plotItem', None), 'legend', None)
+                    if legend is None:
+                        pw.addLegend(offset=self._legend_offset(legend_pos))
+                except Exception:
+                    try:
+                        pw.addLegend(offset=self._legend_offset(legend_pos))
+                    except Exception:
+                        pass
+            else:
+                try:
+                    leg = getattr(pw, 'legend', None) or getattr(
+                        getattr(pw, 'plotItem', None), 'legend', None)
+                    if leg is not None:
+                        pw.removeItem(leg)
+                except Exception:
+                    pass
+            # 创建/更新曲线
             for name in vars_to_show:
                 if name not in self._data:
                     continue
@@ -1603,6 +1664,8 @@ class QtMonitorWindow:
                     (all_data_keys.index(name)
                      if name in all_data_keys else 0)
                     % len(self._palette)]
+                # 图例用中文 label
+                label = meta.get('label') or name
                 if name in curves:
                     item = curves[name]
                     try:
@@ -1612,12 +1675,273 @@ class QtMonitorWindow:
                 else:
                     item = pw.plot(xs, ys,
                                    pen=pg.mkPen(color, width=1.5),
-                                   name=name)
+                                   name=label)
                     curves[name] = item
             pw.enableAutoRange()
+            # 悬停提示：延迟绑定（只绑一次）
+            if p.get('show_hover', True) and not hasattr(pw, '_hover_bound'):
+                pw._hover_bound = True
+                pw._hover_vline = pg.InfiniteLine(
+                    angle=90, pen=pg.mkPen('#888888', width=1, style=Qt.PenStyle.DashLine))
+                pw.addItem(pw._hover_vline, ignoreBounds=True)
+                pw._hover_vline.setVisible(False)
+                pw._hover_label = None
+                pw._plot_cfg = p
+                pw._monitor_ref = self
+                pw._plot_idx = plot_idx
+                pw.scene().sigMouseMoved.connect(
+                    lambda pos, _pw=pw: self._on_plot_hover(_pw, pos))
         # 同步侧栏当前值 + 在图标记
         self._refresh_sidebar_values()
         self._refresh_sidebar_visibility()
+        # 同步刷新 popout 单图独立窗口
+        self._refresh_popouts()
+
+    @staticmethod
+    def _legend_offset(pos: str) -> tuple[int, int]:
+        """返回图例偏移量（像素）。pyqtgraph addLegend 的 offset 参数。"""
+        return {'top-left': (10, 10), 'top-right': (-10, 10),
+                'bottom-left': (10, -10), 'bottom-right': (-10, -10)
+                }.get(pos, (-10, 10))
+
+    # ---- popout 单图独立窗口 ----------------------------------------
+    def _popout_current_plot(self):
+        """把当前 plot 弹到独立 QDialog 窗口放大显示。
+
+        QDialog 内放 pyqtgraph PlotWidget，画一遍当前 plot 的曲线；
+        _refresh_plot 末尾会同步刷新所有 popout 窗口；关闭时清理。
+        """
+        from PySide6.QtWidgets import QDialog, QVBoxLayout
+        import pyqtgraph as pg
+        from serial_debug.ui import qt_theme
+        t = qt_theme.palette(self.theme_name)
+        if not self._plots:
+            return
+        idx = self._current_plot_idx()
+        if idx is None:
+            idx = 0
+        # 已弹出的同 plot 复用
+        for pi, dlg, pw, _ in self._popout_dialogs:
+            if pi == idx and dlg.isVisible():
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+        p = self._plots[idx]
+        dlg = QDialog(self._win if hasattr(self, '_win') else None)
+        dlg.setWindowTitle(f'{p.get("title", "数据曲线")} - 单独显示')
+        dlg.resize(900, 560)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(0, 0, 0, 0)
+        pw = pg.PlotWidget()
+        pw.showGrid(x=True, y=True, alpha=0.2)
+        pw.setLabel('left', p.get('y_label', '值'))
+        pw.setLabel('bottom', p.get('x_label', '时间 (s)'))
+        pw.setTitle(p.get('title', '数据曲线'))
+        pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
+        for axis_name in ('left', 'bottom'):
+            axis = pw.getAxis(axis_name)
+            if axis is not None:
+                axis.setPen(t.get('muted', '#cccccc'))
+                axis.setTextPen(t.get('fg', '#cccccc'))
+        v.addWidget(pw)
+        curves: dict = {}
+        self._popout_dialogs.append((idx, dlg, pw, curves))
+        dlg.show()
+        # 立即画一次
+        self._draw_popout(idx, dlg, pw, curves)
+        # 关闭时清理
+        dlg.finished.connect(lambda *_: self._close_popout(idx, dlg))
+
+    def _close_popout(self, plot_idx, dlg):
+        """关闭 popout 窗口时从列表移除。"""
+        for i, (pi, d, pw, _) in enumerate(self._popout_dialogs):
+            if pi == plot_idx and d is dlg:
+                try:
+                    pw.setParent(None)
+                    pw.deleteLater()
+                except Exception:
+                    pass
+                self._popout_dialogs.pop(i)
+                break
+
+    def _draw_popout(self, plot_idx, dlg, pw, curves):
+        """在 popout PlotWidget 上画一遍 plot_idx 的曲线。"""
+        if plot_idx >= len(self._plots):
+            return
+        import numpy as np
+        import pyqtgraph as pg
+        from PySide6.QtCore import Qt as _Qt
+        p = self._plots[plot_idx]
+        with self._data_lock:
+            all_data_keys = list(self._data.keys())
+        vars_to_show = p.get('vars') or all_data_keys
+        # 清理不再属于该 plot 的曲线
+        for name in list(curves.keys()):
+            if name not in vars_to_show:
+                try:
+                    pw.removeItem(curves[name])
+                except Exception:
+                    pass
+                del curves[name]
+        # 图例（用 try/except 兼容不同 pyqtgraph 版本对 .legend 的访问差异）
+        legend_pos = p.get('legend_pos', 'top-right')
+        if legend_pos != 'hidden':
+            try:
+                legend = getattr(pw, 'legend', None) or getattr(
+                    getattr(pw, 'plotItem', None), 'legend', None)
+                if legend is None:
+                    pw.addLegend(offset=self._legend_offset(legend_pos))
+            except Exception:
+                try:
+                    pw.addLegend(offset=self._legend_offset(legend_pos))
+                except Exception:
+                    pass
+        # 创建/更新曲线
+        for name in vars_to_show:
+            if name not in self._data:
+                continue
+            pts = self._data[name]
+            if not pts:
+                continue
+            xs, ys = self._get_xy(name)
+            if xs is None or len(xs) == 0:
+                continue
+            meta = self._var_meta.get(name, {})
+            color = meta.get('color') or self._palette[
+                (all_data_keys.index(name)
+                 if name in all_data_keys else 0) % len(self._palette)]
+            label = meta.get('label') or name
+            if name in curves:
+                try:
+                    curves[name].setData(xs, ys, pen=pg.mkPen(color, width=1.5))
+                except Exception:
+                    pass
+            else:
+                item = pw.plot(xs, ys, pen=pg.mkPen(color, width=1.5),
+                               name=label)
+                curves[name] = item
+        pw.enableAutoRange()
+
+    def _refresh_popouts(self):
+        """同步刷新所有 popout 窗口的曲线（_refresh_plot 末尾调）。"""
+        for pi, dlg, pw, curves in list(self._popout_dialogs):
+            if not dlg.isVisible():
+                continue
+            try:
+                self._draw_popout(pi, dlg, pw, curves)
+            except Exception:
+                pass
+
+    def _on_plot_hover(self, pw, pos):
+        """鼠标在 plot 上移动时显示竖线 + 数据标签。"""
+        import numpy as np
+        import pyqtgraph as pg
+        from PySide6.QtCore import Qt
+        # 检查鼠标是否在 plot 区域内
+        if pw.sceneBoundingRect().contains(pos):
+            mouse_point = pw.getViewBox().mapSceneToView(pos)
+            x_val = mouse_point.x()
+            # 更新竖线位置
+            vline = getattr(pw, '_hover_vline', None)
+            if vline is not None:
+                vline.setPos(x_val)
+                vline.setVisible(True)
+            # 获取数据
+            p_cfg = getattr(pw, '_plot_cfg', {})
+            hover_mode = p_cfg.get('hover_mode', 'current')
+            plot_idx = getattr(pw, '_plot_idx', 0)
+            curves = self._curves[plot_idx] if plot_idx < len(self._curves) else {}
+            if not curves:
+                return
+            # 构建标签文本
+            rows = []
+            if hover_mode == 'all':
+                # 全部曲线：按鼠标 x 时间找最近点
+                for name, item in curves.items():
+                    try:
+                        x_data = item.xData
+                        y_data = item.yData
+                        if x_data is None or len(x_data) == 0:
+                            continue
+                        idx = int(np.searchsorted(x_data, x_val))
+                        idx = max(0, min(idx, len(x_data) - 1))
+                        if idx > 0 and abs(x_data[idx - 1] - x_val) < abs(x_data[idx] - x_val):
+                            idx = idx - 1
+                        ts = x_data[idx]
+                        val = y_data[idx]
+                        meta = self._var_meta.get(name, {})
+                        label = meta.get('label') or name
+                        color = meta.get('color', '#cccccc')
+                        rows.append((label, float(val), color, ts))
+                    except Exception:
+                        continue
+            else:
+                # 仅当前曲线：找像素距离最近的点
+                best_dist = float('inf')
+                best_row = None
+                for name, item in curves.items():
+                    try:
+                        x_data = item.xData
+                        y_data = item.yData
+                        if x_data is None or len(x_data) == 0:
+                            continue
+                        idx = int(np.searchsorted(x_data, x_val))
+                        idx = max(0, min(idx, len(x_data) - 1))
+                        if idx > 0 and abs(x_data[idx - 1] - x_val) < abs(x_data[idx] - x_val):
+                            idx = idx - 1
+                        ts = x_data[idx]
+                        val = y_data[idx]
+                        # 转为像素距离
+                        px = pw.getViewBox().mapViewToScene(pg.Point(ts, val))
+                        dist = (pos - px).manhattanLength()
+                        if dist < best_dist:
+                            best_dist = dist
+                            meta = self._var_meta.get(name, {})
+                            label = meta.get('label') or name
+                            color = meta.get('color', '#cccccc')
+                            best_row = (label, float(val), color, ts)
+                    except Exception:
+                        continue
+                if best_row is not None:
+                    rows.append(best_row)
+            # 显示标签
+            if rows:
+                snap_ts = rows[0][3]
+                try:
+                    import datetime as _dt
+                    t_str = _dt.datetime.fromtimestamp(snap_ts).strftime(
+                        '%H:%M:%S')
+                except Exception:
+                    t_str = f't={snap_ts:.3f}'
+                lines = [f't={t_str}']
+                for label, val, color, _ts in rows:
+                    if val == int(val):
+                        val_s = str(int(val))
+                    else:
+                        val_s = f'{val:.3f}'
+                    lines.append(f'{label}: {val_s}')
+                text = '\n'.join(lines)
+                # 使用 TextItem 或更新已有
+                if getattr(pw, '_hover_label', None) is None:
+                    pw._hover_label = pg.TextItem(text, color='#cccccc',
+                                                   fill='#1e1e1e99',
+                                                   anchor=(0, 1))
+                    pw.addItem(pw._hover_label, ignoreBounds=True)
+                pw._hover_label.setText(text)
+                pw._hover_label.setPos(mouse_point.x(), mouse_point.y())
+                pw._hover_label.setVisible(True)
+            else:
+                label = getattr(pw, '_hover_label', None)
+                if label is not None:
+                    label.setVisible(False)
+        else:
+            # 鼠标离开 plot 区域
+            vline = getattr(pw, '_hover_vline', None)
+            if vline is not None:
+                vline.setVisible(False)
+            label = getattr(pw, '_hover_label', None)
+            if label is not None:
+                label.setVisible(False)
 
     def run(self):
         win = self._create()
