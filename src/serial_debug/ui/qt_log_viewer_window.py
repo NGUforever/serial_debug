@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow,
                                 QTabWidget, QComboBox,
                                 QTreeWidget, QTreeWidgetItem,
                                 QDockWidget, QSplitter, QCheckBox,
-                                QHeaderView, QStyle, QStyleOptionViewItem)
+                                QHeaderView, QStyle, QStyleOptionViewItem,
+                                QToolButton)
 
 from serial_debug.infra import themes, config
 from serial_debug.ui import qt_theme
@@ -909,9 +910,13 @@ class QtLogViewerWindow(QMainWindow):
         self._filter_panel = _QtFilterPanel(
             self, self._theme, on_locate=self._on_filter_locate)
         self.addDockWidget(Qt.RightDockWidgetArea, self._filter_panel)
-        # 设置初始宽度
-        self._filter_panel.setMinimumWidth(360)
-        self._filter_panel.setMaximumWidth(700)
+        # 允许向左拖窄：DockWidget 自己 setMinimumWidth(0)，外加 minimumSizeHint
+        # 覆盖（见 _QtFilterPanel.minimumSizeHint）才能突破 layout 自然下限。
+        # 不设上限，允许用户拖到任意宽度。
+        self._filter_panel.setMinimumWidth(0)
+        # X 按钮关闭后同步菜单 checkable 状态
+        self._filter_panel.visibilityChanged.connect(self._on_filter_visibility)
+        self._filter_panel.topLevelChanged.connect(self._on_filter_floating_changed)
 
         # 全局搜索 DockWidget（顶部，默认隐藏）
         self._global_search = _QtGlobalSearchBar(
@@ -919,6 +924,8 @@ class QtLogViewerWindow(QMainWindow):
             on_locate=self._on_global_search_locate,
             tabs_list_fn=lambda: self._tabs)
         self.addDockWidget(Qt.TopDockWidgetArea, self._global_search)
+        self._global_search.hide()
+        self._global_search.visibilityChanged.connect(self._on_global_search_visibility)
 
         # 工具栏 + 菜单栏 + 状态栏
         self._build_toolbar()
@@ -944,9 +951,10 @@ class QtLogViewerWindow(QMainWindow):
         QShortcut(QKeySequence('Ctrl+F'), self,
                   activated=self._focus_current_search)
         QShortcut(QKeySequence('Ctrl+Shift+F'), self,
-                  activated=lambda: self._show_global_search(True))
+                  activated=lambda: self._toggle_global_search(
+                      not self._global_search.isVisible()))
         QShortcut(QKeySequence('Escape'), self,
-                  activated=lambda: self._show_global_search(False))
+                  activated=lambda: self._toggle_global_search(False))
 
         if path:
             self.open_file(path)
@@ -965,7 +973,7 @@ class QtLogViewerWindow(QMainWindow):
         a.triggered.connect(self._close_current_tab)
         tb.addAction(a)
         tb.addSeparator()
-        # 分离/嵌入筛选 DockWidget
+        # 分离/嵌入筛选 DockWidget（保留快捷按钮，但状态由菜单 checkable 项同步）
         a = QAction('分离筛选窗口', self)
         a.triggered.connect(self._float_filter)
         tb.addAction(a)
@@ -973,8 +981,10 @@ class QtLogViewerWindow(QMainWindow):
         a.triggered.connect(self._embed_filter)
         tb.addAction(a)
         tb.addSeparator()
-        a = QAction('全局搜索', self)
-        a.triggered.connect(lambda: self._show_global_search(True))
+        # 全局搜索（toggle）
+        a = QAction('全局搜索', self, checkable=True)
+        a.setChecked(False)
+        a.toggled.connect(self._toggle_global_search)
         tb.addAction(a)
         tb.addSeparator()
         a = QAction('跳到末尾', self)
@@ -1016,11 +1026,27 @@ class QtLogViewerWindow(QMainWindow):
         self._toolbar_action.toggled.connect(self._toggle_toolbar)
         m_view.addAction(self._toolbar_action)
         m_view.addSeparator()
+        # 筛选面板（checkable）：开关双向同步，X 关闭即取消勾选
+        self._filter_action = QAction('筛选面板', self, checkable=True)
+        self._filter_action.setChecked(True)
+        self._filter_action.toggled.connect(self._toggle_filter_panel)
+        m_view.addAction(self._filter_action)
         a = QAction('分离筛选窗口', self)
         a.triggered.connect(self._float_filter)
         m_view.addAction(a)
         a = QAction('嵌入筛选窗口', self)
         a.triggered.connect(self._embed_filter)
+        m_view.addAction(a)
+        m_view.addSeparator()
+        # 全局搜索（checkable）
+        self._global_search_action = QAction('全局搜索', self, checkable=True)
+        self._global_search_action.setChecked(False)
+        self._global_search_action.setShortcut('Ctrl+Shift+F')
+        self._global_search_action.toggled.connect(self._toggle_global_search)
+        m_view.addAction(self._global_search_action)
+        a = QAction('文件内搜索', self)
+        a.setShortcut('Ctrl+F')
+        a.triggered.connect(self._focus_current_search)
         m_view.addAction(a)
         m_view.addSeparator()
         self._live_action_menu = QAction('实时刷新', self, checkable=True)
@@ -1032,9 +1058,9 @@ class QtLogViewerWindow(QMainWindow):
         m_view.addAction(a)
         # 工具菜单
         m_tools = mb.addMenu('工具(T)')
-        a = QAction('全局搜索', self)
+        a = QAction('全局搜索…', self)
         a.setShortcut('Ctrl+Shift+F')
-        a.triggered.connect(lambda: self._show_global_search(True))
+        a.triggered.connect(lambda: self._toggle_global_search(True))
         m_tools.addAction(a)
         a = QAction('文件内搜索', self)
         a.setShortcut('Ctrl+F')
@@ -1123,16 +1149,56 @@ class QtLogViewerWindow(QMainWindow):
             self._live_action_menu.setChecked(live)
 
     # ---- 视图控制 ---------------------------------------------------
+    def _toggle_filter_panel(self, checked: bool):
+        """菜单 checkable 项切换筛选面板可见性。
+
+        与 _on_filter_visibility 形成双向同步：
+        - 用户点菜单 → setVisible(checked) → visibilityChanged → 菜单 check 同步
+        - 用户点 X 按钮 → visibilityChanged(False) → 菜单自动取消勾选
+        """
+        if self._filter_panel is not None:
+            self._filter_panel.setVisible(checked)
+
+    def _on_filter_visibility(self, visible: bool):
+        """X 按钮关闭 / dock 显隐变化 → 同步菜单 checkable。"""
+        if self._filter_action is not None:
+            self._filter_action.setChecked(visible)
+
+    def _on_filter_floating_changed(self, floating: bool):
+        """分离/嵌入状态变化时，菜单只是反映当前态，无需特殊处理。
+        但需要确保面板可见（用户拖出 dock 时 Qt 自动 setVisible）。"""
+        pass
+
     def _float_filter(self):
         """分离筛选：让 DockWidget 浮动为独立窗口。"""
         if self._filter_panel is not None:
+            self._filter_panel.setVisible(True)
             self._filter_panel.setFloating(True)
+            self._filter_panel.raise_()
+            if self._filter_action is not None:
+                self._filter_action.setChecked(True)
 
     def _embed_filter(self):
         """嵌入筛选：DockWidget 回到主窗口 dock 区。"""
         if self._filter_panel is not None:
             self._filter_panel.setFloating(False)
             self.addDockWidget(Qt.RightDockWidgetArea, self._filter_panel)
+            self._filter_panel.setVisible(True)
+            self._filter_panel.raise_()
+            if self._filter_action is not None:
+                self._filter_action.setChecked(True)
+
+    def _toggle_global_search(self, checked: bool):
+        """菜单/工具栏 checkable 项切换全局搜索面板可见性。"""
+        if checked:
+            self._global_search.show()
+        else:
+            self._global_search.hide()
+
+    def _on_global_search_visibility(self, visible: bool):
+        """全局搜索 X 按钮关闭 → 同步菜单/工具栏。"""
+        if self._global_search_action is not None:
+            self._global_search_action.setChecked(visible)
 
     def _toggle_toolbar(self, checked: bool):
         self._toolbar.setVisible(checked)
@@ -1199,17 +1265,13 @@ class QtLogViewerWindow(QMainWindow):
             tab._show_search(True)
 
     # ---- 全局搜索 ---------------------------------------------------
-    def _show_global_search(self, show: bool):
-        if show:
-            self._global_search.show()
-        else:
-            self._global_search.setVisible(False)
-
     def _on_global_search_locate(self, tab_idx: int, line_idx: int):
         """全局搜索双击 → 切换到对应 Tab + 跳行。"""
         if 0 <= tab_idx < len(self._tabs):
             self._tab_widget.setCurrentIndex(tab_idx)
             self._tabs[tab_idx].goto_line(line_idx)
+            # 关闭全局搜索面板（setVisible(False) 会触发 visibilityChanged
+            # → _on_global_search_visibility 同步菜单勾选状态）
             self._global_search.setVisible(False)
 
     # ---- 监视窗口入口（Phase 5）-------------------------------------
@@ -1329,11 +1391,53 @@ class _QtFilterPanel(QDockWidget):
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
                              | Qt.BottomDockWidgetArea
                              | Qt.TopDockWidgetArea)
+        # 自定义标题栏：默认标题栏有关闭/浮动按钮，自然最小宽度 ~49px，
+        # 让 DockWidget 拖不到更窄。覆盖为可缩到 0 的自定义标题栏。
+        # 用 QToolButton + QStyle 标准图标，避免字体缺字渲染成方框。
+        # 关闭按钮的语义保留在 visibilityChanged 信号 + 主菜单 checkable 项。
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton
+        style = self.style()
+
+        class _SlimTitleBar(QWidget):
+            def __init__(self, host):
+                super().__init__(host)
+                self._host = host
+                lay = QHBoxLayout(self)
+                lay.setContentsMargins(6, 2, 2, 2)
+                lay.setSpacing(2)
+                self._title = QLabel('筛选')
+                self._title.setStyleSheet('font-weight: 600;')
+                lay.addWidget(self._title)
+                lay.addStretch(1)
+                b_float = QToolButton()
+                b_float.setAutoRaise(True)
+                b_float.setIcon(style.standardIcon(QStyle.SP_TitleBarNormalButton))
+                b_float.setToolTip('分离 / 嵌入')
+                b_float.clicked.connect(lambda: host.setFloating(not host.isFloating()))
+                lay.addWidget(b_float)
+                b_close = QToolButton()
+                b_close.setAutoRaise(True)
+                b_close.setIcon(style.standardIcon(QStyle.SP_DockWidgetCloseButton))
+                b_close.setToolTip('关闭')
+                b_close.clicked.connect(lambda: host.setVisible(False))
+                lay.addWidget(b_close)
+            def minimumSizeHint(self):
+                return QSize(0, 0)
+            def sizeHint(self):
+                return QSize(80, 24)
+        self._title_bar = _SlimTitleBar(self)
+        self.setTitleBarWidget(self._title_bar)
         self._build_widgets()
         self.apply_theme(theme)
 
     def _build_widgets(self):
-        container = QWidget()
+        # 自定义 container：覆盖 minimumSizeHint 让 DockWidget 能拖到任意窄
+        class _ShrinkableContainer(QWidget):
+            def minimumSizeHint(self):
+                return QSize(0, 0)
+            def sizeHint(self):
+                return QSize(260, 400)
+        container = _ShrinkableContainer()
         v = QVBoxLayout(container)
         v.setContentsMargins(6, 6, 6, 6)
         v.setSpacing(4)
@@ -1370,7 +1474,7 @@ class _QtFilterPanel(QDockWidget):
         self._tree.setAlternatingRowColors(True)
         self._tree.setSortingEnabled(False)
         self._tree.itemDoubleClicked.connect(self._on_tree_double_click)
-        # 列宽
+        # 列宽：stretch 让中间列跟随可用宽度，其他两列自动收
         hdr = self._tree.header()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1380,6 +1484,30 @@ class _QtFilterPanel(QDockWidget):
         self._info_lbl = QLabel('就绪')
         v.addWidget(self._info_lbl)
         self.setWidget(container)
+        # 内部控件不卡最小宽度，允许 DockWidget 拖到任意窄
+        for w in (self._level_box, self._regex_edit, self._tree,
+                  self._apply_btn, self._clear_btn, self._info_lbl,
+                  btn_row, container):
+            try:
+                w.setMinimumWidth(0)
+                w.setMinimumSize(0, 0)
+            except Exception:
+                pass
+        try:
+            v.setSizeConstraint(QVBoxLayout.SetNoConstraint)
+        except Exception:
+            pass
+
+    def minimumSizeHint(self):
+        # 覆盖默认 minimumSizeHint（= layout 自然最小），允许 DockWidget
+        # 拖到任意窄。Qt 会在内部裁剪/隐藏控件，不影响 DockWidget 自己。
+        from PySide6.QtCore import QSize
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        # 提示默认宽度，但不强求
+        from PySide6.QtCore import QSize
+        return QSize(300, 400)
 
     # ---- 主题 --------------------------------------------------------
     def apply_theme(self, theme):

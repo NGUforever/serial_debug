@@ -73,12 +73,16 @@ cat > "$BIN_DIR/serial_debug" << EOF
 exec "$INSTALL_DIR/serial_debug" "\$@"
 EOF
 chmod +x "$BIN_DIR/serial_debug"
-# 日志查看器：exec -a 改 argv[0] 让 GNOME 识别为独立应用
-# （否则两个 .desktop 都用同一 binary 名，GNOME 会把它们当作同一应用，
-# 点击日志查看器图标会前置已运行的串口助手窗口）
+# 日志查看器：通过符号链接 serial_debug_log 启动，让 /proc/PID/comm =
+# serial_debug_log，配合 setApplicationName('serial_debug_log') 和 desktop
+# file 的 StartupWMClass=serial_debug_log，GNOME dock 三重匹配都对得上，
+# 不会再误识别为"串口调试助手"。
+if [ -f "$INSTALL_DIR/serial_debug" ]; then
+    ln -sf serial_debug "$INSTALL_DIR/serial_debug_log"
+fi
 cat > "$BIN_DIR/serial_debug_log" << EOF
 #!/bin/bash
-exec -a serial_debug_log "$INSTALL_DIR/serial_debug" --view "\$@"
+exec "$INSTALL_DIR/serial_debug_log" --view "\$@"
 EOF
 chmod +x "$BIN_DIR/serial_debug_log"
 echo "  命令路径: $BIN_DIR/serial_debug / $BIN_DIR/serial_debug_log"
@@ -105,8 +109,8 @@ mkdir -p "$APP_DIR"
 
 # 3.1 串口调试助手
 # StartupNotify=false：tkinter 不实现 _NET_STARTUP_ID，true 会让 GNOME
-# 超时判定启动失败。去掉 StartupWMClass 让 GNOME 用进程名匹配，避免
-# 与日志查看器互相串台（两个图标同 binary 不同 wrapper）。
+# 超时判定启动失败。StartupWMClass=serial_debug 与 app.setApplicationName
+# 对齐，让 GNOME dock 正确匹配本 desktop file。
 cat > "$APP_DIR/serial_debug.desktop" << EOF
 [Desktop Entry]
 Type=Application
@@ -121,11 +125,14 @@ Terminal=false
 Categories=Development;Utility;
 Keywords=serial;uart;AT;debug;ch343;
 StartupNotify=false
+StartupWMClass=serial_debug
 EOF
 
 # 3.2 日志查看器（支持文件管理器右键"打开方式"）
 # Exec 指向独立 wrapper 脚本 serial_debug_log（exec -a 改 argv[0]），
 # 让 GNOME 识别为与串口助手不同的应用，避免前置串口助手窗口。
+# StartupWMClass=serial_debug_log 与 app.setApplicationName('serial_debug_log')
+# 对齐，让 GNOME dock 匹配到本 desktop file 而非主程序。
 cat > "$APP_DIR/serial_debug_log.desktop" << EOF
 [Desktop Entry]
 Type=Application
@@ -140,6 +147,7 @@ Terminal=false
 Categories=Utility;TextTools;
 Keywords=log;viewer;text;grep;filter;
 StartupNotify=false
+StartupWMClass=serial_debug_log
 MimeType=text/plain;text/x-log;text/x-readme;application/octet-stream;text/*;
 EOF
 

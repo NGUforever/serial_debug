@@ -1697,6 +1697,19 @@ def _run_log_viewer_only(files: list[str]):
             pass
         return _run_log_viewer_only_tk(files)
     app = QApplication.instance() or QApplication(sys.argv)
+    # 显式设置 applicationName + displayName + desktopFileName，
+    # 让 GNOME dock（X11 WM_CLASS / Wayland app_id）识别为"日志查看器"
+    # 而不是主程序"串口调试助手"。
+    # - X11：WM_CLASS 由 applicationName 决定，匹配 desktop file StartupWMClass
+    # - Wayland：app_id 由 applicationName/desktopFileName 决定，匹配 desktop
+    #   file basename。若不设 desktopFileName，Wayland 可能用 /proc/PID/exe
+    #   basename（symlink resolve 后 = serial_debug）匹配到主程序 desktop file。
+    app.setApplicationName('serial_debug_log')
+    app.setApplicationDisplayName('日志查看器')
+    try:
+        app.setDesktopFileName('serial_debug_log')
+    except Exception:
+        pass
     from serial_debug.ui import qt_theme
     qt_theme.apply_qss(app, resolved)
     win = QtLogViewerWindow(theme_name=resolved)

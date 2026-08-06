@@ -183,6 +183,14 @@ class QtSerialDebugApp:
         from serial_debug.ui import qt_theme
 
         app = QApplication.instance() or QApplication(sys.argv)
+        # 显式设置 applicationName/displayName/desktopFileName，配合 desktop
+        # file 让 GNOME dock 正确归类为"串口调试助手"。
+        app.setApplicationName('serial_debug')
+        app.setApplicationDisplayName('串口调试助手')
+        try:
+            app.setDesktopFileName('serial_debug')
+        except Exception:
+            pass
         qt_theme.apply_qss(app, self.theme_name)
         self._app = app
 

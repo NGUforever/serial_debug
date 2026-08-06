@@ -373,12 +373,12 @@ class QtMonitorWindow:
         from serial_debug.infra import config
         try:
             cfg = config.load()
-            raw = cfg.get('qt_monitor_plots', [])
-            if not raw:
-                return [_default_plot()]
+            raw = cfg.get('qt_monitor_plots', []) or []
+            # 尊重配置值：[] 就返回 []，让用户删除所有 plot 后保持空白；
+            # 首次启动 cfg 默认也是 []，用户用工具栏"添加图表"自己加。
             return [_normalize_plot(p) for p in raw]
         except Exception:
-            return [_default_plot()]
+            return []
 
     def _load_var_meta(self) -> dict[str, dict]:
         from serial_debug.infra import config
@@ -1597,10 +1597,9 @@ class QtMonitorWindow:
                 cur_rows = 0
             if cur_rows != len(self._var_meta):
                 self._refresh_sidebar()
-        # 如果有数据但没有图表，自动创建一个默认图表
-        if not self._plot_widgets and self._data:
-            self._plots = [_default_plot()]
-            self._rebuild_plots_ui()
+        # 用户显式删除所有 plot 后 self._plots=[]，_rebuild_plots_ui
+        # 已清空 _plot_widgets，这里不再自动补默认 plot，让窗口保持空白。
+        # 用户可用工具栏"添加图表"按钮自行添加。
         if not self._plot_widgets:
             self._refresh_sidebar_values()
             self._refresh_sidebar_visibility()
