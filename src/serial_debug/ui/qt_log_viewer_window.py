@@ -1441,19 +1441,29 @@ class _QtFilterPanel(QDockWidget):
         v = QVBoxLayout(container)
         v.setContentsMargins(6, 6, 6, 6)
         v.setSpacing(4)
-        # 级别 Combobox
+        # 级别 Combobox + Label 同行
         self._level_box = QComboBox()
         for label in ('全部', '日志', 'AT 响应', '警告/错误'):
             self._level_box.addItem(label)
         self._level_box.currentIndexChanged.connect(self._apply_filter)
-        v.addWidget(QLabel('级别'))
-        v.addWidget(self._level_box)
-        # 正则 Entry
+        level_row = QWidget()
+        ll = QHBoxLayout(level_row)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(6)
+        ll.addWidget(QLabel('级别'))
+        ll.addWidget(self._level_box, 1)
+        v.addWidget(level_row)
+        # 正则 Entry + Label 同行
         self._regex_edit = QLineEdit()
         self._regex_edit.setPlaceholderText('正则筛选（回车应用）')
         self._regex_edit.returnPressed.connect(self._apply_filter)
-        v.addWidget(QLabel('正则'))
-        v.addWidget(self._regex_edit)
+        regex_row = QWidget()
+        rl = QHBoxLayout(regex_row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(6)
+        rl.addWidget(QLabel('正则'))
+        rl.addWidget(self._regex_edit, 1)
+        v.addWidget(regex_row)
         # 按钮
         btn_row = QWidget()
         bl = QHBoxLayout(btn_row)
@@ -1468,17 +1478,16 @@ class _QtFilterPanel(QDockWidget):
         v.addWidget(btn_row)
         # 结果 Tree
         self._tree = QTreeWidget()
-        self._tree.setColumnCount(3)
-        self._tree.setHeaderLabels(['行号', '内容', '预览'])
+        self._tree.setColumnCount(2)
+        self._tree.setHeaderLabels(['行号', '内容'])
         self._tree.setRootIsDecorated(False)
         self._tree.setAlternatingRowColors(True)
         self._tree.setSortingEnabled(False)
         self._tree.itemDoubleClicked.connect(self._on_tree_double_click)
-        # 列宽：stretch 让中间列跟随可用宽度，其他两列自动收
+        # 列宽：行号按内容自适应，内容列 stretch 跟随可用宽度
         hdr = self._tree.header()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         v.addWidget(self._tree, stretch=1)
         # info Label
         self._info_lbl = QLabel('就绪')
@@ -1487,7 +1496,7 @@ class _QtFilterPanel(QDockWidget):
         # 内部控件不卡最小宽度，允许 DockWidget 拖到任意窄
         for w in (self._level_box, self._regex_edit, self._tree,
                   self._apply_btn, self._clear_btn, self._info_lbl,
-                  btn_row, container):
+                  btn_row, container, level_row, regex_row):
             try:
                 w.setMinimumWidth(0)
                 w.setMinimumSize(0, 0)
@@ -1625,8 +1634,7 @@ class _QtFilterPanel(QDockWidget):
                 line_idx = idx_list[i]
                 ln = lines[line_idx] if line_idx < len(lines) else ''
                 tag = tags[line_idx] if line_idx < len(tags) else 'log'
-                preview = ln[:80]
-                item = QTreeWidgetItem([str(line_idx + 1), ln[:200], preview])
+                item = QTreeWidgetItem([str(line_idx + 1), ln])
                 item.setData(0, Qt.UserRole, line_idx)
                 # tag 颜色
                 color = self._color_for_tag(tag)

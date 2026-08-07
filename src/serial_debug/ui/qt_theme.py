@@ -172,7 +172,7 @@ def build_qss(theme_name: str) -> str:
         font-size: {QT_MONO_SIZE}pt;
     }}
     QPlainTextEdit {{
-        padding: 6px 8px;
+        padding: 6px 8px 6px 0;
         background-color: {panel_bg};
     }}
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
