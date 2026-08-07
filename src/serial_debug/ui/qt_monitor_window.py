@@ -132,7 +132,13 @@ def _default_plot() -> dict:
         'show_table': False,
         'show_hover': True,
         'legend_pos': 'top-right',    # top-left / top-right / bottom-left / bottom-right / hidden
-        'hover_mode': 'current',      # current / all
+        'legend_font_size': 9,        # 图例字号（9=默认，调大调小）
+        'legend_auto_avoid': True,    # 自动避让曲线密集区
+        'hover_mode': 'current',      # current / all / stats / all_stats
+        'hover_show_max': True,       # 统计：最大值
+        'hover_show_min': True,       # 统计：最小值
+        'hover_show_avg': True,       # 统计：均值
+        'hover_show_last': True,      # 统计：末值
     }
 
 
@@ -212,9 +218,12 @@ class _QtPlotDialog:
 
         # 图例位置 + 悬停模式
         extra_box = QGroupBox('图例与悬停')
-        extra = QHBoxLayout(extra_box)
-        extra.setContentsMargins(8, 8, 8, 8)
-        extra.addWidget(QLabel('图例位置:'))
+        extra_l = QVBoxLayout(extra_box)
+        extra_l.setContentsMargins(8, 8, 8, 8)
+        extra_l.setSpacing(6)
+        # 第一行：图例位置 + 字号 + 自动避让
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel('图例位置:'))
         self._legend_combo = QComboBox()
         legend_items = [('top-right', '右上角'), ('top-left', '左上角'),
                         ('bottom-right', '右下角'), ('bottom-left', '左下角'),
@@ -226,16 +235,59 @@ class _QtPlotDialog:
             if val == cur_legend:
                 self._legend_combo.setCurrentIndex(i)
                 break
-        extra.addWidget(self._legend_combo)
-        extra.addSpacing(16)
-        extra.addWidget(QLabel('悬停模式:'))
+        row1.addWidget(self._legend_combo)
+        row1.addSpacing(12)
+        row1.addWidget(QLabel('字号:'))
+        self._legend_font = QComboBox()
+        for sz in (7, 8, 9, 10, 11, 12, 14):
+            self._legend_font.addItem(str(sz), sz)
+        cur_font = int(init.get('legend_font_size', 9))
+        for i in range(self._legend_font.count()):
+            if self._legend_font.itemData(i) == cur_font:
+                self._legend_font.setCurrentIndex(i)
+                break
+        row1.addWidget(self._legend_font)
+        row1.addSpacing(12)
+        self._legend_avoid_cb = QCheckBox('自动避让曲线')
+        self._legend_avoid_cb.setChecked(bool(init.get('legend_auto_avoid', True)))
+        row1.addWidget(self._legend_avoid_cb)
+        row1.addStretch(1)
+        extra_l.addLayout(row1)
+        # 第二行：悬停模式 + 统计项
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel('悬停显示:'))
         self._hover_combo = QComboBox()
         self._hover_combo.addItem('仅当前曲线', 'current')
         self._hover_combo.addItem('全部曲线', 'all')
+        self._hover_combo.addItem('当前曲线 + 统计', 'stats')
+        self._hover_combo.addItem('全部曲线 + 统计', 'all_stats')
         cur_hover = init.get('hover_mode', 'current')
-        self._hover_combo.setCurrentIndex(0 if cur_hover == 'current' else 1)
-        extra.addWidget(self._hover_combo)
-        extra.addStretch(1)
+        for i in range(self._hover_combo.count()):
+            if self._hover_combo.itemData(i) == cur_hover:
+                self._hover_combo.setCurrentIndex(i)
+                break
+        row2.addWidget(self._hover_combo)
+        row2.addSpacing(12)
+        row2.addWidget(QLabel('统计项:'))
+        self._hover_stat_checks = {}
+        for key, label, default in (
+            ('hover_show_max', '最大值', True),
+            ('hover_show_min', '最小值', True),
+            ('hover_show_avg', '均值', True),
+            ('hover_show_last', '末值', True),
+        ):
+            cb = QCheckBox(label)
+            cb.setChecked(bool(init.get(key, default)))
+            row2.addWidget(cb)
+            self._hover_stat_checks[key] = cb
+        row2.addStretch(1)
+        extra_l.addLayout(row2)
+        # 提示文字
+        tip = QLabel('图例可在画布内拖拽到任意位置；自动避让检测曲线密集区，'
+                     '若图例覆盖曲线则翻转到对角。')
+        tip.setWordWrap(True)
+        tip.setStyleSheet('color: #888; font-size: 9pt;')
+        extra_l.addWidget(tip)
         v.addWidget(extra_box)
 
         # 包含变量（多选）
@@ -311,7 +363,13 @@ class _QtPlotDialog:
             'show_table': self._show_checks['show_table'].isChecked(),
             'show_hover': self._show_checks['show_hover'].isChecked(),
             'legend_pos': self._legend_combo.currentData() or 'top-right',
+            'legend_font_size': int(self._legend_font.currentData() or 9),
+            'legend_auto_avoid': self._legend_avoid_cb.isChecked(),
             'hover_mode': self._hover_combo.currentData() or 'current',
+            'hover_show_max': self._hover_stat_checks['hover_show_max'].isChecked(),
+            'hover_show_min': self._hover_stat_checks['hover_show_min'].isChecked(),
+            'hover_show_avg': self._hover_stat_checks['hover_show_avg'].isChecked(),
+            'hover_show_last': self._hover_stat_checks['hover_show_last'].isChecked(),
         }
         if self._dlg is not None:
             self._dlg.accept()
@@ -1633,11 +1691,24 @@ class QtMonitorWindow:
                         getattr(pw, 'plotItem', None), 'legend', None)
                     if legend is None:
                         pw.addLegend(offset=self._legend_offset(legend_pos))
+                        legend = getattr(pw, 'legend', None) or getattr(
+                            getattr(pw, 'plotItem', None), 'legend', None)
                 except Exception:
                     try:
                         pw.addLegend(offset=self._legend_offset(legend_pos))
+                        legend = getattr(pw, 'legend', None) or getattr(
+                            getattr(pw, 'plotItem', None), 'legend', None)
+                    except Exception:
+                        legend = None
+                # 字号 + 自动避让（曲线绘制后再做避让，因为需要曲线数据）
+                if legend is not None:
+                    try:
+                        legend.setLabelTextSize(int(p.get('legend_font_size', 9)))
                     except Exception:
                         pass
+                    pw._legend_obj = legend
+                    pw._legend_auto_avoid = bool(p.get('legend_auto_avoid', True))
+                    pw._legend_pos = legend_pos
             else:
                 try:
                     leg = getattr(pw, 'legend', None) or getattr(
@@ -1646,6 +1717,7 @@ class QtMonitorWindow:
                         pw.removeItem(leg)
                 except Exception:
                     pass
+                pw._legend_obj = None
             # 创建/更新曲线
             for name in vars_to_show:
                 if name not in self._data:
@@ -1677,6 +1749,9 @@ class QtMonitorWindow:
                                    name=label)
                     curves[name] = item
             pw.enableAutoRange()
+            # 图例自动避让：曲线绘制完后检测图例是否覆盖曲线密集区
+            if getattr(pw, '_legend_auto_avoid', False):
+                self._auto_avoid_legend(pw, curves)
             # 悬停提示：延迟绑定（只绑一次）
             if p.get('show_hover', True) and not hasattr(pw, '_hover_bound'):
                 pw._hover_bound = True
@@ -1702,6 +1777,84 @@ class QtMonitorWindow:
         return {'top-left': (10, 10), 'top-right': (-10, 10),
                 'bottom-left': (10, -10), 'bottom-right': (-10, -10)
                 }.get(pos, (-10, 10))
+
+    def _auto_avoid_legend(self, pw, curves: dict):
+        """检测图例是否覆盖曲线密集区，若是则翻转到对角。
+
+        策略：采样曲线在图例 x 范围内的点，若有点落入图例 y 范围，
+        说明重合；尝试 4 个角，选重合最少的。保留用户拖拽后的位置
+        （若用户已拖离默认角落，不强制挪回）。
+        """
+        import pyqtgraph as pg
+        legend = getattr(pw, '_legend_obj', None)
+        if legend is None:
+            return
+        try:
+            vb = pw.getViewBox()
+            # 图例在 view 坐标系中的矩形
+            leg_rect = legend.mapRectToParent(legend.boundingRect())
+            if leg_rect.width() <= 0 or leg_rect.height() <= 0:
+                return
+            # 统计图例区域内曲线点数
+            def _count_overlap(rect):
+                cnt = 0
+                for name, item in curves.items():
+                    try:
+                        xd = item.xData
+                        yd = item.yData
+                        if xd is None or len(xd) == 0:
+                            continue
+                        import numpy as np
+                        # 筛选 x 在 rect 范围的点
+                        mask = (xd >= rect.left()) & (xd <= rect.right())
+                        ys_in = yd[mask]
+                        if len(ys_in) == 0:
+                            continue
+                        cnt += int(((ys_in >= rect.top()) & (ys_in <= rect.bottom())).sum())
+                    except Exception:
+                        continue
+                return cnt
+            cur_overlap = _count_overlap(leg_rect)
+            # 若当前重合点数少（< 5），不挪动
+            if cur_overlap < 5:
+                return
+            # 尝试 4 个角，找重合最少的位置
+            view_rect = vb.viewRect()
+            best_pos = None
+            best_overlap = cur_overlap
+            # 4 个角的锚点（itemPos, parentPos）
+            corners = [
+                ((0, 0), (0, 0), 'top-left'),
+                ((1, 0), (1, 0), 'top-right'),
+                ((0, 1), (0, 1), 'bottom-left'),
+                ((1, 1), (1, 1), 'bottom-right'),
+            ]
+            for item_pos, parent_pos, name in corners:
+                try:
+                    legend.anchor(itemPos=item_pos, parentPos=parent_pos)
+                    legend.updateSize()
+                    new_rect = legend.mapRectToParent(legend.boundingRect())
+                    ov = _count_overlap(new_rect)
+                    if ov < best_overlap:
+                        best_overlap = ov
+                        best_pos = (item_pos, parent_pos)
+                except Exception:
+                    continue
+            # 若找到更优位置，应用
+            if best_pos is not None:
+                try:
+                    legend.anchor(itemPos=best_pos[0], parentPos=best_pos[1])
+                    legend.updateSize()
+                except Exception:
+                    pass
+            else:
+                # 没找到更优，恢复原位置（用 autoAnchor 回到最近角落）
+                try:
+                    legend.autoAnchor(legend.pos())
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # ---- popout 单图独立窗口 ----------------------------------------
     def _popout_current_plot(self):
@@ -1784,15 +1937,26 @@ class QtMonitorWindow:
                 del curves[name]
         # 图例（用 try/except 兼容不同 pyqtgraph 版本对 .legend 的访问差异）
         legend_pos = p.get('legend_pos', 'top-right')
+        legend_obj = None
         if legend_pos != 'hidden':
             try:
                 legend = getattr(pw, 'legend', None) or getattr(
                     getattr(pw, 'plotItem', None), 'legend', None)
                 if legend is None:
                     pw.addLegend(offset=self._legend_offset(legend_pos))
+                    legend = getattr(pw, 'legend', None) or getattr(
+                        getattr(pw, 'plotItem', None), 'legend', None)
+                legend_obj = legend
             except Exception:
                 try:
                     pw.addLegend(offset=self._legend_offset(legend_pos))
+                    legend_obj = getattr(pw, 'legend', None) or getattr(
+                        getattr(pw, 'plotItem', None), 'legend', None)
+                except Exception:
+                    pass
+            if legend_obj is not None:
+                try:
+                    legend_obj.setLabelTextSize(int(p.get('legend_font_size', 9)))
                 except Exception:
                     pass
         # 创建/更新曲线
@@ -1820,6 +1984,10 @@ class QtMonitorWindow:
                                name=label)
                 curves[name] = item
         pw.enableAutoRange()
+        # 图例自动避让
+        if legend_obj is not None and p.get('legend_auto_avoid', True):
+            pw._legend_obj = legend_obj
+            self._auto_avoid_legend(pw, curves)
 
     def _refresh_popouts(self):
         """同步刷新所有 popout 窗口的曲线（_refresh_plot 末尾调）。"""
@@ -1853,8 +2021,13 @@ class QtMonitorWindow:
             if not curves:
                 return
             # 构建标签文本
-            rows = []
-            if hover_mode == 'all':
+            # hover_mode: current / all / stats / all_stats
+            # current = 鼠标最近曲线；all = 全部曲线；stats = 当前 + 统计；
+            # all_stats = 全部曲线 + 各自统计
+            rows = []  # (label, val, color, ts) 当前值行
+            stat_rows = []  # (label, max, min, avg, last, color) 统计行
+            want_stats = hover_mode in ('stats', 'all_stats')
+            if hover_mode in ('all', 'all_stats'):
                 # 全部曲线：按鼠标 x 时间找最近点
                 for name, item in curves.items():
                     try:
@@ -1872,12 +2045,17 @@ class QtMonitorWindow:
                         label = meta.get('label') or name
                         color = meta.get('color', '#cccccc')
                         rows.append((label, float(val), color, ts))
+                        if want_stats:
+                            stat_rows.append((label, float(np.max(y_data)),
+                                              float(np.min(y_data)),
+                                              float(np.mean(y_data)),
+                                              float(y_data[-1]), color))
                     except Exception:
                         continue
             else:
                 # 仅当前曲线：找像素距离最近的点
                 best_dist = float('inf')
-                best_row = None
+                best_name = None
                 for name, item in curves.items():
                     try:
                         x_data = item.xData
@@ -1895,14 +2073,26 @@ class QtMonitorWindow:
                         dist = (pos - px).manhattanLength()
                         if dist < best_dist:
                             best_dist = dist
-                            meta = self._var_meta.get(name, {})
-                            label = meta.get('label') or name
-                            color = meta.get('color', '#cccccc')
-                            best_row = (label, float(val), color, ts)
+                            best_name = name
                     except Exception:
                         continue
-                if best_row is not None:
-                    rows.append(best_row)
+                if best_name is not None:
+                    item = curves[best_name]
+                    x_data = item.xData
+                    y_data = item.yData
+                    idx = int(np.searchsorted(x_data, x_val))
+                    idx = max(0, min(idx, len(x_data) - 1))
+                    if idx > 0 and abs(x_data[idx - 1] - x_val) < abs(x_data[idx] - x_val):
+                        idx = idx - 1
+                    meta = self._var_meta.get(best_name, {})
+                    label = meta.get('label') or best_name
+                    color = meta.get('color', '#cccccc')
+                    rows.append((label, float(y_data[idx]), color, x_data[idx]))
+                    if want_stats:
+                        stat_rows.append((label, float(np.max(y_data)),
+                                          float(np.min(y_data)),
+                                          float(np.mean(y_data)),
+                                          float(y_data[-1]), color))
             # 显示标签
             if rows:
                 snap_ts = rows[0][3]
@@ -1919,6 +2109,28 @@ class QtMonitorWindow:
                     else:
                         val_s = f'{val:.3f}'
                     lines.append(f'{label}: {val_s}')
+                # 统计行
+                show_max = p_cfg.get('hover_show_max', True)
+                show_min = p_cfg.get('hover_show_min', True)
+                show_avg = p_cfg.get('hover_show_avg', True)
+                show_last = p_cfg.get('hover_show_last', True)
+
+                def _fmt_num(v):
+                    if v == int(v):
+                        return str(int(v))
+                    return f'{v:.3f}'
+
+                for slabel, smax, smin, savg, slast, scolor in stat_rows:
+                    parts = [slabel]
+                    if show_max:
+                        parts.append(f'max={_fmt_num(smax)}')
+                    if show_min:
+                        parts.append(f'min={_fmt_num(smin)}')
+                    if show_avg:
+                        parts.append(f'avg={_fmt_num(savg)}')
+                    if show_last:
+                        parts.append(f'last={_fmt_num(slast)}')
+                    lines.append(' '.join(parts))
                 text = '\n'.join(lines)
                 # 使用 TextItem 或更新已有
                 if getattr(pw, '_hover_label', None) is None:
