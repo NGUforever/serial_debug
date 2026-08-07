@@ -151,6 +151,43 @@ def _normalize_plot(p: dict) -> dict:
     return d
 
 
+def _make_time_axis(theme):
+    """返回自定义 AxisItem：x 轴刻度格式化为 HH:MM:SS 时间。
+
+    x 数据是 unix epoch 秒；按可见范围自动选精度：
+    < 5s 显示 ms；< 1h 显示 HH:MM:SS；> 1h 显示 MM-DD HH:MM。
+    """
+    import datetime as _dt
+    import pyqtgraph as pg
+
+    class _TimeAxis(pg.AxisItem):
+        def tickStrings(self, values, scale, spacing):
+            out = []
+            # 根据相邻 tick 差值（spacing 秒）选精度
+            if spacing < 5:
+                fmt = '%H:%M:%S'
+            elif spacing < 3600:
+                fmt = '%H:%M:%S'
+            elif spacing < 86400:
+                fmt = '%m-%d %H:%M'
+            else:
+                fmt = '%m-%d'
+            for v in values:
+                try:
+                    out.append(_dt.datetime.fromtimestamp(v).strftime(fmt))
+                except (OSError, ValueError, OverflowError):
+                    out.append(f'{v:.0f}')
+            return out
+
+    ax = _TimeAxis(orientation='bottom')
+    try:
+        ax.setPen(theme.get('muted', '#cccccc'))
+        ax.setTextPen(theme.get('fg', '#cccccc'))
+    except Exception:
+        pass
+    return ax
+
+
 class _QtPlotDialog:
     """配置图表对话框（延迟创建真正的 QDialog，避免模块导入即 init Qt）。
 
@@ -1535,10 +1572,10 @@ class QtMonitorWindow:
 
         # 重建
         for idx, p in enumerate(self._plots):
-            pw = pg.PlotWidget()
+            pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
             pw.showGrid(x=True, y=True, alpha=0.2)
             pw.setLabel('left', p.get('y_label', '值'))
-            pw.setLabel('bottom', p.get('x_label', '时间 (s)'))
+            pw.setLabel('bottom', '时间')
             pw.setTitle(p.get('title', '数据曲线'))
             pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
             for axis_name in ('left', 'bottom'):
@@ -1752,6 +1789,8 @@ class QtMonitorWindow:
             # 图例自动避让：曲线绘制完后检测图例是否覆盖曲线密集区
             if getattr(pw, '_legend_auto_avoid', False):
                 self._auto_avoid_legend(pw, curves)
+            # 在曲线上标注 max/min/avg/last
+            self._draw_stat_markers(pw, curves, p)
             # 悬停提示：延迟绑定（只绑一次）
             if p.get('show_hover', True) and not hasattr(pw, '_hover_bound'):
                 pw._hover_bound = True
@@ -1856,6 +1895,102 @@ class QtMonitorWindow:
         except Exception:
             pass
 
+    def _draw_stat_markers(self, pw, curves: dict, p_cfg: dict):
+        """在曲线上标注 max/min/avg/last 点位 + 数值标签。
+
+        复用 p_cfg 的 hover_show_max/min/avg/last 开关：用户在编辑图表对话框
+        勾选统计项后，曲线同步显示标注（与悬停 tooltip 共用同一开关）。
+        - max/min/last：在对应点画 ScatterPlotItem（star）+ TextItem 数值
+        - avg：水平虚线 InfiniteLine + 末端标签
+        """
+        import numpy as np
+        import pyqtgraph as pg
+        from PySide6.QtCore import Qt
+        # 清理上一轮标注
+        old = getattr(pw, '_stat_markers', None)
+        if old:
+            for it in old:
+                try:
+                    pw.removeItem(it)
+                except Exception:
+                    pass
+        pw._stat_markers = []
+        show_max = p_cfg.get('hover_show_max', True)
+        show_min = p_cfg.get('hover_show_min', True)
+        show_avg = p_cfg.get('hover_show_avg', True)
+        show_last = p_cfg.get('hover_show_last', True)
+        if not (show_max or show_min or show_avg or show_last):
+            return
+        if not curves:
+            return
+
+        def _fmt(v):
+            try:
+                if v == int(v):
+                    return str(int(v))
+            except Exception:
+                pass
+            return f'{v:.3f}'
+
+        for name, item in curves.items():
+            try:
+                xd = item.xData
+                yd = item.yData
+                if xd is None or len(xd) == 0:
+                    continue
+                meta = self._var_meta.get(name, {})
+                color = meta.get('color', '#cccccc')
+                label = meta.get('label') or name
+                pts = []  # ScatterPlot 点
+                txts = []  # TextItem 数值
+                # max
+                if show_max:
+                    i = int(np.argmax(yd))
+                    pts.append((xd[i], yd[i]))
+                    txts.append((xd[i], yd[i], f'max={_fmt(float(yd[i]))}'))
+                # min
+                if show_min:
+                    i = int(np.argmin(yd))
+                    pts.append((xd[i], yd[i]))
+                    txts.append((xd[i], yd[i], f'min={_fmt(float(yd[i]))}'))
+                # last
+                if show_last:
+                    pts.append((xd[-1], yd[-1]))
+                    txts.append((xd[-1], yd[-1], f'last={_fmt(float(yd[-1]))}'))
+                if pts:
+                    xs = np.array([p[0] for p in pts])
+                    ys = np.array([p[1] for p in pts])
+                    sc = pg.ScatterPlotItem(
+                        xs=xs, ys=ys,
+                        symbol='star', size=12,
+                        pen=pg.mkPen(color, width=1),
+                        brush=pg.mkBrush(color))
+                    pw.addItem(sc, ignoreBounds=True)
+                    pw._stat_markers.append(sc)
+                for tx, ty, text in txts:
+                    t = pg.TextItem(text, color=color,
+                                    fill='#1e1e1ecc', anchor=(0, 1))
+                    t.setPos(tx, ty)
+                    pw.addItem(t, ignoreBounds=True)
+                    pw._stat_markers.append(t)
+                # avg 水平虚线
+                if show_avg:
+                    avg = float(np.mean(yd))
+                    line = pg.InfiniteLine(
+                        pos=avg, angle=0,
+                        pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine))
+                    pw.addItem(line, ignoreBounds=True)
+                    pw._stat_markers.append(line)
+                    # avg 标签：贴在右边缘
+                    t = pg.TextItem(f'{label} avg={_fmt(avg)}', color=color,
+                                    fill='#1e1e1ecc', anchor=(1, 1))
+                    # x 取曲线最大 x（贴右），y=avg
+                    t.setPos(float(xd[-1]), avg)
+                    pw.addItem(t, ignoreBounds=True)
+                    pw._stat_markers.append(t)
+            except Exception:
+                continue
+
     # ---- popout 单图独立窗口 ----------------------------------------
     def _popout_current_plot(self):
         """把当前 plot 弹到独立 QDialog 窗口放大显示。
@@ -1884,10 +2019,10 @@ class QtMonitorWindow:
         dlg.resize(900, 560)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(0, 0, 0, 0)
-        pw = pg.PlotWidget()
+        pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
         pw.showGrid(x=True, y=True, alpha=0.2)
         pw.setLabel('left', p.get('y_label', '值'))
-        pw.setLabel('bottom', p.get('x_label', '时间 (s)'))
+        pw.setLabel('bottom', '时间')
         pw.setTitle(p.get('title', '数据曲线'))
         pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
         for axis_name in ('left', 'bottom'):
@@ -1988,6 +2123,8 @@ class QtMonitorWindow:
         if legend_obj is not None and p.get('legend_auto_avoid', True):
             pw._legend_obj = legend_obj
             self._auto_avoid_legend(pw, curves)
+        # 在曲线上标注 max/min/avg/last
+        self._draw_stat_markers(pw, curves, p)
 
     def _refresh_popouts(self):
         """同步刷新所有 popout 窗口的曲线（_refresh_plot 末尾调）。"""
@@ -2102,13 +2239,24 @@ class QtMonitorWindow:
                         '%H:%M:%S')
                 except Exception:
                     t_str = f't={snap_ts:.3f}'
-                lines = [f't={t_str}']
+                # 用 HTML 拼：每行前面带一个该曲线颜色的圆点
+                # 圆点用 ●（U+25CF），fontSize 略小避免行高过大
+                lines_html = [
+                    f'<div style="color:#cccccc;">t={t_str}</div>']
                 for label, val, color, _ts in rows:
-                    if val == int(val):
-                        val_s = str(int(val))
-                    else:
+                    try:
+                        if val == int(val):
+                            val_s = str(int(val))
+                        else:
+                            val_s = f'{val:.3f}'
+                    except Exception:
                         val_s = f'{val:.3f}'
-                    lines.append(f'{label}: {val_s}')
+                    lines_html.append(
+                        f'<div style="color:{color};">'
+                        f'<span style="color:{color};font-size:10pt;">●</span> '
+                        f'<span style="color:#cccccc;">{label}:</span> '
+                        f'<span style="color:{color};">{val_s}</span>'
+                        f'</div>')
                 # 统计行
                 show_max = p_cfg.get('hover_show_max', True)
                 show_min = p_cfg.get('hover_show_min', True)
@@ -2121,7 +2269,7 @@ class QtMonitorWindow:
                     return f'{v:.3f}'
 
                 for slabel, smax, smin, savg, slast, scolor in stat_rows:
-                    parts = [slabel]
+                    parts = [f'<span style="color:#cccccc;">{slabel}</span>']
                     if show_max:
                         parts.append(f'max={_fmt_num(smax)}')
                     if show_min:
@@ -2130,15 +2278,20 @@ class QtMonitorWindow:
                         parts.append(f'avg={_fmt_num(savg)}')
                     if show_last:
                         parts.append(f'last={_fmt_num(slast)}')
-                    lines.append(' '.join(parts))
-                text = '\n'.join(lines)
+                    inner = ' '.join(parts)
+                    lines_html.append(
+                        f'<div style="color:{scolor};">'
+                        f'<span style="color:{scolor};font-size:10pt;">●</span> '
+                        f'{inner}'
+                        f'</div>')
+                html = '<br>'.join(lines_html)
                 # 使用 TextItem 或更新已有
                 if getattr(pw, '_hover_label', None) is None:
-                    pw._hover_label = pg.TextItem(text, color='#cccccc',
-                                                   fill='#1e1e1e99',
-                                                   anchor=(0, 1))
+                    pw._hover_label = pg.TextItem(html, color='#cccccc',
+                                                  fill='#1e1e1e99',
+                                                  anchor=(0, 1))
                     pw.addItem(pw._hover_label, ignoreBounds=True)
-                pw._hover_label.setText(text)
+                pw._hover_label.setText(html)
                 pw._hover_label.setPos(mouse_point.x(), mouse_point.y())
                 pw._hover_label.setVisible(True)
             else:
