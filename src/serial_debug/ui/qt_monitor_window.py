@@ -1740,7 +1740,7 @@ class QtMonitorWindow:
                 # 字号 + 自动避让（曲线绘制后再做避让，因为需要曲线数据）
                 if legend is not None:
                     try:
-                        legend.setLabelTextSize(int(p.get('legend_font_size', 9)))
+                        legend.setLabelTextSize(f'{int(p.get("legend_font_size", 9))}pt')
                     except Exception:
                         pass
                     pw._legend_obj = legend
@@ -2091,7 +2091,7 @@ class QtMonitorWindow:
                     pass
             if legend_obj is not None:
                 try:
-                    legend_obj.setLabelTextSize(int(p.get('legend_font_size', 9)))
+                    legend_obj.setLabelTextSize(f'{int(p.get("legend_font_size", 9))}pt')
                 except Exception:
                     pass
         # 创建/更新曲线
