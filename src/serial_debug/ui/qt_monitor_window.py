@@ -1896,16 +1896,14 @@ class QtMonitorWindow:
             pass
 
     def _draw_stat_markers(self, pw, curves: dict, p_cfg: dict):
-        """在曲线上标注 max/min/avg/last 点位 + 数值标签。
+        """在曲线上标注 max/min 点位 + 数值标签。
 
-        复用 p_cfg 的 hover_show_max/min/avg/last 开关：用户在编辑图表对话框
-        勾选统计项后，曲线同步显示标注（与悬停 tooltip 共用同一开关）。
-        - max/min/last：在对应点画 ScatterPlotItem（star）+ TextItem 数值
-        - avg：水平虚线 InfiniteLine + 末端标签
+        只在曲线上画 max/min（点位明确，argmax/argmin 给出具体坐标）；
+        avg/last 不在曲线上画——avg 是统计值无对应点，last 由悬停 tooltip
+        显示。avg/last 开关只影响悬停 tooltip 显示，不影响曲线标注。
         """
         import numpy as np
         import pyqtgraph as pg
-        from PySide6.QtCore import Qt
         # 清理上一轮标注
         old = getattr(pw, '_stat_markers', None)
         if old:
@@ -1917,9 +1915,7 @@ class QtMonitorWindow:
         pw._stat_markers = []
         show_max = p_cfg.get('hover_show_max', True)
         show_min = p_cfg.get('hover_show_min', True)
-        show_avg = p_cfg.get('hover_show_avg', True)
-        show_last = p_cfg.get('hover_show_last', True)
-        if not (show_max or show_min or show_avg or show_last):
+        if not (show_max or show_min):
             return
         if not curves:
             return
@@ -1940,23 +1936,16 @@ class QtMonitorWindow:
                     continue
                 meta = self._var_meta.get(name, {})
                 color = meta.get('color', '#cccccc')
-                label = meta.get('label') or name
                 pts = []  # ScatterPlot 点
                 txts = []  # TextItem 数值
-                # max
                 if show_max:
                     i = int(np.argmax(yd))
                     pts.append((xd[i], yd[i]))
                     txts.append((xd[i], yd[i], f'max={_fmt(float(yd[i]))}'))
-                # min
                 if show_min:
                     i = int(np.argmin(yd))
                     pts.append((xd[i], yd[i]))
                     txts.append((xd[i], yd[i], f'min={_fmt(float(yd[i]))}'))
-                # last
-                if show_last:
-                    pts.append((xd[-1], yd[-1]))
-                    txts.append((xd[-1], yd[-1], f'last={_fmt(float(yd[-1]))}'))
                 if pts:
                     xs = np.array([p[0] for p in pts])
                     ys = np.array([p[1] for p in pts])
@@ -1971,21 +1960,6 @@ class QtMonitorWindow:
                     t = pg.TextItem(text, color=color,
                                     fill='#1e1e1ecc', anchor=(0, 1))
                     t.setPos(tx, ty)
-                    pw.addItem(t, ignoreBounds=True)
-                    pw._stat_markers.append(t)
-                # avg 水平虚线
-                if show_avg:
-                    avg = float(np.mean(yd))
-                    line = pg.InfiniteLine(
-                        pos=avg, angle=0,
-                        pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine))
-                    pw.addItem(line, ignoreBounds=True)
-                    pw._stat_markers.append(line)
-                    # avg 标签：贴在右边缘
-                    t = pg.TextItem(f'{label} avg={_fmt(avg)}', color=color,
-                                    fill='#1e1e1ecc', anchor=(1, 1))
-                    # x 取曲线最大 x（贴右），y=avg
-                    t.setPos(float(xd[-1]), avg)
                     pw.addItem(t, ignoreBounds=True)
                     pw._stat_markers.append(t)
             except Exception:
@@ -2286,12 +2260,14 @@ class QtMonitorWindow:
                         f'</div>')
                 html = '<br>'.join(lines_html)
                 # 使用 TextItem 或更新已有
+                # 注意：pyqtgraph TextItem.setText 走 setPlainText（HTML 会被
+                # 当作字面文本显示为 <div> 等），必须用 setHtml 才能渲染 HTML
                 if getattr(pw, '_hover_label', None) is None:
                     pw._hover_label = pg.TextItem(html, color='#cccccc',
                                                   fill='#1e1e1e99',
                                                   anchor=(0, 1))
                     pw.addItem(pw._hover_label, ignoreBounds=True)
-                pw._hover_label.setText(html)
+                pw._hover_label.setHtml(html)
                 pw._hover_label.setPos(mouse_point.x(), mouse_point.y())
                 pw._hover_label.setVisible(True)
             else:
