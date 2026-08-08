@@ -1,31 +1,76 @@
 #!/bin/bash
-# CH343 接口抢回 + udev 持久化（防止 cdc_acm 抢占）
+# CH343 驱动一键修复：build + install + udev + rebind
+# 适用场景：apt 升级内核后 ch343.ko 丢失（只装在旧内核下），
+# 或 cdc_acm 抢占 CH343 接口。
 # 使用：sudo bash fix_ch343_driver.sh
 set -e
 
 VID="1a86"
 PID="55d5"
+SRC_DIR="/tmp/ch343ser_linux"
+KERNEL_VER=$(uname -r)
 
-echo "==> 1. 解绑 cdc_acm 抢占的 CH343 接口，绑定到 ch343"
-# 遍历所有 cdc_acm 绑定的接口，找出属于 CH343 (1a86:55d5) 的
+echo "==> 0. 确认 ch343 源码 + 内核 headers"
+if [ ! -d "$SRC_DIR/driver" ]; then
+    echo "  源码不在 $SRC_DIR，开始 git clone..."
+    rm -rf "$SRC_DIR"
+    git clone --depth 1 https://github.com/WCHSoftGroup/ch343ser_linux "$SRC_DIR"
+fi
+if [ ! -d "/lib/modules/$KERNEL_VER/build" ]; then
+    echo "  错误：内核 headers 未装，请先：sudo apt install linux-headers-$KERNEL_VER"
+    exit 1
+fi
+
+echo "==> 1. 编译 ch343.ko（针对当前内核 $KERNEL_VER）"
+cd "$SRC_DIR/driver"
+make clean >/dev/null 2>&1 || true
+make -j"$(nproc)"
+
+INSTALLED_KO=$(find /lib/modules/$KERNEL_VER -name "ch343.ko*" 2>/dev/null | head -1)
+if [ -z "$INSTALLED_KO" ]; then
+    echo "==> 2. 安装 ch343.ko 到 /lib/modules"
+    make install
+    depmod -a
+else
+    echo "==> 2. 已安装：$INSTALLED_KO（跳过安装）"
+fi
+
+echo "==> 3. 加载 ch343 模块"
+modprobe -r ch343 2>/dev/null || true
+modprobe ch343
+
+echo "==> 4. 写入 udev driver_override 规则"
+RULE_FILE="/etc/udev/rules.d/99-ch343-override.rules"
+cat > "$RULE_FILE" << 'EOF'
+# CH343 设备强制绑定到 ch343 驱动，防止 cdc_acm 抢占
+# 在 cdc_acm 绑定前先设置 driver_override
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d5", DRIVER=="cdc_acm", \
+  RUN+="/bin/sh -c 'echo usb_ch343 > /sys$DEVPATH/driver_override'"
+# 覆盖 WCH 其他常见 CH343 variant PID
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", DRIVER=="cdc_acm", \
+  RUN+="/bin/sh -c 'echo usb_ch343 > /sys$DEVPATH/driver_override'"
+EOF
+echo "  规则文件：$RULE_FILE"
+
+echo "==> 5. 重新加载 udev"
+udevadm control --reload-rules
+udevadm trigger
+
+echo "==> 6. 解绑 cdc_acm 抢占的 CH343 接口，绑定到 usb_ch343"
 for dev in /sys/bus/usb/drivers/cdc_acm/*:*; do
     [ -d "$dev" ] || continue
     devname=$(basename "$dev")
-    # 向上找到 USB 设备节点
     usb_dev=$(readlink -f "$dev")
-    # 在 usb_dev 路径中查找 idVendor/idProduct
-    # 路径形如 /sys/devices/.../usb3/3-1/3-1.1/3-1.1:1.2
-    # 找父设备的 idVendor
     parent=$(dirname "$usb_dev")
     while [ "$parent" != "/" ]; do
         if [ -f "$parent/idVendor" ]; then
             vid=$(cat "$parent/idVendor")
             pid=$(cat "$parent/idProduct")
             if [ "$vid" = "$VID" ] && [ "$pid" = "$PID" ]; then
-                echo "  解绑 $devname (vid=$vid pid=$pid) 从 cdc_acm"
-                echo "$devname" | tee /sys/bus/usb/drivers/cdc_acm/unbind > /dev/null || echo "  解绑失败，跳过"
+                echo "  解绑 $devname 从 cdc_acm"
+                echo "$devname" > /sys/bus/usb/drivers/cdc_acm/unbind 2>/dev/null || true
                 echo "  绑定 $devname 到 usb_ch343"
-                echo "$devname" | tee /sys/bus/usb/drivers/usb_ch343/bind > /dev/null || echo "  绑定失败，跳过"
+                echo "$devname" > /sys/bus/usb/drivers/usb_ch343/bind 2>/dev/null || true
             fi
             break
         fi
@@ -33,32 +78,22 @@ for dev in /sys/bus/usb/drivers/cdc_acm/*:*; do
     done
 done
 
-echo "==> 2. 写入 udev driver_override 规则"
-RULE_FILE="/etc/udev/rules.d/99-ch343-override.rules"
-cat > "$RULE_FILE" << 'EOF'
-# CH343 设备强制绑定到 ch343 驱动，防止 cdc_acm 抢占
-# 在 cdc_acm 绑定前先设置 driver_override
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d5", DRIVER=="cdc_acm", \
-  RUN+="/bin/sh -c 'echo usb_ch343 > /sys$DEVPATH/driver_override'"
-# 覆盖 WCH 其他常见 CH343 variant PID（55d2/55d3/55d4/55d7/55d8/55db/55dd/55da/55de/55e7/55df/55e9/55ea/55e8/55eb/55ec）
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", DRIVER=="cdc_acm", \
-  RUN+="/bin/sh -c 'echo usb_ch343 > /sys$DEVPATH/driver_override'"
-EOF
-echo "  规则文件：$RULE_FILE"
+# 兜底：对所有 1a86:55d5 接口写 driver_override + 触发 reprobe
+for devpath in /sys/bus/usb/devices/*:*; do
+    [ -f "$devpath/idVendor" ] || continue
+    vid=$(cat "$devpath/idVendor" 2>/dev/null)
+    pid=$(cat "$devpath/idProduct" 2>/dev/null)
+    if [ "$vid" = "$VID" ] && [ "$pid" = "$PID" ]; then
+        echo "usb_ch343" > "$devpath/driver_override" 2>/dev/null || true
+    fi
+done
+udevadm trigger --action=change --subsystem-match=usb
 
-echo "==> 3. 重新加载 udev"
-udevadm control --reload-rules
-udevadm trigger
-
-echo "==> 4. 验证当前状态"
+echo "==> 7. 验证当前状态"
 echo "ttyCH343USB 设备："
 ls /dev/ttyCH343USB* 2>/dev/null || echo "  无"
-echo "ttyACM 设备："
-ls /dev/ttyACM* 2>/dev/null || echo "  无"
-echo "usb_ch343 绑定接口："
-ls /sys/bus/usb/drivers/usb_ch343/ | grep ":" || echo "  无"
-echo "cdc_acm 绑定接口（应为非 CH343 设备）："
-ls /sys/bus/usb/drivers/cdc_acm/ | grep ":" || echo "  无"
+echo "usb_ch343 绑定接口（应 8 个）："
+ls /sys/bus/usb/drivers/usb_ch343/ 2>/dev/null | grep ":" || echo "  无"
 
 cat << 'EOF'
 
@@ -66,8 +101,6 @@ cat << 'EOF'
 
 若仍有问题，检查：
   dmesg | grep -iE "ch343|cdc_acm"
+  lsmod | grep ch343
   cat /sys/bus/usb/devices/*/driver_override  # 查看哪些设备设置了 override
-
-注意：第二条规则会对所有 1a86 vendor 的设备在 cdc_acm 抢占时触发 override。
-若你有其他 WCH 非 CH343 设备，请删除第二条规则。
 EOF
