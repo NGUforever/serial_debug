@@ -211,10 +211,32 @@ class AtCmdPanelQt:
             self._table.setRowHeight(row, 32)
 
     def _sync_from_table(self):
-        """把表格当前编辑的内容同步回 self.commands（批量重建前调用）。"""
+        """把表格当前编辑的内容同步回 self.commands（批量重建前调用）。
+
+        注意：用户正在编辑某格（光标在格内，未按回车）时，编辑器内容
+        还没 commit 到 QTableWidgetItem，直接读 item.text() 拿到的是
+        旧值或空值。所以先要强制提交所有打开的 editor，再读。
+        """
         if self._table is None:
             return
+        # 强制提交正在编辑的单元格（光标在格内未回车的状态）
+        # QAbstractItemView.state()==EditingState 表示有 editor 打开，
+        # 通过 viewport 的 focusWidget 拿到该 editor，调 commitData 提交。
+        try:
+            from PySide6.QtWidgets import QAbstractItemView
+            if self._table.state() == QAbstractItemView.EditingState:
+                editor = self._table.viewport().focusWidget()
+                if editor is not None:
+                    self._table.commitData(editor)
+        except Exception:
+            pass
         n = self._table.rowCount()
+        # 如果表格行数多于 self.commands（新增行还没 append），先扩容
+        if n > len(self.commands):
+            self.commands.extend([
+                _norm({'cmd': '', 'desc': '', 'seq': 0, 'period_ms': 0})
+                for _ in range(n - len(self.commands))
+            ])
         for r in range(n):
             if r >= len(self.commands):
                 break
