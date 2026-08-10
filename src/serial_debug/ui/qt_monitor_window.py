@@ -448,6 +448,9 @@ class QtMonitorWindow:
         self._plot_widgets: list = []
         self._curves: list[dict] = []
         self._plots_layout = None
+        # 嵌套 splitter（每行一个 h_splitter，外层 v_splitter），用户拖动
+        # 分隔条可调节每个 PlotWidget 的宽高，默认等分（视觉同 QGridLayout）
+        self._v_splitter = None
         # popout 单图独立窗口列表：[(plot_idx, QDialog, PlotWidget, curves_dict)]
         self._popout_dialogs: list = []
         # 侧栏 UI
@@ -627,7 +630,7 @@ class QtMonitorWindow:
         from PySide6.QtGui import QAction
         from PySide6.QtWidgets import (
             QApplication, QMainWindow, QToolBar, QPushButton, QStatusBar,
-            QVBoxLayout, QGridLayout, QWidget, QScrollArea, QSizePolicy, QLabel,
+            QVBoxLayout, QSplitter, QWidget, QScrollArea, QSizePolicy, QLabel,
         )
         import pyqtgraph as pg
 
@@ -673,9 +676,13 @@ class QtMonitorWindow:
         scroll.setFrameShape(QScrollArea.NoFrame)
 
         plots_container = QWidget()
-        self._plots_layout = QGridLayout(plots_container)
+        # plots_container 内只放一个垂直 QSplitter，每行一个水平 splitter
+        # 装 cols 个 PlotWidget。默认等分（视觉等于网格布局），用户可拖
+        # 分隔条调节每个 PlotWidget 的宽高。sizePolicy 仍 Expanding，
+        # 最小尺寸由 PlotWidget.setMinimumHeight/Width 兜底。
+        self._plots_layout = QVBoxLayout(plots_container)
         self._plots_layout.setContentsMargins(0, 0, 0, 0)
-        self._plots_layout.setSpacing(6)
+        self._plots_layout.setSpacing(0)
 
         scroll.setWidget(plots_container)
         outer.addWidget(scroll)
@@ -1539,20 +1546,27 @@ class QtMonitorWindow:
     def _rebuild_plots_ui(self):
         """根据 self._plots 重建 PlotWidget 列表（增删改 plot 后调用）。
 
-        自动排版：优先左右分栏，然后上下分栏。
+        布局：嵌套 QSplitter。外层 vertical splitter 每行一个 horizontal
+        splitter，水平 splitter 装 cols 个 PlotWidget。默认等分（视觉
+        等于原来的 QGridLayout 网格），用户拖动分隔条可调节每个曲线图
+        的宽高。setChildrenCollapsible(False) 防止拖到 0，最小尺寸由
+        PlotWidget.setMinimumHeight/Width 兜底。
+
+        列数规则与原 QGridLayout 版本一致：优先左右分栏。
         1 个图 → 1 列，2 个图 → 2 列，3 个图 → 2 列 + 1 行，
         4 个图 → 2×2，5 个图 → 3 列 + 2 行，以此类推。
         """
         import pyqtgraph as pg
-        from PySide6.QtWidgets import QSizePolicy
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QSizePolicy, QSplitter
 
         from serial_debug.ui import qt_theme
         t = qt_theme.palette(self.theme_name)
 
-        # 清空旧的 PlotWidget
         layout = self._plots_layout
         if layout is None:
             return
+        # 清空旧内容（之前的 v_splitter 或残留 widget）
         for i in reversed(range(layout.count())):
             item = layout.itemAt(i)
             if item is None:
@@ -1565,7 +1579,9 @@ class QtMonitorWindow:
         self._curves = []
 
         n = len(self._plots)
-        # 计算列数：优先左右分栏
+        if n == 0:
+            return
+        # 计算列数：优先左右分栏（与原 QGridLayout 一致）
         if n <= 1:
             cols = 1
         elif n <= 2:
@@ -1577,31 +1593,46 @@ class QtMonitorWindow:
         else:
             cols = max(3, (n + 1) // 2)
 
-        # 重建
-        for idx, p in enumerate(self._plots):
-            pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
-            pw.showGrid(x=True, y=True, alpha=0.2)
-            pw.setLabel('left', p.get('y_label', '值'))
-            pw.setLabel('bottom', '时间')
-            pw.setTitle(p.get('title', '数据曲线'))
-            pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
-            for axis_name in ('left', 'bottom'):
-                axis = pw.getAxis(axis_name)
-                if axis is not None:
-                    axis.setPen(t.get('muted', '#cccccc'))
-                    axis.setTextPen(t.get('fg', '#cccccc'))
-            # 可调节宽高：最小高度 180，默认 280
-            pw.setMinimumHeight(180)
-            pw.setMinimumWidth(200)
-            sp = pw.sizePolicy()
-            sp.setVerticalPolicy(QSizePolicy.Expanding)
-            sp.setHorizontalPolicy(QSizePolicy.Expanding)
-            pw.setSizePolicy(sp)
-            self._plot_widgets.append(pw)
-            self._curves.append({})
-            row = idx // cols
-            col = idx % cols
-            layout.addWidget(pw, row, col)
+        # 垂直 splitter（每行一个 horizontal splitter）
+        v_splitter = QSplitter(Qt.Vertical)
+        v_splitter.setHandleWidth(6)
+        v_splitter.setChildrenCollapsible(False)
+        self._v_splitter = v_splitter
+
+        rows = (n + cols - 1) // cols
+        for row in range(rows):
+            h_splitter = QSplitter(Qt.Horizontal)
+            h_splitter.setHandleWidth(6)
+            h_splitter.setChildrenCollapsible(False)
+            for col in range(cols):
+                idx = row * cols + col
+                if idx >= n:
+                    break
+                p = self._plots[idx]
+                pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
+                pw.showGrid(x=True, y=True, alpha=0.2)
+                pw.setLabel('left', p.get('y_label', '值'))
+                pw.setLabel('bottom', '时间')
+                pw.setTitle(p.get('title', '数据曲线'))
+                pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
+                for axis_name in ('left', 'bottom'):
+                    axis = pw.getAxis(axis_name)
+                    if axis is not None:
+                        axis.setPen(t.get('muted', '#cccccc'))
+                        axis.setTextPen(t.get('fg', '#cccccc'))
+                # 最小宽高兜底（用户拖动分隔条时不能拖到更小）
+                pw.setMinimumHeight(120)
+                pw.setMinimumWidth(150)
+                sp = pw.sizePolicy()
+                sp.setVerticalPolicy(QSizePolicy.Expanding)
+                sp.setHorizontalPolicy(QSizePolicy.Expanding)
+                pw.setSizePolicy(sp)
+                self._plot_widgets.append(pw)
+                self._curves.append({})
+                h_splitter.addWidget(pw)
+            v_splitter.addWidget(h_splitter)
+
+        layout.addWidget(v_splitter)
 
     # ---- 实时串口 feed ----------------------------------------------
     def start_serial(self, port: str, baudrate: int = 921600):
