@@ -6,11 +6,17 @@
     python scripts/pip_install_with_fallback.py PySide6 pyqtgraph numpy
 
 镜像源顺序：官方 → 清华 → 阿里 → douban，第一个成功就停。
+
+PEP 668（Ubuntu 24.04+ / Debian 12+）禁止系统级 pip install：
+检测到 EXTERNALLY-MANAGED 标记时自动加 --break-system-packages（pip 23.0+），
+打印警告说明此举会向系统 Python 装包，长期建议 venv 隔离。
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import sysconfig
 
 
 MIRRORS = [
@@ -21,16 +27,59 @@ MIRRORS = [
 ]
 
 
+def _is_externally_managed() -> bool:
+    """检测当前 Python 是否启用 PEP 668 externally-managed。
+
+    Python 3.11+ 在 stdlib 目录下放 EXTERNALLY-MANAGED 标记文件告诉 pip
+    不要系统级安装。Ubuntu 24.04 / Debian 12 / Fedora 38+ 默认放。
+    """
+    stdlib = sysconfig.get_path('stdlib')
+    if not stdlib:
+        return False
+    return os.path.exists(os.path.join(stdlib, 'EXTERNALLY-MANAGED'))
+
+
+def _supports_break_flag() -> bool:
+    """检测当前 pip 是否支持 --break-system-packages（pip 23.0+）。"""
+    try:
+        r = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '--help'],
+            capture_output=True, text=True, timeout=10, check=False)
+        return '--break-system-packages' in r.stdout
+    except Exception:
+        return False
+
+
 def install(packages: list[str], *, upgrade: bool = False) -> bool:
     """依次用各镜像源 pip install，成功返回 True。
 
     packages 是 pip 的参数列表，可包含 -r requirements.txt、包名、
     带版本约束的包名等。--no-input 避免交互卡死。
+
+    PEP 668 环境自动加 --break-system-packages（pip 23.0+）。
     """
     base_args = [sys.executable, '-m', 'pip', 'install', '--no-input',
                  '--disable-pip-version-check']
     if upgrade:
         base_args.append('-U')
+
+    # PEP 668 兼容：Ubuntu 24.04+ / Debian 12+ 系统级 pip install 被禁，
+    # 自动加 --break-system-packages（pip 23.0+）绕过。这是 build 阶段
+    # 的临时方案，长期应该用 venv 隔离。
+    externally_managed = _is_externally_managed()
+    supports_break = _supports_break_flag()
+    if externally_managed and supports_break:
+        print('==> 检测到 PEP 668 externally-managed-environment 限制')
+        print('    (Ubuntu 24.04+ / Debian 12+ 禁止系统级 pip install)')
+        print('    自动加 --break-system-packages 绕过')
+        print('    警告：此操作会向系统 Python 装 PySide6/pyqtgraph/numpy 等')
+        print('    长期建议：python3 -m venv .venv && source .venv/bin/activate')
+        base_args.append('--break-system-packages')
+    elif externally_managed and not supports_break:
+        print('==> 警告：检测到 PEP 668 externally-managed-environment')
+        print('    但 pip 不支持 --break-system-packages（pip < 23.0）')
+        print('    请手动升级 pip：python3 -m pip install --user --upgrade pip')
+        print('    或用 venv：python3 -m venv .venv && source .venv/bin/activate')
 
     last_err = ''
     for idx, mirror in enumerate(MIRRORS):
