@@ -537,6 +537,60 @@ class QtMonitorWindow:
         except Exception:
             pass
 
+    # ---- 配置导入 / 导出 -------------------------------------------------
+    def export_plots_config(self, file_path: str) -> None:
+        """导出当前曲线图配置 + 变量元信息到 JSON 文件。
+
+        导出内容：
+          - plots: self._plots（title / vars / show_* / hover_* / legend_*）
+          - var_meta: self._var_meta（颜色 / label / y_min/y_max / warn_*
+            等显示参数；导入时合并到当前 var_meta）
+          - version: 格式版本号（向后兼容）
+
+        不导出 self._data（实际曲线数据）。导入后曲线显示需要先加载
+        日志或连串口，按导出时的 vars 配置重新绘制。
+        """
+        import json
+        data = {
+            'version': 1,
+            'plots': [_normalize_plot(p) for p in self._plots],
+            'var_meta': {k: dict(v) for k, v in self._var_meta.items()},
+        }
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def import_plots_config(self, file_path: str) -> int:
+        """从 JSON 文件导入曲线图配置，替换当前 plots + 合并 var_meta。
+
+        返回导入的 plot 数量。导入后立即 _rebuild_plots_ui + _refresh_sidebar
+        + _refresh_plot + _save_plots，按导出时的 vars 配置显示曲线
+        （若已加载数据则曲线立刻画出）。
+        """
+        import json
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or 'plots' not in data:
+            raise ValueError('JSON 格式不对：缺少 plots 字段')
+        new_plots = [_normalize_plot(p) for p in data['plots']]
+        # 合并 var_meta（导入文件里的覆盖当前同名字段，不全量替换
+        # 防止丢失当前已加载但配置里没的变量元信息）
+        new_meta = data.get('var_meta', {})
+        if isinstance(new_meta, dict):
+            for name, meta in new_meta.items():
+                if not isinstance(meta, dict):
+                    continue
+                cur = self._var_meta.setdefault(name, {})
+                cur.update(meta)
+                # 触发 _register_var 注册到 _all_var_names
+                self._register_var(name)
+        self._plots = new_plots
+        self._rebuild_plots_ui()
+        self._refresh_sidebar()
+        self._refresh_sidebar_visibility()
+        self._refresh_plot()
+        self._save_plots()
+        return len(new_plots)
+
     def _save_geometry(self) -> None:
         from serial_debug.infra import config
         try:
@@ -763,6 +817,37 @@ class QtMonitorWindow:
                 win.statusBar().showMessage(
                     f'加载 {n} 行，{len(self._data)} 变量')
 
+        def _import_plots_cfg():
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            path, _ = QFileDialog.getOpenFileName(
+                win, '导入曲线图配置', os.path.expanduser('~'),
+                '曲线图配置 (*.json);;所有文件 (*)')
+            if not path:
+                return
+            try:
+                n = self.import_plots_config(path)
+                win.statusBar().showMessage(
+                    f'已导入 {n} 个曲线图配置：{path}')
+            except Exception as e:
+                QMessageBox.critical(win, '导入失败', str(e))
+
+        def _export_plots_cfg():
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            if not self._plots:
+                QMessageBox.information(win, '导出', '当前没有曲线图配置')
+                return
+            path, _ = QFileDialog.getSaveFileName(
+                win, '导出曲线图配置', os.path.expanduser('~/plots_config.json'),
+                '曲线图配置 (*.json);;所有文件 (*)')
+            if not path:
+                return
+            try:
+                self.export_plots_config(path)
+                win.statusBar().showMessage(
+                    f'已导出 {len(self._plots)} 个曲线图配置：{path}')
+            except Exception as e:
+                QMessageBox.critical(win, '导出失败', str(e))
+
         def _mock_10w():
             self.gen_mock_data(100_000)
             self._refresh_plot()
@@ -913,6 +998,13 @@ class QtMonitorWindow:
         btn_open.clicked.connect(_open_log)
         tb.addWidget(btn_open)
         tb.addSeparator()
+        btn_import_cfg = QPushButton('导入配置…')
+        btn_import_cfg.clicked.connect(_import_plots_cfg)
+        tb.addWidget(btn_import_cfg)
+        btn_export_cfg = QPushButton('导出配置…')
+        btn_export_cfg.clicked.connect(_export_plots_cfg)
+        tb.addWidget(btn_export_cfg)
+        tb.addSeparator()
         btn_theme = QPushButton('切换主题')
         btn_theme.clicked.connect(_toggle_theme)
         tb.addWidget(btn_theme)
@@ -933,7 +1025,8 @@ class QtMonitorWindow:
                             _toggle_theme, _toggle_sidebar,
                             _show_stats, _export_csv,
                             _connect_serial, _disconnect_serial,
-                            _perf_test)
+                            _perf_test,
+                            _import_plots_cfg, _export_plots_cfg)
 
         # 状态栏
         try:
@@ -987,7 +1080,8 @@ class QtMonitorWindow:
                         _toggle_theme, _toggle_sidebar,
                         _show_stats, _export_csv,
                         _connect_serial, _disconnect_serial,
-                        _perf_test):
+                        _perf_test,
+                        _import_plots_cfg=None, _export_plots_cfg=None):
         from PySide6.QtGui import QAction
         from PySide6.QtWidgets import QStyle
         mb = win.menuBar()
@@ -1006,6 +1100,17 @@ class QtMonitorWindow:
         act_open.setShortcut('Ctrl+O')
         act_open.triggered.connect(_open_log)
         m_file.addAction(act_open)
+        m_file.addSeparator()
+        if _import_plots_cfg is not None:
+            act_import_cfg = QAction(
+                _icon(QStyle.SP_DialogOpenButton), '导入曲线图配置…', win)
+            act_import_cfg.triggered.connect(_import_plots_cfg)
+            m_file.addAction(act_import_cfg)
+        if _export_plots_cfg is not None:
+            act_export_cfg = QAction(
+                _icon(QStyle.SP_DialogSaveButton), '导出曲线图配置…', win)
+            act_export_cfg.triggered.connect(_export_plots_cfg)
+            m_file.addAction(act_export_cfg)
         m_file.addSeparator()
         act_csv = QAction(_icon(QStyle.SP_DialogSaveButton), '导出 CSV…', win)
         act_csv.triggered.connect(_export_csv)
