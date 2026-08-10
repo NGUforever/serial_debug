@@ -66,15 +66,22 @@ def _pick_value(blocks, v: dict):
     return None
 
 
-def _iter_panel_vars(line: str):
+def _iter_panel_vars(line: str, ts_fallback: float | None = None):
     """从一行日志中提取所有 Panel 的 (var_name, value)。
 
     motor / bms / imu 三类 Panel 各自调 _parse_tagged_line + DEFAULT_VARS
     取值。变量名加 Panel 前缀避免冲突（motor. / bms. / imu.）。
+
+    :param ts_fallback: 行内提取不到时间戳时用此值。实时串口 feed 的
+        设备原始行（如 ``783587 I model ...`` 只有 6 位、``OK,0%`` 无时间戳）
+        提取不到 ts，若不传 fallback 会直接 return 不 yield，曲线不生成。
+        日志回放路径不传 fallback（行内必有时间戳，缺失说明格式异常）。
     """
     ts = _extract_log_ts(line)
     if ts is None:
-        return
+        if ts_fallback is None:
+            return
+        ts = ts_fallback
     # motor: 3wd1t_1 / 3wd1t_2 / Lxx_STD_DEBUG
     for tag in ('3wd1t_1', '3wd1t_2'):
         blocks = MotorMonitorPanel._parse_tagged_line(line, tag)
@@ -1608,6 +1615,7 @@ class QtMonitorWindow:
         self._serial_buf = ''
 
         def _reader():
+            import time
             while not self._serial_stop.is_set() and ser.is_open:
                 try:
                     chunk = ser.read(ser.in_waiting or 1024)
@@ -1626,7 +1634,8 @@ class QtMonitorWindow:
                     if not line:
                         continue
                     try:
-                        for ts, name, val in _iter_panel_vars(line + '\n'):
+                        for ts, name, val in _iter_panel_vars(
+                                line + '\n', ts_fallback=time.time()):
                             with self._data_lock:
                                 buf = self._data.setdefault(name, [])
                                 if isinstance(buf, tuple):
