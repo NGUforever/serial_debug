@@ -44,6 +44,18 @@ rm -rf "$APP_PATH"
 cp -R "dist/serial_debug.app" "$APP_PATH"
 echo "  应用路径: $APP_PATH"
 
+# 解除 Gatekeeper quarantine 标记（从 Downloads 或非 App Store 下载的 .app
+# 会被打 com.apple.quarantine，首次打开弹"无法打开，因为来自未知开发者"）
+# xattr -dr 递归删除扩展属性，无需 sudo
+if command -v xattr >/dev/null 2>&1; then
+    if xattr "$APP_PATH" 2>/dev/null | grep -q "com.apple.quarantine"; then
+        echo "==> 解除 Gatekeeper quarantine 标记..."
+        xattr -dr com.apple.quarantine "$APP_PATH"
+    fi
+fi
+echo "  若仍弹\"无法打开\"，执行：sudo xattr -rd com.apple.quarantine \"$APP_PATH\""
+echo "  或：系统偏好设置 > 安全性与隐私 > 允许"
+
 # 1. 创建命令行启动脚本
 echo "==> 注册命令 serial_debug 到 PATH..."
 mkdir -p "$BIN_DIR"

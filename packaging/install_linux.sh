@@ -60,6 +60,64 @@ if [ ! -d "dist/serial_debug" ]; then
     exit 1
 fi
 
+# 检测 PySide6/Qt 运行时必需的共享库（缺则自动 sudo apt install）
+_check_qt_libs() {
+    # libxcb-* / libGL / libEGL / libfontconfig / libdbus
+    # 缺任何一个，PySide6 启动崩 "Could not load Qt platform plugin xcb"
+    local pkgs=(
+        libxcb-xinerama0 libxcb-cursor0 libxcb-icccm4 libxcb-image0
+        libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0
+        libxcb-xkb1 libxkbcommon-x11-0 libgl1 libegl1 libfontconfig1
+        libdbus-1-3
+    )
+    local missing=()
+    for p in "${pkgs[@]}"; do
+        if ! dpkg -s "$p" >/dev/null 2>&1; then
+            missing+=("$p")
+        fi
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "==> 检测到缺 PySide6/Qt 运行时库：${missing[*]}"
+        echo "    不装会崩 \"Could not load Qt platform plugin xcb\""
+        # root 用户直接 apt（容器内 sudo 可能不存在），普通用户用 sudo
+        if [ "$(id -u)" = "0" ]; then
+            APT="apt"
+        else
+            APT="sudo apt"
+        fi
+        echo "==> 自动安装：$APT install ${missing[*]}"
+        $APT update -qq
+        $APT install -y "${missing[@]}" || {
+            echo "    自动安装失败，请手动执行："
+            echo "    sudo apt install ${missing[*]}"
+            echo "    然后重跑 install_linux.sh"
+            exit 1
+        }
+    fi
+}
+
+# 检测 glibc >= 2.35（Ubuntu 22.04 LTS 是构建基线）
+_check_glibc() {
+    local ver
+    ver=$(ldd --version 2>/dev/null | head -n1 | awk '{print $NF}')
+    if [ -z "$ver" ]; then
+        echo "    警告：无法检测 glibc 版本"
+        return
+    fi
+    local major minor
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 35 ]; }; then
+        echo "==> 警告：glibc $ver < 2.35"
+        echo "    Ubuntu 22.04 构建的二进制可能跑不起来"
+        echo "    建议：升级系统到 Ubuntu 22.04+ 或用 docker ubuntu:22.04 构建"
+    fi
+}
+
+echo "==> 检测运行时依赖..."
+_check_qt_libs
+_check_glibc
+
 echo "==> 安装 serial_debug 到 $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR"
 cp -r dist/serial_debug/* "$INSTALL_DIR/"

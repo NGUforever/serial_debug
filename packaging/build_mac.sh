@@ -20,8 +20,16 @@ set -e
 PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
-# 安装依赖
-pip install --quiet pyinstaller pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate
+# 检测 Xcode CLT（PyInstaller 装系统 .dylib 需要）
+if ! xcode-select -p >/dev/null 2>&1; then
+    echo "==> 警告：Xcode Command Line Tools 未安装"
+    echo "    请执行：xcode-select --install"
+    echo "    装完再跑本脚本"
+    exit 1
+fi
+
+# 安装依赖（多镜像源 fallback，避免单源失败就死）
+python3 scripts/pip_install_with_fallback.py -r requirements.txt pyinstaller
 
 # PyInstaller 构建
 pyinstaller --clean --noconfirm packaging/serial_debug.spec

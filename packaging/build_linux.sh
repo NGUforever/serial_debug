@@ -27,8 +27,9 @@ if [ "$1" = "--appimage" ]; then
     MAKE_APPIMAGE=1
 fi
 
-# 安装 Python 依赖
-pip install --quiet pyinstaller pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate
+# 安装 Python 依赖（多镜像源 fallback，避免单源失败就死）
+echo "==> 安装 Python 依赖（pip 镜像源 fallback）..."
+python3 scripts/pip_install_with_fallback.py -r requirements.txt pyinstaller
 
 # PyInstaller 构建
 echo "==> PyInstaller 构建中..."

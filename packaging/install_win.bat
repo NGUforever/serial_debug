@@ -42,6 +42,32 @@ if not exist "%PROJECT_DIR%\dist\serial_debug\serial_debug.exe" (
     exit /b 1
 )
 
+REM 检测 VC++ Redistributable 2015-2022 x64（PySide6 必需）
+REM 注册表 HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64\Installed=1
+reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" /v Installed /reg:64 >nul 2>&1
+if errorlevel 1 (
+    echo ==^> 警告：VC^^+ Redistributable 2015-2022 x64 未装
+    echo    PySide6 启动会崩 "缺 VCRuntime140.dll"
+    echo    下载安装：https://aka.ms/vs/17/release/vc_redist.x64.exe
+    echo    继续安装？选择：
+    echo      [y] 自动下载并静默安装 VC^^+ Redist
+    echo      [n] 跳过，安装后让用户自行装
+    choice /c yn /n /m "选择 [y/n]: "
+    if errorlevel 1 (
+        if exist "%TEMP%\vc_redist.x64.exe" del /q "%TEMP%\vc_redist.x64.exe"
+        echo ==^> 下载 VC^^+ Redist...
+        powershell -NoProfile -Command ^
+            "try { Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile '%TEMP%\vc_redist.x64.exe' } catch { Write-Host '下载失败：' $_.Exception.Message; exit 1 }"
+        if exist "%TEMP%\vc_redist.x64.exe" (
+            echo ==^> 静默安装 VC^^+ Redist...
+            "%TEMP%\vc_redist.x64.exe" /install /quiet /norestart
+            del /q "%TEMP%\vc_redist.x64.exe" 2>nul
+        ) else (
+            echo    下载失败，请手动从 https://aka.ms/vs/17/release/vc_redist.x64.exe 装
+        )
+    )
+)
+
 echo ==^> 安装 serial_debug 到 %INSTALL_DIR% ...
 mkdir "%INSTALL_DIR%" 2>nul
 xcopy /e /y /i "%PROJECT_DIR%\dist\serial_debug\*" "%INSTALL_DIR%\" >nul

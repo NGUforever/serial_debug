@@ -14,8 +14,20 @@ setlocal
 cd /d %~dp0..
 set "PROJECT_DIR=%CD%"
 
-echo ==> 安装依赖...
-pip install --quiet pyinstaller pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate || goto :error
+REM 检测 VC++ Redistributable 2015-2022 x64（PySide6 必需）
+REM 注册表 HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64\Installed=1
+reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" /v Installed /reg:64 >nul 2>&1
+if errorlevel 1 (
+    echo ==> 警告：VC^^+ Redistributable 2015-2022 x64 未装
+    echo    PySide6 启动会崩 "缺 VCRuntime140.dll"
+    echo    下载安装：https://aka.ms/vs/17/release/vc_redist.x64.exe
+    echo    或继续构建，分发时让用户自行安装
+    choice /c yn /n /m "继续构建？[y/N]: "
+    if errorlevel 2 exit /b 1
+)
+
+echo ==> 安装依赖（pip 镜像源 fallback）...
+python scripts\pip_install_with_fallback.py -r requirements.txt pyinstaller || goto :error
 
 echo ==> PyInstaller 构建...
 pyinstaller --clean --noconfirm packaging\serial_debug.spec || goto :error
