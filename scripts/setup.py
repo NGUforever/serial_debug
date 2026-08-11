@@ -250,39 +250,63 @@ def _install_deps(venv_python: str, requirements: str) -> int:
             [venv_python, pip_script, '-r', requirements])
 
 
-def _create_run_script(plat: str) -> str:
-    """在仓库根创建启动脚本 run.bat / run.sh，返回脚本路径。
+def _create_run_script(plat: str) -> tuple:
+    """在仓库根创建启动脚本 run.bat / run.sh + run_log.bat / run_log.sh。
 
     直接调 venv 内的 python + PYTHONPATH=src，不需要 activate venv，
     也不需要 pip install -e .。这样 venv 是自包含的，复制仓库到
     别的机器只要 venv 还能用就能跑。
+
+    返回 (run_script, run_log_script) 两个路径。
     """
     if plat == 'win32':
-        path = os.path.join(_PROJECT_DIR, 'run.bat')
-        content = (
+        run_path = os.path.join(_PROJECT_DIR, 'run.bat')
+        run_content = (
             '@echo off\r\n'
             'cd /d %~dp0\r\n'
             'set PYTHONPATH=src\r\n'
             '.venv\\Scripts\\python.exe -m serial_debug %*\r\n'
         )
+        run_log_path = os.path.join(_PROJECT_DIR, 'run_log.bat')
+        run_log_content = (
+            '@echo off\r\n'
+            'cd /d %~dp0\r\n'
+            'set PYTHONPATH=src\r\n'
+            '.venv\\Scripts\\python.exe -m serial_debug --view %*\r\n'
+        )
+        paths = [(run_path, run_content), (run_log_path, run_log_content)]
     else:
-        path = os.path.join(_PROJECT_DIR, 'run.sh')
-        content = (
+        run_path = os.path.join(_PROJECT_DIR, 'run.sh')
+        run_content = (
             '#!/bin/bash\n'
             'cd "$(dirname "$0")"\n'
             'export PYTHONPATH=src\n'
             '.venv/bin/python -m serial_debug "$@"\n'
         )
-    with open(path, 'w', newline='') as f:
-        f.write(content)
-    if plat != 'win32':
-        import stat
-        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
+        run_log_path = os.path.join(_PROJECT_DIR, 'run_log.sh')
+        run_log_content = (
+            '#!/bin/bash\n'
+            'cd "$(dirname "$0")"\n'
+            'export PYTHONPATH=src\n'
+            '.venv/bin/python -m serial_debug --view "$@"\n'
+        )
+        paths = [(run_path, run_content), (run_log_path, run_log_content)]
+    import stat
+    for path, content in paths:
+        with open(path, 'w', newline='') as f:
+            f.write(content)
+        if plat != 'win32':
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return run_path, run_log_path
 
 
-def _create_desktop_shortcut(plat: str, run_script: str) -> None:
-    """创建桌面快捷方式，指向 run.bat / run.sh。"""
+def _create_desktop_shortcut(plat: str, run_script: str, run_log_script: str) -> None:
+    """创建桌面快捷方式 + 日志查看器入口。
+
+    主程序快捷方式指向 run.bat / run.sh。
+    日志查看器另起 .desktop / .lnk，含 MimeType 注册，让文件管理器
+    右键 .log/.txt 文件能选「日志查看器」打开。
+    """
     desktop = os.path.expanduser('~/Desktop')
     assets = os.path.join(_PROJECT_DIR, 'src', 'serial_debug', 'resources', 'assets')
     if plat == 'win32':
@@ -298,32 +322,74 @@ def _create_desktop_shortcut(plat: str, run_script: str) -> None:
             "$lnk.Save()"
         )
         subprocess.run(['powershell', '-NoProfile', '-Command', ps], check=False)
+        # 日志查看器快捷方式
+        log_icon = os.path.join(assets, 'icon_view.ico')
+        log_lnk = os.path.join(desktop, '日志查看器.lnk')
+        ps_log = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            f"$lnk = $ws.CreateShortcut('{log_lnk}'); "
+            f"$lnk.TargetPath = '{run_log_script}'; "
+            f"$lnk.WorkingDirectory = '{_PROJECT_DIR}'; "
+            f"$lnk.IconLocation = '{log_icon},0'; "
+            "$lnk.Save()"
+        )
+        subprocess.run(['powershell', '-NoProfile', '-Command', ps_log], check=False)
     elif plat == 'linux':
         # Linux：写 .desktop 文件
         icon = os.path.join(assets, 'icon_debug.svg')
+        log_icon = os.path.join(assets, 'icon_view.svg')
         desktop_dir = os.path.expanduser('~/.local/share/applications')
         os.makedirs(desktop_dir, exist_ok=True)
+        # 主程序
         desk_file = os.path.join(desktop_dir, 'serial_debug_src.desktop')
         content = (
             '[Desktop Entry]\n'
             'Type=Application\n'
             'Version=1.0\n'
-            'Name=串口调试助手（源码）\n'
+            'Name=串口调试助手\n'
             f'Exec=bash "{run_script}"\n'
             f'Path={_PROJECT_DIR}\n'
             f'Icon={icon}\n'
             'Terminal=false\n'
             'Categories=Development;Utility;\n'
+            'Keywords=serial;uart;AT;debug;ch343;\n'
             'StartupNotify=false\n'
             'StartupWMClass=serial_debug\n'
         )
         with open(desk_file, 'w') as f:
             f.write(content)
+        # 日志查看器（含 MimeType，让文件管理器右键能用）
+        log_desk_file = os.path.join(desktop_dir, 'serial_debug_log_src.desktop')
+        log_content = (
+            '[Desktop Entry]\n'
+            'Type=Application\n'
+            'Version=1.0\n'
+            'Name=日志查看器\n'
+            'GenericName=Log File Viewer\n'
+            'Comment=日志文件查看工具：多文件 Tab + 筛选面板 + 全局搜索\n'
+            f'Exec=bash "{run_log_script}" %F\n'
+            f'Path={_PROJECT_DIR}\n'
+            f'Icon={log_icon}\n'
+            'Terminal=false\n'
+            'Categories=Utility;TextTools;\n'
+            'Keywords=log;viewer;text;grep;filter;\n'
+            'StartupNotify=false\n'
+            'StartupWMClass=serial_debug_log\n'
+            'MimeType=text/plain;text/x-log;text/x-readme;application/octet-stream;text/*;\n'
+        )
+        with open(log_desk_file, 'w') as f:
+            f.write(log_content)
         import stat
         os.chmod(desk_file, os.stat(desk_file).st_mode | stat.S_IEXEC)
+        os.chmod(log_desk_file, os.stat(log_desk_file).st_mode | stat.S_IEXEC)
+        # 刷新 mime-database（MimeType 改动后某些文件管理器需要）
+        subprocess.run(['update-desktop-database', desktop_dir],
+                       check=False, capture_output=True)
+        subprocess.run(['update-mime-database',
+                        os.path.expanduser('~/.local/share/mime')],
+                       check=False, capture_output=True)
     elif plat == 'darwin':
-        # Mac：放到 /Applications 不现实，提示用户手动拖
-        print(f'    Mac 用户请手动创建快捷方式，启动脚本：{run_script}')
+        print(f'    Mac 用户请手动创建快捷方式，启动脚本：{run_script} / {run_log_script}')
 
 
 def cmd_install_source() -> int:
@@ -370,13 +436,14 @@ def cmd_install_source() -> int:
         return 1
 
     # 4. 创建启动脚本
-    print('\n==> 4. 创建启动脚本')
-    run_script = _create_run_script(plat)
-    print(f'    启动脚本：{run_script}')
+    print('\n==> 4. 创建启动脚本（主程序 + 日志查看器）')
+    run_script, run_log_script = _create_run_script(plat)
+    print(f'    主程序: {run_script}')
+    print(f'    日志查看器: {run_log_script}')
 
     # 5. 创建桌面快捷方式
-    print('\n==> 5. 创建桌面快捷方式')
-    _create_desktop_shortcut(plat, run_script)
+    print('\n==> 5. 创建桌面快捷方式 + 日志查看器入口（含 MimeType）')
+    _create_desktop_shortcut(plat, run_script, run_log_script)
 
     # 6. Windows/Mac 还需要 VC++ Redist（PySide6 运行时依赖）
     if plat == 'win32':
@@ -391,8 +458,9 @@ def cmd_install_source() -> int:
         print('  1. 双击桌面快捷方式「串口调试助手」')
         print(f'  2. 双击 {run_script}')
     else:
-        print(f'  1. 应用菜单搜「串口调试助手（源码）」')
+        print('  1. 应用菜单搜「串口调试助手」或「日志查看器」')
         print(f'  2. 命令行：bash {run_script}')
+        print('  3. 文件管理器右键 .log/.txt 文件 → 打开方式 → 日志查看器')
     return 0
 
 
@@ -414,16 +482,26 @@ def cmd_uninstall_source() -> int:
     if os.path.exists(run_path):
         print(f'==> 删除启动脚本: {run_path}')
         os.remove(run_path)
+    run_log_name = 'run_log.bat' if plat == 'win32' else 'run_log.sh'
+    run_log_path = os.path.join(_PROJECT_DIR, run_log_name)
+    if os.path.exists(run_log_path):
+        print(f'==> 删除日志查看器脚本: {run_log_path}')
+        os.remove(run_log_path)
 
-    # 3. 删桌面快捷方式
+    # 3. 删桌面快捷方式 + 日志查看器入口
     if plat == 'win32':
-        lnk = os.path.expanduser('~/Desktop/串口调试助手.lnk')
-        if os.path.exists(lnk):
-            os.remove(lnk)
+        for lnk_name in ('串口调试助手.lnk', '日志查看器.lnk'):
+            lnk = os.path.expanduser(f'~/Desktop/{lnk_name}')
+            if os.path.exists(lnk):
+                os.remove(lnk)
     elif plat == 'linux':
-        desk = os.path.expanduser('~/.local/share/applications/serial_debug_src.desktop')
-        if os.path.exists(desk):
-            os.remove(desk)
+        desk_dir = os.path.expanduser('~/.local/share/applications')
+        for name in ('serial_debug_src.desktop', 'serial_debug_log_src.desktop'):
+            p = os.path.join(desk_dir, name)
+            if os.path.exists(p):
+                os.remove(p)
+        subprocess.run(['update-desktop-database', desk_dir],
+                       check=False, capture_output=True)
 
     print('==> 卸载完成')
     return 0
