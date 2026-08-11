@@ -4,12 +4,23 @@
     python scripts/setup.py build      # 构建 dist/ 二进制（PyInstaller）
     python scripts/setup.py install    # 安装二进制到本机（含运行时依赖检测）
     python scripts/setup.py all        # build + install
+    python scripts/setup.py verify     # docker offscreen smoke test 验证
+                                       # 源码改动是否满足要求，不触碰稳定版
+    python scripts/setup.py ship       # verify + build + install（验证通过
+                                       # 才更新稳定版，验证失败保留旧版）
     python scripts/setup.py uninstall  # 卸载
     python scripts/setup.py check      # 仅自检，不执行 build/install
     python scripts/setup.py install_source  # 源码模式安装（不走 PyInstaller）
 
 跨平台：Linux / macOS / Windows。内部调对应 packaging/build_*.{sh,bat}
 和 packaging/install_*.{sh,bat}，不重复实现平台特定逻辑。
+
+开发工作流（不破坏稳定版）：
+1. 改代码
+2. python scripts/setup.py verify   # docker 跑 offscreen smoke test
+3. 验证通过 → python scripts/setup.py ship
+   ship = verify + build + install，验证失败保留旧二进制不动
+4. 点桌面图标验证最终效果
 
 依赖自动解决：执行前调 scripts/check_env.py 自检，自动修复
 （pip 镜像源 fallback / sudo apt install 系统库 / VC++ Redist 下载），
@@ -175,6 +186,98 @@ def cmd_all() -> int:
 def cmd_uninstall() -> int:
     plat = _platform_name()
     return _run_script(_install_script(plat), ['--uninstall'])
+
+
+def cmd_verify() -> int:
+    """docker offscreen smoke test 验证源码改动，不触碰稳定版。
+
+    流程：
+    1. docker ubuntu:22.04 装 PySide6 + pyqtgraph + numpy + PyOpenGL
+    2. QT_QPA_PLATFORM=offscreen 跑 scripts/smoke_test.py
+    3. 验证主窗口 + AT 面板 + 日志查看器 + 数据监视窗口能构建、
+       关键功能链路 OK
+
+    通过 returncode=0，失败 returncode=1。不修改 ~/.local/share/serial_debug/，
+    用户点桌面图标还能用旧版。
+    """
+    plat = _platform_name()
+    print(f'==> 平台：{plat}')
+    if plat != 'linux':
+        # Mac/Windows 本机 docker 不便，直接本机跑 smoke test
+        print('==> 非 Linux，本机直接跑 smoke test（需 PySide6 已装）')
+        env = os.environ.copy()
+        env.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        env['PYTHONPATH'] = _SRC_DIR
+        return subprocess.call(
+            [sys.executable, os.path.join(_SCRIPTS_DIR, 'smoke_test.py')],
+            env=env)
+
+    smoke_test = os.path.join(_SCRIPTS_DIR, 'smoke_test.py')
+    cmd = (
+        'apt-get update -qq > /dev/null 2>&1 && '
+        'apt-get install -y -qq python3 python3-pip python3-tk tk-dev binutils > /dev/null 2>&1 && '
+        'pip3 install --quiet --break-system-packages '
+        'PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 || '
+        'pip3 install --quiet PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 && '
+        f'cd /work && QT_QPA_PLATFORM=offscreen PYTHONPATH=src python3 {smoke_test}'
+    )
+    print('==> docker 跑 offscreen smoke test...')
+    try:
+        return subprocess.call([
+            'docker', 'run', '--rm',
+            '-e', 'DEBIAN_FRONTEND=noninteractive',
+            '-e', 'TZ=Asia/Shanghai',
+            '-v', f'{_PROJECT_DIR}:/work', '-w', '/work',
+            '--network=host', 'ubuntu:22.04',
+            'bash', '-c', cmd,
+        ])
+    except FileNotFoundError:
+        print('    docker 未安装，本机直接跑 smoke test')
+        env = os.environ.copy()
+        env.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        env['PYTHONPATH'] = _SRC_DIR
+        return subprocess.call([sys.executable, smoke_test], env=env)
+
+
+def cmd_ship() -> int:
+    """verify + build + install：验证通过才更新稳定版，失败保留旧版。
+
+    流程：
+    1. cmd_verify 跑 docker smoke test
+    2. 通过 → docker build + 本机 install（覆盖稳定版）
+    3. 失败 → returncode=1，稳定版不动，用户点桌面图标还是旧版
+
+    这是开发完成后更新稳定版的正确入口。
+    """
+    plat = _platform_name()
+    print(f'==> 平台：{plat}')
+
+    print('\n==> 1. smoke test 验证源码')
+    rc = cmd_verify()
+    if rc != 0:
+        print('\n    smoke test 失败，稳定版保留不动')
+        print('    点桌面图标还能用旧版')
+        return rc
+    print('    smoke test 通过')
+
+    print('\n==> 2. docker build')
+    if not _self_check():
+        return 1
+    rc = _run_script(_build_script(plat))
+    if rc != 0:
+        print('\n    build 失败，稳定版保留不动')
+        return rc
+
+    print('\n==> 3. 本机 install（覆盖稳定版）')
+    rc = _run_script(_install_script(plat))
+    if rc != 0:
+        print('\n    install 失败，稳定版可能损坏')
+        print('    如点桌面图标崩，跑 python scripts/setup.py install 重试')
+        return rc
+
+    print('\n==> ship 完成：稳定版已更新')
+    print('    点桌面图标验证最终效果')
+    return 0
 
 
 def cmd_check() -> int:
@@ -522,6 +625,10 @@ def main():
         sys.exit(cmd_uninstall())
     elif cmd == 'check':
         sys.exit(cmd_check())
+    elif cmd == 'verify':
+        sys.exit(cmd_verify())
+    elif cmd == 'ship':
+        sys.exit(cmd_ship())
     elif cmd == 'install_source':
         sys.exit(cmd_install_source())
     elif cmd == 'uninstall_source':
