@@ -32,7 +32,13 @@ def _is_externally_managed() -> bool:
 
     Python 3.11+ 在 stdlib 目录下放 EXTERNALLY-MANAGED 标记文件告诉 pip
     不要系统级安装。Ubuntu 24.04 / Debian 12 / Fedora 38+ 默认放。
+
+    venv 内即使 stdlib 有这个文件也不算 externally-managed——
+    venv 本来就是用户私有空间，pip install 总是允许。
     """
+    # venv 内总是允许装包，不算 externally-managed
+    if sys.prefix != sys.base_prefix:
+        return False
     stdlib = sysconfig.get_path('stdlib')
     if not stdlib:
         return False
