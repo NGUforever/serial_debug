@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -194,6 +195,61 @@ def _venv_bin(plat: str, venv_dir: str, name: str) -> str:
     return os.path.join(venv_dir, sub, name + ext)
 
 
+def _has_uv() -> bool:
+    """检测 uv 是否在 PATH（uv 比 venv + pip 快 10-100 倍）。"""
+    return shutil.which('uv') is not None
+
+
+def _create_venv(plat: str, venv_dir: str) -> str:
+    """建 venv，优先用 uv，没装 fallback 到 python -m venv。
+
+    返回 venv 内 python 的路径。
+    """
+    if _has_uv():
+        print('    使用 uv 创建 venv（比 python -m venv 快 10-100 倍）')
+        subprocess.check_call(['uv', 'venv', venv_dir])
+    else:
+        print('    uv 未安装，使用 python -m venv（可 pip install uv 加速）')
+        subprocess.check_call([sys.executable, '-m', 'venv', venv_dir])
+    return _venv_bin(plat, venv_dir, 'python')
+
+
+def _install_deps(venv_python: str, requirements: str) -> int:
+    """装依赖，优先用 uv pip（快得多），fallback 到 pip_install_with_fallback。"""
+    if _has_uv():
+        # uv pip install 直接用 venv 内 python，不需要 activate
+        # --python 指定 venv 内 python，-i 指定镜像源
+        print('    使用 uv pip install')
+        # 用 uv 跑 pip_install_with_fallback 的镜像源 fallback 逻辑
+        # 实际上 uv 自带重试，但没多镜像源。手动写一遍 fallback。
+        mirrors = [
+            None,  # 官方 PyPI
+            'https://pypi.tuna.tsinghua.edu.cn/simple',
+            'https://mirrors.aliyun.com/pypi/simple',
+            'https://pypi.doubanio.com/simple',
+        ]
+        for idx, mirror in enumerate(mirrors):
+            args = ['uv', 'pip', 'install', '--python', venv_python,
+                    '-r', requirements]
+            if mirror:
+                args += ['--index-url', mirror]
+            label = mirror or '官方 PyPI'
+            print(f'==> uv pip install [{idx + 1}/{len(mirrors)}] {label}')
+            try:
+                subprocess.check_call(args)
+                print(f'    成功（{label}）')
+                return 0
+            except subprocess.CalledProcessError as e:
+                print(f'    失败（returncode={e.returncode}），换源重试')
+        print('    全部镜像源失败')
+        return 1
+    else:
+        # fallback 走 pip_install_with_fallback.py（多镜像源 + PEP 668）
+        pip_script = os.path.join(_SCRIPTS_DIR, 'pip_install_with_fallback.py')
+        return subprocess.check_call(
+            [venv_python, pip_script, '-r', requirements])
+
+
 def _create_run_script(plat: str) -> str:
     """在仓库根创建启动脚本 run.bat / run.sh，返回脚本路径。
 
@@ -289,30 +345,28 @@ def cmd_install_source() -> int:
     if not _self_check():
         return 1
 
-    # 2. 建 venv
+    # 2. 建 venv（优先 uv，fallback 到 python -m venv）
     venv_dir = os.path.join(_PROJECT_DIR, '.venv')
     if os.path.exists(venv_dir) and os.path.exists(_venv_bin(plat, venv_dir, 'python')):
         print('\n==> 2. venv 已存在，复用')
     else:
         print('\n==> 2. 创建 venv（隔离依赖，不污染系统 Python）')
         try:
-            subprocess.check_call([sys.executable, '-m', 'venv', venv_dir])
+            _create_venv(plat, venv_dir)
         except subprocess.CalledProcessError as e:
             print(f'    venv 创建失败：{e}')
             return 1
 
-    # 3. 装依赖（走 pip_install_with_fallback，多镜像源 + PEP 668 兼容）
+    # 3. 装依赖（优先 uv pip，fallback 到 pip_install_with_fallback）
     print('\n==> 3. 安装 Python 依赖（pip 镜像源 fallback）')
     venv_python = _venv_bin(plat, venv_dir, 'python')
-    pip_script = os.path.join(_SCRIPTS_DIR, 'pip_install_with_fallback.py')
     requirements = os.path.join(_PROJECT_DIR, 'requirements.txt')
     try:
-        subprocess.check_call(
-            [venv_python, pip_script, '-r', requirements])
+        _install_deps(venv_python, requirements)
     except subprocess.CalledProcessError as e:
         print(f'    依赖安装失败：{e}')
         print('    请手动执行：')
-        print(f'    {venv_python} -m pip install -r requirements.txt')
+        print(f'    uv pip install --python {venv_python} -r requirements.txt')
         return 1
 
     # 4. 创建启动脚本
