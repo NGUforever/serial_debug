@@ -319,78 +319,103 @@ class QtSerialDebugApp:
         self._append_log('串口调试助手 (Qt) 就绪\n', tag='note')
         self._append_log('请选择端口并点击「连接」开始调试\n\n', tag='note')
 
-        # 底栏：卡片容器 + 分组分隔
+        # 底栏：卡片容器 + 流式布局（功能组按需换行）
+        # 同一功能组（命令/选项/筛选/落盘/清空）作为一个不可分割的
+        # QWidget，QFlowLayout 在一行排不下时整组换行，保证按钮
+        # 文字不被截断、同功能不被切到多行。
         bottom = QFrame()
         bottom.setProperty('card', True)
-        bl = QHBoxLayout(bottom)
-        bl.setContentsMargins(10, 8, 10, 8)
-        bl.setSpacing(8)
+        from PySide6.QtWidgets import QStyle
+        from .qt_flow_layout import QFlowLayout
+        bl = QFlowLayout(bottom, margin=10, h_spacing=12, v_spacing=6)
 
-        # 命令组：命令 + 发送
-        bl.addWidget(QLabel('命令:'))
+        # 组 1：命令 + 发送（命令输入框要装较多字符，给足 minimumWidth）
+        g1 = QWidget()
+        g1l = QHBoxLayout(g1)
+        g1l.setContentsMargins(0, 0, 0, 0)
+        g1l.setSpacing(6)
+        g1l.addWidget(QLabel('命令:'))
         self._cmd_edit = QLineEdit()
         self._cmd_edit.setPlaceholderText('输入命令，回车发送')
+        self._cmd_edit.setMinimumWidth(180)
         self._cmd_edit.returnPressed.connect(self._on_send_clicked)
-        bl.addWidget(self._cmd_edit, 2)
-
+        g1l.addWidget(self._cmd_edit, 1)
         btn_send = self._make_btn('发送', icon_std=QStyle.SP_ArrowRight,
                                   primary=True)
         btn_send.clicked.connect(self._on_send_clicked)
-        bl.addWidget(btn_send)
+        g1l.addWidget(btn_send)
+        bl.addWidget(g1)
 
         bl.addWidget(self._make_divider())
 
-        # 选项组：追加 CRLF / 自动滚动 / 时间戳
+        # 组 2：选项（CRLF / 自动滚动 / 时间戳）三个 checkbox 一起
+        g2 = QWidget()
+        g2l = QHBoxLayout(g2)
+        g2l.setContentsMargins(0, 0, 0, 0)
+        g2l.setSpacing(8)
         cb_crlf = QCheckBox('追加 CRLF')
         cb_crlf.setChecked(self.append_crlf)
         cb_crlf.stateChanged.connect(self._on_crlf_toggled)
-        bl.addWidget(cb_crlf)
-
+        g2l.addWidget(cb_crlf)
         cb_autoscroll = QCheckBox('自动滚动')
         cb_autoscroll.setChecked(self.auto_scroll)
         cb_autoscroll.stateChanged.connect(self._on_autoscroll_toggled)
-        bl.addWidget(cb_autoscroll)
-
+        g2l.addWidget(cb_autoscroll)
         cb_ts = QCheckBox('时间戳转换')
         cb_ts.setChecked(self.ts_convert)
         cb_ts.stateChanged.connect(self._on_ts_convert_toggled)
-        bl.addWidget(cb_ts)
+        g2l.addWidget(cb_ts)
+        bl.addWidget(g2)
 
         bl.addWidget(self._make_divider())
 
-        # 筛选组
-        bl.addWidget(QLabel('筛选:'))
+        # 组 3：筛选（输入框可能装多个关键字，给足 minimumWidth）
+        g3 = QWidget()
+        g3l = QHBoxLayout(g3)
+        g3l.setContentsMargins(0, 0, 0, 0)
+        g3l.setSpacing(6)
+        g3l.addWidget(QLabel('筛选:'))
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText('正则表达式')
         self._filter_edit.setText(self._filter_pattern)
-        self._filter_edit.setMinimumWidth(120)
+        self._filter_edit.setMinimumWidth(180)
         self._filter_edit.returnPressed.connect(self._on_filter_committed)
         self._filter_edit.editingFinished.connect(self._on_filter_committed)
-        bl.addWidget(self._filter_edit, 1)
+        g3l.addWidget(self._filter_edit, 1)
         self._filter_cb = QCheckBox('启用')
         self._filter_cb.setChecked(self._filter_enabled)
         self._filter_cb.stateChanged.connect(self._on_filter_enable_toggled)
-        bl.addWidget(self._filter_cb)
+        g3l.addWidget(self._filter_cb)
+        bl.addWidget(g3)
 
         bl.addWidget(self._make_divider())
 
-        # 落盘组
-        from PySide6.QtWidgets import QStyle
+        # 组 4：落盘 + 状态
+        g4 = QWidget()
+        g4l = QHBoxLayout(g4)
+        g4l.setContentsMargins(0, 0, 0, 0)
+        g4l.setSpacing(6)
         self._log_btn = self._make_btn('日志落盘…',
                                        icon_std=QStyle.SP_DialogSaveButton)
         self._log_btn.clicked.connect(self._on_log_btn_clicked)
-        bl.addWidget(self._log_btn)
+        g4l.addWidget(self._log_btn)
         self._log_status = QLabel('未落盘')
         self._log_status.setMinimumWidth(100)
-        bl.addWidget(self._log_status)
+        g4l.addWidget(self._log_status)
+        bl.addWidget(g4)
 
-        # 清空按钮（次要，靠右）
-        bl.addStretch(1)
-        from PySide6.QtWidgets import QStyle
+        bl.addWidget(self._make_divider())
+
+        # 组 5：清空（靠右独立）
+        g5 = QWidget()
+        g5l = QHBoxLayout(g5)
+        g5l.setContentsMargins(0, 0, 0, 0)
+        g5l.setSpacing(0)
         btn_clear = self._make_btn('清空',
                                    icon_std=QStyle.SP_DialogDiscardButton)
         btn_clear.clicked.connect(self._on_clear_clicked)
-        bl.addWidget(btn_clear)
+        g5l.addWidget(btn_clear)
+        bl.addWidget(g5)
 
         # 把底栏挂到主窗口下方
         left = QWidget()

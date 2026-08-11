@@ -74,6 +74,7 @@ class AtCmdPanelQt:
             QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
             QTableWidgetItem, QHeaderView, QFrame, QLabel, QSizePolicy,
         )
+        from .qt_flow_layout import QFlowLayout
 
         w = QFrame(parent)
         w.setProperty('panel', True)
@@ -86,59 +87,71 @@ class AtCmdPanelQt:
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(6)
 
-        # 工具栏
-        bar = QHBoxLayout()
-        bar.setContentsMargins(0, 0, 0, 0)
-        bar.setSpacing(4)
+        # 顶部按钮区：流式布局，窗口够宽时一行，不够时自动分两行
+        # 把按钮按功能分组，组内不可分割，组间由 QFlowLayout 决定换行。
+        bar = QFlowLayout(margin=0, h_spacing=8, v_spacing=6)
 
+        # 组 1：导入/导出 JSON
+        g_io = QWidget()
+        g_io_l = QHBoxLayout(g_io)
+        g_io_l.setContentsMargins(0, 0, 0, 0)
+        g_io_l.setSpacing(4)
         def _import_json():
             self._import_json(parent=w)
         btn = QPushButton('导入 JSON')
         btn.clicked.connect(_import_json)
-        bar.addWidget(btn)
-
+        g_io_l.addWidget(btn)
         def _export_json():
             self._export_json(parent=w)
         btn = QPushButton('导出 JSON')
         btn.clicked.connect(_export_json)
-        bar.addWidget(btn)
+        g_io_l.addWidget(btn)
+        bar.addWidget(g_io)
 
-        bar.addSpacing(8)
-
+        # 组 2：增删
+        g_ed = QWidget()
+        g_ed_l = QHBoxLayout(g_ed)
+        g_ed_l.setContentsMargins(0, 0, 0, 0)
+        g_ed_l.setSpacing(4)
         btn = QPushButton('添加')
         btn.clicked.connect(self._add_row)
-        bar.addWidget(btn)
-
+        g_ed_l.addWidget(btn)
         btn = QPushButton('删除选中')
         btn.clicked.connect(self._delete_selected)
-        bar.addWidget(btn)
-
+        g_ed_l.addWidget(btn)
         btn = QPushButton('清空')
         btn.clicked.connect(self._clear_all)
-        bar.addWidget(btn)
+        g_ed_l.addWidget(btn)
+        bar.addWidget(g_ed)
 
-        bar.addSpacing(8)
-
+        # 组 3：批量执行 + 停止 + 状态
+        g_batch = QWidget()
+        g_batch_l = QHBoxLayout(g_batch)
+        g_batch_l.setContentsMargins(0, 0, 0, 0)
+        g_batch_l.setSpacing(4)
         self._batch_btn = QPushButton('批量执行')
         self._batch_btn.setProperty('primary', True)
         self._batch_btn.clicked.connect(self._start_batch)
-        bar.addWidget(self._batch_btn)
-
+        g_batch_l.addWidget(self._batch_btn)
         self._stop_btn = QPushButton('停止')
         self._stop_btn.clicked.connect(self._stop_batch)
         self._stop_btn.setEnabled(False)
-        bar.addWidget(self._stop_btn)
-
+        g_batch_l.addWidget(self._stop_btn)
         self._batch_status = QLabel('空闲')
         self._batch_status.setMinimumWidth(120)
-        bar.addWidget(self._batch_status)
+        g_batch_l.addWidget(self._batch_status)
+        bar.addWidget(g_batch)
 
-        bar.addStretch(1)
-
+        # 组 4：关闭（嵌入式时按配置显示）
         if self._show_close_btn:
+            g_close = QWidget()
+            g_close_l = QHBoxLayout(g_close)
+            g_close_l.setContentsMargins(0, 0, 0, 0)
+            g_close_l.setSpacing(0)
             btn_close = QPushButton('关闭')
             btn_close.clicked.connect(self._on_close_clicked)
-            bar.addWidget(btn_close)
+            g_close_l.addWidget(btn_close)
+            bar.addWidget(g_close)
 
         v.addLayout(bar)
 
