@@ -68,7 +68,7 @@
   {
     "cmd": "AT+EHALL?%",
     "desc": "读取霍尔状态",
-    "seq": 0,
+    "seq": 1,
     "period_ms": 5
   },
   {
@@ -78,13 +78,13 @@
     "period_ms": 10
   },
   {
-    "cmd": "AT+ERESET=1%",
+    "cmd": "AT+ERESET%",
     "desc": "ECU重启",
     "seq": 0,
     "period_ms": 0
   },
   {
-    "cmd": "AT+EDIS=1,1,1,1,7,2%",
+    "cmd": "AT+EDIS=1,1,1,1,7,7%",
     "desc": "ECU指示灯控制",
     "seq": 0,
     "period_ms": 0
@@ -110,6 +110,36 @@
   {
     "cmd": "AT+VMPARA=1,?%",
     "desc": "查询当前ID",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EIMUSTATE=1%",
+    "desc": "读取IMU状态",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+ESIGN?%",
+    "desc": "读取工厂信息",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EBAT?%",
+    "desc": "读取电池状态",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+ECPUID?%",
+    "desc": "读取CPUID",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "",
+    "desc": "",
     "seq": 0,
     "period_ms": 0
   }
