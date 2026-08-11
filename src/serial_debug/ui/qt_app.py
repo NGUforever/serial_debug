@@ -333,14 +333,8 @@ class QtSerialDebugApp:
         self._cmd_edit.returnPressed.connect(self._on_send_clicked)
         bl.addWidget(self._cmd_edit, 2)
 
-        btn_send = QPushButton('发送')
-        btn_send.setProperty('primary', True)
-        try:
-            from PySide6.QtWidgets import QStyle
-            btn_send.setIcon(win.style().standardIcon(
-                QStyle.SP_ArrowRight))
-        except Exception:
-            pass
+        btn_send = self._make_btn('发送', icon_std=QStyle.SP_ArrowRight,
+                                  primary=True)
         btn_send.clicked.connect(self._on_send_clicked)
         bl.addWidget(btn_send)
 
@@ -381,13 +375,9 @@ class QtSerialDebugApp:
         bl.addWidget(self._make_divider())
 
         # 落盘组
-        self._log_btn = QPushButton('日志落盘…')
-        try:
-            from PySide6.QtWidgets import QStyle
-            self._log_btn.setIcon(win.style().standardIcon(
-                QStyle.SP_DialogSaveButton))
-        except Exception:
-            pass
+        from PySide6.QtWidgets import QStyle
+        self._log_btn = self._make_btn('日志落盘…',
+                                       icon_std=QStyle.SP_DialogSaveButton)
         self._log_btn.clicked.connect(self._on_log_btn_clicked)
         bl.addWidget(self._log_btn)
         self._log_status = QLabel('未落盘')
@@ -396,13 +386,9 @@ class QtSerialDebugApp:
 
         # 清空按钮（次要，靠右）
         bl.addStretch(1)
-        btn_clear = QPushButton('清空')
-        try:
-            from PySide6.QtWidgets import QStyle
-            btn_clear.setIcon(win.style().standardIcon(
-                QStyle.SP_DialogDiscardButton))
-        except Exception:
-            pass
+        from PySide6.QtWidgets import QStyle
+        btn_clear = self._make_btn('清空',
+                                   icon_std=QStyle.SP_DialogDiscardButton)
         btn_clear.clicked.connect(self._on_clear_clicked)
         bl.addWidget(btn_clear)
 
@@ -417,6 +403,9 @@ class QtSerialDebugApp:
         # 主 Splitter：左侧日志 + 右侧 AT 面板（嵌入时）
         from PySide6.QtWidgets import QSplitter
         self._main_splitter = QSplitter()
+        # 禁止折叠到 0：拖动时子窗口至少保留 minimumWidth，
+        # 避免 QTableWidget 动态 minimumSizeHint 导致宽度跳变。
+        self._main_splitter.setChildrenCollapsible(False)
         self._main_splitter.addWidget(left)
         win.setCentralWidget(self._main_splitter)
 
@@ -563,6 +552,32 @@ class QtSerialDebugApp:
         line.setProperty('divider', True)
         line.setFixedWidth(1)
         return line
+
+    def _make_btn(self, text, icon_std=None, primary=False):
+        """创建带 minimumWidth 的 QPushButton。
+
+        底栏空间不够时 layout 会压缩 widget 到 minimumSizeHint，
+        QPushButton 默认 minimumSizeHint 不含完整文字宽度，会被截断。
+        这里按 文字宽度 + 图标宽度 + padding 算出 minimumWidth，
+        让 layout 优先压缩 stretch=1 的 QLineEdit 而不是按钮。
+        """
+        from PySide6.QtWidgets import QPushButton, QStyle, QApplication
+        btn = QPushButton(text)
+        if primary:
+            btn.setProperty('primary', True)
+        if icon_std is not None:
+            try:
+                style = (self._win.style() if self._win
+                         else QApplication.style())
+                btn.setIcon(style.standardIcon(icon_std))
+            except Exception:
+                pass
+        fm = btn.fontMetrics()
+        text_w = fm.horizontalAdvance(text)
+        icon_w = 22 if icon_std is not None else 0
+        # padding：按钮左右内边距 + 留一点呼吸空间
+        btn.setMinimumWidth(text_w + icon_w + 24)
+        return btn
 
     # ---- 串口连接 -----------------------------------------------------
     def _do_connect(self):

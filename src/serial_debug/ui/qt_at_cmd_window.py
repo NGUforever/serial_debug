@@ -72,11 +72,16 @@ class AtCmdPanelQt:
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
             QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-            QTableWidgetItem, QHeaderView, QFrame, QLabel,
+            QTableWidgetItem, QHeaderView, QFrame, QLabel, QSizePolicy,
         )
 
         w = QFrame(parent)
         w.setProperty('panel', True)
+        # 给面板一个稳定的 minimumWidth，防止 QSplitter 拖动时因
+        # QTableWidget 的 minimumSizeHint 动态变化（ResizeToContents
+        # 列随内容变）导致宽度跳变。
+        w.setMinimumWidth(360)
+        w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         v = QVBoxLayout(w)
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(6)
