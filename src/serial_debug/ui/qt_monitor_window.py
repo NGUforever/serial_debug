@@ -1880,20 +1880,21 @@ class QtMonitorWindow:
 
     @staticmethod
     def _curve_color(item) -> str:
-        """从 PlotDataItem 的 pen 取颜色，失败回退灰色。"""
+        """从 PlotDataItem 取颜色 hex 字符串，失败回退灰色。
+
+        颜色在 _refresh_plot 创建曲线时存到 item._legend_color（pen
+        反推不可靠：QPen.color() 是方法不是属性，getattr 行为容易错）。
+        """
         try:
+            c = getattr(item, '_legend_color', None)
+            if isinstance(c, str) and c:
+                return c
+            # 兜底：尝试从 pen.color() 取（部分 pyqtgraph 版本有效）
             pen = item.opts.get('pen') if hasattr(item, 'opts') else None
-            if pen is None:
-                return '#888888'
-            c = getattr(pen, 'color', None)
-            if c is None:
-                # pyqtgraph mkPen 返回 QPen，color() 方法
-                if hasattr(pen, 'color'):
-                    c = pen.color()
-                else:
-                    return '#888888'
-            if hasattr(c, 'name'):
-                return c.name()
+            if pen is not None and hasattr(pen, 'color'):
+                qc = pen.color()
+                if hasattr(qc, 'name'):
+                    return qc.name()
             return '#888888'
         except Exception:
             return '#888888'
@@ -2053,6 +2054,8 @@ class QtMonitorWindow:
                                    pen=pg.mkPen(color, width=1.5),
                                    name=label)
                     curves[name] = item
+                # 记录颜色字符串供图例使用（pen 反推不可靠）
+                item._legend_color = color
             pw.enableAutoRange()
             # 顶部条图例刷新（标题 + 颜色块 + 中文 label，同一行）
             if plot_idx < len(self._plot_headers):
@@ -2326,6 +2329,7 @@ class QtMonitorWindow:
                 item = pw.plot(xs, ys, pen=pg.mkPen(color, width=1.5),
                                name=label)
                 curves[name] = item
+            curves[name]._legend_color = color
         pw.enableAutoRange()
         # 顶部条图例刷新
         if header is not None:
