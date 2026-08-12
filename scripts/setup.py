@@ -213,13 +213,19 @@ def cmd_verify() -> int:
             env=env)
 
     smoke_test = os.path.join(_SCRIPTS_DIR, 'smoke_test.py')
+    # docker 内挂载到 /work，用相对路径（绝对路径在容器内不存在）
+    smoke_test_in_docker = 'scripts/smoke_test.py'
     cmd = (
         'apt-get update -qq > /dev/null 2>&1 && '
-        'apt-get install -y -qq python3 python3-pip python3-tk tk-dev binutils > /dev/null 2>&1 && '
+        'apt-get install -y -qq python3 python3-pip python3-tk tk-dev binutils '
+        'libglib2.0-0 libfreetype6 libxkbcommon0 libxkbcommon-x11-0 '
+        'libxcb-xinerama0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 '
+        'libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 '
+        'libxcb-xkb1 libgl1 libegl1 libdbus-1-3 fontconfig > /dev/null 2>&1 && '
         'pip3 install --quiet --break-system-packages '
-        'PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 || '
-        'pip3 install --quiet PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 && '
-        f'cd /work && QT_QPA_PLATFORM=offscreen PYTHONPATH=src python3 {smoke_test}'
+        'pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 || '
+        'pip3 install --quiet pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 && '
+        f'cd /work && QT_QPA_PLATFORM=offscreen PYTHONPATH=src python3 {smoke_test_in_docker}'
     )
     print('==> docker 跑 offscreen smoke test...')
     try:

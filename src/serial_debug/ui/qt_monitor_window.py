@@ -447,6 +447,7 @@ class QtMonitorWindow:
         # UI：PlotWidget 列表 + 每个对应的 curves dict（name -> PlotDataItem）
         self._plot_widgets: list = []
         self._curves: list[dict] = []
+        self._plot_headers: list = []  # 每个 plot 的顶部条（title + legend）
         self._plots_layout = None
         # 嵌套 splitter（每行一个 h_splitter，外层 v_splitter），用户拖动
         # 分隔条可调节每个 PlotWidget 的宽高，默认等分（视觉同 QGridLayout）
@@ -1682,6 +1683,7 @@ class QtMonitorWindow:
                 w.deleteLater()
         self._plot_widgets = []
         self._curves = []
+        self._plot_headers = []
 
         n = len(self._plots)
         if n == 0:
@@ -1714,30 +1716,187 @@ class QtMonitorWindow:
                 if idx >= n:
                     break
                 p = self._plots[idx]
-                pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
-                pw.showGrid(x=True, y=True, alpha=0.2)
-                pw.setLabel('left', p.get('y_label', '值'))
-                pw.setLabel('bottom', '时间')
-                pw.setTitle(p.get('title', '数据曲线'))
-                pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
-                for axis_name in ('left', 'bottom'):
-                    axis = pw.getAxis(axis_name)
-                    if axis is not None:
-                        axis.setPen(t.get('muted', '#cccccc'))
-                        axis.setTextPen(t.get('fg', '#cccccc'))
-                # 最小宽高兜底（用户拖动分隔条时不能拖到更小）
-                pw.setMinimumHeight(120)
-                pw.setMinimumWidth(150)
-                sp = pw.sizePolicy()
-                sp.setVerticalPolicy(QSizePolicy.Expanding)
-                sp.setHorizontalPolicy(QSizePolicy.Expanding)
-                pw.setSizePolicy(sp)
+                container, pw, header = self._make_plot_widget(p, t)
                 self._plot_widgets.append(pw)
                 self._curves.append({})
-                h_splitter.addWidget(pw)
+                self._plot_headers.append(header)
+                h_splitter.addWidget(container)
             v_splitter.addWidget(h_splitter)
 
         layout.addWidget(v_splitter)
+
+    # ---- plot 容器构建（顶部标题+图例条 + PlotWidget）---------------
+    def _make_plot_widget(self, p: dict, t: dict):
+        """创建 plot 容器：顶部标题+图例条（同一行）+ PlotWidget。
+
+        返回 (container, plot_widget, header)。header 存 title_label /
+        legend_box / legend_flow / legend_items 引用，便于刷新。
+        """
+        import pyqtgraph as pg
+        from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout,
+                                       QLabel, QSizePolicy)
+        from PySide6.QtGui import QFont
+        from PySide6.QtCore import Qt
+        from serial_debug.ui.qt_flow_layout import QFlowLayout
+
+        pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
+        pw.showGrid(x=True, y=True, alpha=0.2)
+        pw.setLabel('left', p.get('y_label', '值'))
+        pw.setLabel('bottom', '时间')
+        pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
+        for axis_name in ('left', 'bottom'):
+            axis = pw.getAxis(axis_name)
+            if axis is not None:
+                axis.setPen(t.get('muted', '#cccccc'))
+                axis.setTextPen(t.get('fg', '#cccccc'))
+        pw.setMinimumHeight(120)
+        pw.setMinimumWidth(150)
+        sp = pw.sizePolicy()
+        sp.setVerticalPolicy(QSizePolicy.Expanding)
+        sp.setHorizontalPolicy(QSizePolicy.Expanding)
+        pw.setSizePolicy(sp)
+
+        header_frame = QFrame()
+        header_frame.setObjectName('plotHeader')
+        header_frame.setStyleSheet(
+            f"background-color: {t.get('panel_bg', t.get('bg', '#1e1e1e'))};"
+            f"border-bottom: 1px solid {t.get('muted', '#3a3a3a')};")
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(10, 4, 10, 4)
+        header_layout.setSpacing(10)
+
+        title_label = QLabel(p.get('title', '数据曲线'))
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(int(p.get('legend_font_size', 9)) + 1)
+        title_label.setFont(title_font)
+        title_label.setStyleSheet(f"color: {t.get('fg', '#cccccc')};"
+                                  "background: transparent; border: none;")
+        header_layout.addWidget(title_label)
+
+        legend_box = QFrame()
+        legend_box.setObjectName('plotLegendBox')
+        legend_box.setStyleSheet("background: transparent; border: none;")
+        legend_flow = QFlowLayout()
+        legend_flow.setContentsMargins(0, 0, 0, 0)
+        legend_flow.setSpacing(8)
+        legend_box.setLayout(legend_flow)
+        header_layout.addWidget(legend_box, 1)
+
+        container = QFrame()
+        container.setObjectName('plotContainer')
+        container.setStyleSheet(
+            f"background-color: {t.get('panel_bg', t.get('bg', '#1e1e1e'))};"
+            "border: none;")
+        cv = QVBoxLayout(container)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
+        cv.addWidget(header_frame)
+        cv.addWidget(pw, 1)
+
+        header = {
+            'frame': header_frame,
+            'title_label': title_label,
+            'legend_box': legend_box,
+            'legend_flow': legend_flow,
+            'legend_items': {},  # name -> (square_label, text_label)
+        }
+        return container, pw, header
+
+    def _refresh_header_legend(self, header, curves: dict, p: dict):
+        """刷新顶部条：标题文本 + 重建图例项（color square + label）。
+
+        legend_pos == 'hidden' 时隐藏整个图例条。其他值（top-left /
+        top-right 等）在重构后统一放标题右侧同一行，位置参数被忽略。
+        """
+        if header is None:
+            return
+        title = p.get('title', '数据曲线')
+        if header['title_label'].text() != title:
+            header['title_label'].setText(title)
+        legend_pos = p.get('legend_pos', 'top-right')
+        if legend_pos == 'hidden':
+            header['legend_box'].setVisible(False)
+            return
+        header['legend_box'].setVisible(True)
+        font_size = int(p.get('legend_font_size', 9))
+        from serial_debug.ui import qt_theme
+        from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+        t = qt_theme.palette(self.theme_name)
+        # 移除不再存在的曲线对应的图例项
+        current = set(curves.keys())
+        existing = set(header['legend_items'].keys())
+        for name in list(existing - current):
+            chip = header['legend_items'].pop(name)
+            try:
+                header['legend_flow'].removeWidget(chip)
+                chip.setParent(None)
+                chip.deleteLater()
+            except Exception:
+                pass
+        # 添加新的 / 更新已有的（色块 + 文字作为一个整体，避免换行拆开）
+        for name, item in curves.items():
+            color = self._curve_color(item)
+            meta = self._var_meta.get(name, {})
+            label = meta.get('label') or name
+            if name in header['legend_items']:
+                chip = header['legend_items'][name]
+                sq = chip.findChild(QLabel)
+                if sq is not None:
+                    sq.setStyleSheet(
+                        f"background-color: {color};"
+                        f"border: 1px solid {t.get('muted', '#888888')};")
+                # 更新文字（chip 内第二个 QLabel）
+                labels = chip.findChildren(QLabel)
+                if len(labels) >= 2 and labels[1].text() != label:
+                    labels[1].setText(label)
+                try:
+                    font = labels[1].font() if len(labels) >= 2 else None
+                    if font is not None:
+                        font.setPointSize(font_size)
+                        labels[1].setFont(font)
+                except Exception:
+                    pass
+            else:
+                chip = QWidget()
+                chip.setStyleSheet("background: transparent; border: none;")
+                cl = QHBoxLayout(chip)
+                cl.setContentsMargins(0, 0, 0, 0)
+                cl.setSpacing(4)
+                sq = QLabel()
+                sq.setFixedSize(12, 12)
+                sq.setStyleSheet(
+                    f"background-color: {color};"
+                    f"border: 1px solid {t.get('muted', '#888888')};")
+                txt = QLabel(label)
+                txt.setStyleSheet(
+                    f"color: {t.get('fg', '#cccccc')};"
+                    f"font-size: {font_size}pt;"
+                    "background: transparent; border: none;")
+                cl.addWidget(sq)
+                cl.addWidget(txt)
+                header['legend_flow'].addWidget(chip)
+                header['legend_items'][name] = chip
+
+    @staticmethod
+    def _curve_color(item) -> str:
+        """从 PlotDataItem 的 pen 取颜色，失败回退灰色。"""
+        try:
+            pen = item.opts.get('pen') if hasattr(item, 'opts') else None
+            if pen is None:
+                return '#888888'
+            c = getattr(pen, 'color', None)
+            if c is None:
+                # pyqtgraph mkPen 返回 QPen，color() 方法
+                if hasattr(pen, 'color'):
+                    c = pen.color()
+                else:
+                    return '#888888'
+            if hasattr(c, 'name'):
+                return c.name()
+            return '#888888'
+        except Exception:
+            return '#888888'
 
     # ---- 实时串口 feed ----------------------------------------------
     def start_serial(self, port: str, baudrate: int = 921600):
@@ -1864,42 +2023,6 @@ class QtMonitorWindow:
                     except Exception:
                         pass
                     del curves[name]
-            # 图例：必须在曲线创建之前添加，pyqtgraph 才会自动把曲线加入图例
-            # pyqtgraph 0.14 起 PlotWidget 不直接暴露 .legend，用 try/except 兼容
-            legend_pos = p.get('legend_pos', 'top-right')
-            if legend_pos != 'hidden':
-                try:
-                    legend = getattr(pw, 'legend', None) or getattr(
-                        getattr(pw, 'plotItem', None), 'legend', None)
-                    if legend is None:
-                        pw.addLegend(offset=self._legend_offset(legend_pos))
-                        legend = getattr(pw, 'legend', None) or getattr(
-                            getattr(pw, 'plotItem', None), 'legend', None)
-                except Exception:
-                    try:
-                        pw.addLegend(offset=self._legend_offset(legend_pos))
-                        legend = getattr(pw, 'legend', None) or getattr(
-                            getattr(pw, 'plotItem', None), 'legend', None)
-                    except Exception:
-                        legend = None
-                # 字号 + 自动避让（曲线绘制后再做避让，因为需要曲线数据）
-                if legend is not None:
-                    try:
-                        legend.setLabelTextSize(f'{int(p.get("legend_font_size", 9))}pt')
-                    except Exception:
-                        pass
-                    pw._legend_obj = legend
-                    pw._legend_auto_avoid = bool(p.get('legend_auto_avoid', True))
-                    pw._legend_pos = legend_pos
-            else:
-                try:
-                    leg = getattr(pw, 'legend', None) or getattr(
-                        getattr(pw, 'plotItem', None), 'legend', None)
-                    if leg is not None:
-                        pw.removeItem(leg)
-                except Exception:
-                    pass
-                pw._legend_obj = None
             # 创建/更新曲线
             for name in vars_to_show:
                 if name not in self._data:
@@ -1931,9 +2054,9 @@ class QtMonitorWindow:
                                    name=label)
                     curves[name] = item
             pw.enableAutoRange()
-            # 图例自动避让：曲线绘制完后检测图例是否覆盖曲线密集区
-            if getattr(pw, '_legend_auto_avoid', False):
-                self._auto_avoid_legend(pw, curves)
+            # 顶部条图例刷新（标题 + 颜色块 + 中文 label，同一行）
+            if plot_idx < len(self._plot_headers):
+                self._refresh_header_legend(self._plot_headers[plot_idx], curves, p)
             # 在曲线上标注 max/min/avg/last
             self._draw_stat_markers(pw, curves, p)
             # 悬停提示：延迟绑定（只绑一次）
@@ -2127,7 +2250,7 @@ class QtMonitorWindow:
         if idx is None:
             idx = 0
         # 已弹出的同 plot 复用
-        for pi, dlg, pw, _ in self._popout_dialogs:
+        for pi, dlg, pw, _, _ in self._popout_dialogs:
             if pi == idx and dlg.isVisible():
                 dlg.raise_()
                 dlg.activateWindow()
@@ -2138,29 +2261,19 @@ class QtMonitorWindow:
         dlg.resize(900, 560)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(0, 0, 0, 0)
-        pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
-        pw.showGrid(x=True, y=True, alpha=0.2)
-        pw.setLabel('left', p.get('y_label', '值'))
-        pw.setLabel('bottom', '时间')
-        pw.setTitle(p.get('title', '数据曲线'))
-        pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
-        for axis_name in ('left', 'bottom'):
-            axis = pw.getAxis(axis_name)
-            if axis is not None:
-                axis.setPen(t.get('muted', '#cccccc'))
-                axis.setTextPen(t.get('fg', '#cccccc'))
-        v.addWidget(pw)
+        container, pw, header = self._make_plot_widget(p, t)
+        v.addWidget(container)
         curves: dict = {}
-        self._popout_dialogs.append((idx, dlg, pw, curves))
+        self._popout_dialogs.append((idx, dlg, pw, curves, header))
         dlg.show()
         # 立即画一次
-        self._draw_popout(idx, dlg, pw, curves)
+        self._draw_popout(idx, dlg, pw, curves, header)
         # 关闭时清理
         dlg.finished.connect(lambda *_: self._close_popout(idx, dlg))
 
     def _close_popout(self, plot_idx, dlg):
         """关闭 popout 窗口时从列表移除。"""
-        for i, (pi, d, pw, _) in enumerate(self._popout_dialogs):
+        for i, (pi, d, pw, _, header) in enumerate(self._popout_dialogs):
             if pi == plot_idx and d is dlg:
                 try:
                     pw.setParent(None)
@@ -2170,7 +2283,7 @@ class QtMonitorWindow:
                 self._popout_dialogs.pop(i)
                 break
 
-    def _draw_popout(self, plot_idx, dlg, pw, curves):
+    def _draw_popout(self, plot_idx, dlg, pw, curves, header=None):
         """在 popout PlotWidget 上画一遍 plot_idx 的曲线。"""
         if plot_idx >= len(self._plots):
             return
@@ -2189,30 +2302,6 @@ class QtMonitorWindow:
                 except Exception:
                     pass
                 del curves[name]
-        # 图例（用 try/except 兼容不同 pyqtgraph 版本对 .legend 的访问差异）
-        legend_pos = p.get('legend_pos', 'top-right')
-        legend_obj = None
-        if legend_pos != 'hidden':
-            try:
-                legend = getattr(pw, 'legend', None) or getattr(
-                    getattr(pw, 'plotItem', None), 'legend', None)
-                if legend is None:
-                    pw.addLegend(offset=self._legend_offset(legend_pos))
-                    legend = getattr(pw, 'legend', None) or getattr(
-                        getattr(pw, 'plotItem', None), 'legend', None)
-                legend_obj = legend
-            except Exception:
-                try:
-                    pw.addLegend(offset=self._legend_offset(legend_pos))
-                    legend_obj = getattr(pw, 'legend', None) or getattr(
-                        getattr(pw, 'plotItem', None), 'legend', None)
-                except Exception:
-                    pass
-            if legend_obj is not None:
-                try:
-                    legend_obj.setLabelTextSize(f'{int(p.get("legend_font_size", 9))}pt')
-                except Exception:
-                    pass
         # 创建/更新曲线
         for name in vars_to_show:
             if name not in self._data:
@@ -2238,20 +2327,19 @@ class QtMonitorWindow:
                                name=label)
                 curves[name] = item
         pw.enableAutoRange()
-        # 图例自动避让
-        if legend_obj is not None and p.get('legend_auto_avoid', True):
-            pw._legend_obj = legend_obj
-            self._auto_avoid_legend(pw, curves)
+        # 顶部条图例刷新
+        if header is not None:
+            self._refresh_header_legend(header, curves, p)
         # 在曲线上标注 max/min/avg/last
         self._draw_stat_markers(pw, curves, p)
 
     def _refresh_popouts(self):
         """同步刷新所有 popout 窗口的曲线（_refresh_plot 末尾调）。"""
-        for pi, dlg, pw, curves in list(self._popout_dialogs):
+        for pi, dlg, pw, curves, header in list(self._popout_dialogs):
             if not dlg.isVisible():
                 continue
             try:
-                self._draw_popout(pi, dlg, pw, curves)
+                self._draw_popout(pi, dlg, pw, curves, header)
             except Exception:
                 pass
 
