@@ -91,7 +91,10 @@ class _LineNumberArea(QWidget):
         return QSize(self._editor.line_number_area_width(), 0)
 
     def paintEvent(self, event):
-        painter = QPainter(event.rect())
+        # QPainter(self) 才能绑到 _LineNumberArea 这个 QWidget 上画
+        # 之前误写 QPainter(event.rect()) → PySide6 6.11 直接抛 TypeError
+        # 导致行号区从来没画过 → 左侧出现一列空白
+        painter = QPainter(self)
         t = self._editor._theme
         painter.fillRect(event.rect(), QColor(t.get('bg', '#1e1e1e')))
         painter.setPen(QColor(t.get('muted', '#858585')))
