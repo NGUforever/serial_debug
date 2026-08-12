@@ -396,8 +396,10 @@ class _QtLogViewTab(QWidget):
         # 末尾占位符（如果还有未加载）
         if end < len(self._all_lines):
             placeholder_text = f'--- 还有 {len(self._all_lines) - end} 行未加载，滚到底部自动加载 ---'
-            cursor.insertText(placeholder_text + '\n')
-            # 标记占位块
+            # 不加 '\n'：避免 lastBlock() 返回 '\n' 创建的空尾块，导致
+            # setUserData 设到空块上、_delete_trailing_placeholder 删不掉
+            # 真正的占位文本，残留行让 findBlockByNumber 后续全部偏移 +1
+            cursor.insertText(placeholder_text)
             cur_block = self._editor.document().lastBlock()
             cur_block.setUserData(_PlaceholderData())
             self._placeholder_block = cur_block.blockNumber()
@@ -431,6 +433,9 @@ class _QtLogViewTab(QWidget):
         cursor.removeSelectedText()
         # 删尾部换行
         cursor.deleteChar()
+        # 清掉 stale userData：占位文本已删，块可能被后续 insertText 复用，
+        # 不清的话 _delete_trailing_placeholder 兜底扫描会误删新内容
+        block.setUserData(None)
         self._placeholder_block = -1
 
     # ---- 滚动 + 加载更多 ---------------------------------------------
