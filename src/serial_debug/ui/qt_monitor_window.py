@@ -53,6 +53,57 @@ def _build_var_registry():
 _ALL_VARS = _build_var_registry()
 
 
+# ---- 自定义解析器状态（用户在"解析器配置"对话框贴 Python 代码）---------
+_CUSTOM_PARSER_STATE = {
+    'mode': 'built-in',   # built-in / custom / both
+    'code': '',           # 用户原始 Python 源码（用于 dialog 回填 + 持久化）
+    'sample_log': '',     # 用户贴的样本日志（dialog 回填 + 持久化）
+    'source_code': '',    # 设备源码（C/C++/Python/Java/Rust/JS）用于自动推导
+    'source_language': 'auto',  # auto / c / cpp / python / java / rust / html / js
+    'func': None,         # exec 后的 parse_line(line) 函数（运行时用，不持久化）
+    'discovered_vars': [],
+    'validation': {       # 加载/连串口时格式校验配置
+        'enabled': True,
+        'min_parsed_count': 10,
+        'sample_lines': 200,
+    },
+}
+
+# 内置解析器模板（dialog 首次打开时预填）
+_PARSER_TEMPLATE_CODE = """\
+# 解析一行日志，yield (ts, name, value) 三元组
+# ts: float 秒（毫秒时间戳 / 1000）
+# name: 变量名（字符串，建议带前缀如 motor.rpm）
+# value: float
+# 无匹配行可不 yield 或 return None
+#
+# 本模板示例：解析 motor 3wd1t_1 行的 rpm / vbus 字段
+def parse_line(line):
+    if '3wd1t_1' not in line:
+        return  # 非目标行
+    # 提取时间戳（毫秒 → 秒）
+    ts_part = line.split()[0]
+    try:
+        ts = int(ts_part) / 1000.0
+    except ValueError:
+        return
+    # 按 | 切组、# 切子组
+    try:
+        main = line.split('model ')[1]
+    except IndexError:
+        return
+    blocks = []
+    for blk_str in main.split('|'):
+        blocks.append([g.split() for g in blk_str.split('#')])
+    # 从 blocks 取值（block_idx=0, group_idx=0, pos=0/1）
+    try:
+        yield ts, 'motor.rpm', float(blocks[0][0][0])
+        yield ts, 'motor.vbus', float(blocks[0][0][1])
+    except (IndexError, ValueError):
+        pass
+"""
+
+
 def _pick_value(blocks, v: dict):
     """从 blocks 中按 block_idx / group_idx / pos_in_group 取一个值。"""
     try:
@@ -66,22 +117,12 @@ def _pick_value(blocks, v: dict):
     return None
 
 
-def _iter_panel_vars(line: str, ts_fallback: float | None = None):
-    """从一行日志中提取所有 Panel 的 (var_name, value)。
+def _iter_builtin_panel_vars(line: str, ts: float):
+    """内置解析器：motor (3wd1t / STD_DEBUG) + BMS / BAT + IMU。
 
-    motor / bms / imu 三类 Panel 各自调 _parse_tagged_line + DEFAULT_VARS
-    取值。变量名加 Panel 前缀避免冲突（motor. / bms. / imu.）。
-
-    :param ts_fallback: 行内提取不到时间戳时用此值。实时串口 feed 的
-        设备原始行（如 ``783587 I model ...`` 只有 6 位、``OK,0%`` 无时间戳）
-        提取不到 ts，若不传 fallback 会直接 return 不 yield，曲线不生成。
-        日志回放路径不传 fallback（行内必有时间戳，缺失说明格式异常）。
+    从 `monitor_window.py` 的三个 Panel 类调 `_parse_tagged_line` +
+    `DEFAULT_VARS` 取值，加 `motor.` / `bms.` / `imu.` 前缀 yield。
     """
-    ts = _extract_log_ts(line)
-    if ts is None:
-        if ts_fallback is None:
-            return
-        ts = ts_fallback
     # motor: 3wd1t_1 / 3wd1t_2 / Lxx_STD_DEBUG
     for tag in ('3wd1t_1', '3wd1t_2'):
         blocks = MotorMonitorPanel._parse_tagged_line(line, tag)
@@ -126,12 +167,55 @@ def _iter_panel_vars(line: str, ts_fallback: float | None = None):
                 yield ts, f'imu.{v["name"]}', val
 
 
+def _iter_panel_vars(line: str, ts_fallback: float | None = None):
+    """从一行日志中提取所有 (ts, name, value) 三元组。
+
+    按 `_CUSTOM_PARSER_STATE['mode']` 分发：
+      - ``built-in``：仅内置 motor/BMS/IMU 解析器
+      - ``custom``：仅用户自定义 `parse_line(line)` 函数
+      - ``both``：两者都跑，yield 项取并集（同 name 重复时取最后一次）
+
+    :param ts_fallback: 行内提取不到时间戳时用此值。实时串口 feed 的
+        设备原始行（如 ``783587 I model ...`` 只有 6 位、``OK,0%`` 无时间戳）
+        提取不到 ts，若不传 fallback 会直接 return 不 yield，曲线不生成。
+        日志回放路径不传 fallback（行内必有时间戳，缺失说明格式异常）。
+    """
+    ts = _extract_log_ts(line)
+    if ts is None:
+        if ts_fallback is None:
+            return
+        ts = ts_fallback
+
+    mode = _CUSTOM_PARSER_STATE.get('mode', 'built-in')
+    seen_names: dict[str, tuple] = {}  # name -> (ts, name, val)（dedup 用）
+
+    if mode in ('built-in', 'both'):
+        for item in _iter_builtin_panel_vars(line, ts):
+            if len(item) == 3:
+                seen_names[item[1]] = tuple(item)
+    if mode in ('custom', 'both') and _CUSTOM_PARSER_STATE.get('func') is not None:
+        try:
+            result = _CUSTOM_PARSER_STATE['func'](line)
+            if result is not None:
+                for item in result:
+                    if item and len(item) == 3:
+                        seen_names[item[1]] = tuple(item)
+        except Exception:
+            pass  # 解析器异常吞掉，不让一行坏数据拖崩
+
+    for _, item in seen_names.items():
+        yield item
+
+
 def _default_plot() -> dict:
     return {
         'title': '数据曲线',
         'x_label': '时间 (s)',
         'y_label': '值',
         'vars': [],     # 空 = 显示全部当前已加载变量
+        # 图例 checkbox 可见性开关：{var_name: bool}。缺失键 = True（可见）
+        # 用户在 plot 图例前的 checkbox 上勾选/取消来快速控制每条曲线
+        'var_visibility': {},
         'show_max': False,
         'show_min': False,
         'show_avg': False,
@@ -155,6 +239,12 @@ def _normalize_plot(p: dict) -> dict:
         return d
     d.update({k: p[k] for k in d if k in p})
     d['vars'] = list(d.get('vars', []))
+    # var_visibility 必须是 dict（兼容旧 config 缺失此字段）
+    vv = d.get('var_visibility')
+    if not isinstance(vv, dict):
+        d['var_visibility'] = {}
+    else:
+        d['var_visibility'] = {str(k): bool(v) for k, v in vv.items()}
     return d
 
 
@@ -424,6 +514,515 @@ class _QtPlotDialog:
         return self.result
 
 
+class _ValidationBridge:
+    """跨线程触发主线程校验。
+
+    reader 线程不能直接动 UI（QMessageBox 等 PySide6 限制在主线程）。
+    本类在主线程创建一个 QObject + Signal，reader 调 emit 即可。
+    """
+    def __init__(self, callback):
+        self._callback = callback
+        self._bridge = None
+
+    def setup(self, parent_qobj):
+        """在主线程调用：创建 QObject + 连接信号。"""
+        from PySide6.QtCore import QObject, Signal, Slot
+        outer = self
+
+        class _Impl(QObject):
+            requested = Signal(list, str)
+
+            def __init__(self):
+                super().__init__()
+                self.requested.connect(self._handle)
+
+            @Slot(list, str)
+            def _handle(self, lines, label):
+                outer._callback(lines, label)
+
+        self._bridge = _Impl()
+        self._bridge.setParent(parent_qobj)
+
+    def emit(self, lines, label):
+        """从任意线程调用：跨线程触发主线程回调。"""
+        if self._bridge is not None:
+            try:
+                self._bridge.requested.emit(list(lines), str(label))
+            except Exception:
+                pass
+
+
+class _QtParserConfigDialog:
+    """解析器配置对话框：贴 Python 代码 + 样本日志 → 测试 → 保存。
+
+    用户写的 `parse_line(line)` 函数 yield `(ts, name, value)` 三元组。
+    保存时自动跑解析器扫样本日志，收集所有唯一 name 写入
+    `discovered_vars`，让"添加曲线"对话框提前显示这些变量。
+    """
+
+    def __init__(self, parent, callback_save):
+        self.parent = parent
+        self.callback_save = callback_save  # 保存回调：传 dict -> None
+        self.result = None
+        self._dlg = None
+
+    def _build(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QFont
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QFormLayout,
+            QGroupBox, QLabel, QPlainTextEdit, QPushButton, QRadioButton,
+            QButtonGroup, QSpinBox, QCheckBox, QTableWidget, QTableWidgetItem,
+            QHeaderView, QComboBox, QFileDialog,
+        )
+
+        dlg = QDialog(self.parent)
+        dlg.setWindowTitle('解析器配置')
+        dlg.resize(800, 720)
+        dlg.setMinimumSize(600, 480)
+        self._dlg = dlg
+
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
+
+        # 模式选择
+        mode_box = QGroupBox('解析模式')
+        mode_l = QHBoxLayout(mode_box)
+        mode_l.setContentsMargins(8, 8, 8, 8)
+        self._mode_built = QRadioButton('内置（motor/BMS/IMU）')
+        self._mode_custom = QRadioButton('仅自定义代码')
+        self._mode_both = QRadioButton('同时（两者都跑，并集）')
+        cur_mode = _CUSTOM_PARSER_STATE.get('mode', 'built-in')
+        if cur_mode == 'custom':
+            self._mode_custom.setChecked(True)
+        elif cur_mode == 'both':
+            self._mode_both.setChecked(True)
+        else:
+            self._mode_built.setChecked(True)
+        self._mode_group = QButtonGroup(mode_box)
+        self._mode_group.addButton(self._mode_built)
+        self._mode_group.addButton(self._mode_custom)
+        self._mode_group.addButton(self._mode_both)
+        mode_l.addWidget(self._mode_built)
+        mode_l.addWidget(self._mode_custom)
+        mode_l.addWidget(self._mode_both)
+        mode_l.addStretch(1)
+        v.addWidget(mode_box)
+
+        # 设备源码区 + 语言下拉 + 推导按钮
+        src_box = QGroupBox('设备源码（贴实际打印日志的源码——C/C++/Python/Java/Rust/JS，'
+                            '自动推导日志格式生成下方 parse_line）')
+        src_l_v = QVBoxLayout(src_box)
+        src_l_v.setContentsMargins(8, 8, 8, 8)
+        # 第一行：语言下拉 + 推导按钮 + 清空按钮
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel('语言:'))
+        self._lang_combo = QComboBox()
+        self._lang_combo.addItem('自动识别', 'auto')
+        for code, label in (
+                ('c', 'C'), ('cpp', 'C++'), ('python', 'Python'),
+                ('java', 'Java'), ('rust', 'Rust'), ('html', 'HTML'),
+                ('js', 'JavaScript')):
+            self._lang_combo.addItem(label, code)
+        # 回填上次选择的语言
+        cur_lang = _CUSTOM_PARSER_STATE.get('source_language', 'auto')
+        for i in range(self._lang_combo.count()):
+            if self._lang_combo.itemData(i) == cur_lang:
+                self._lang_combo.setCurrentIndex(i)
+                break
+        self._lang_combo.currentIndexChanged.connect(self._on_lang_changed)
+        lang_row.addWidget(self._lang_combo)
+        self._btn_infer = QPushButton('推导解析器')
+        self._btn_infer.setToolTip('从源码中提取 print 语句 → 生成 parse_line')
+        self._btn_infer.clicked.connect(self._on_infer)
+        lang_row.addWidget(self._btn_infer)
+        self._btn_load_src = QPushButton('从文件加载源码…')
+        self._btn_load_src.setToolTip('从 .c/.py/.rs/.java/.js/.md 等文件读源码')
+        self._btn_load_src.clicked.connect(self._on_load_source_file)
+        lang_row.addWidget(self._btn_load_src)
+        lang_row.addStretch(1)
+        src_l_v.addLayout(lang_row)
+        self._src_edit = QPlainTextEdit()
+        src_mono = QFont('DejaVu Sans Mono')
+        src_mono.setStyleHint(QFont.Monospace)
+        self._src_edit.setFont(src_mono)
+        self._src_edit.setPlainText(
+            _CUSTOM_PARSER_STATE.get('source_code', ''))
+        self._src_edit.setPlaceholderText(
+            '贴设备/固件里实际打印日志的代码，例如：\n'
+            '    printf("ts=%ld rpm=%d vbus=%.2f\\n", ts, rpm, vbus);')
+        src_l_v.addWidget(self._src_edit)
+        v.addWidget(src_box, 2)
+
+        # 解析器代码（Python，由推导生成或手动编写）
+        code_box = QGroupBox(
+            '解析器代码（Python，本机执行——仅可信来源粘贴）')
+        code_box.setToolTip(
+            '本区代码就是实际执行的 parse_line(line) 函数——\n'
+            '加载日志或连串口时，每行被喂给 parse_line，\n'
+            '其 yield 的 (ts, name, value) 三元组成为曲线数据。\n\n'
+            '使用流程：\n'
+            '  1. 上方源码区贴入设备/固件源码（C/Python/Rust...）\n'
+            '  2. 点"推导解析器"→ 自动生成 Python 代码填入本区\n'
+            '  3. 点"测试解析"→ 用下方样本日志跑一遍，看变量表\n'
+            '  4. 保存 → 下次加载日志/连串口时按本配置解析\n\n'
+            '也可直接在本区手写或微调 parse_line（无需上方源码）。')
+        code_l = QVBoxLayout(code_box)
+        code_l.setContentsMargins(8, 8, 8, 8)
+        code_hint = QLabel(
+            '↑ 这里是实际执行的逻辑：每行日志喂给 parse_line，'
+            'yield (ts, name, value) 即可成为曲线。点"推导解析器"自动填充；'
+            '也可手动编辑 / 直接写。')
+        code_hint.setWordWrap(True)
+        code_hint.setStyleSheet('color: #888; font-size: 9pt;')
+        code_l.addWidget(code_hint)
+        self._code_edit = QPlainTextEdit()
+        mono = QFont('DejaVu Sans Mono')
+        mono.setStyleHint(QFont.Monospace)
+        self._code_edit.setFont(mono)
+        cur_code = _CUSTOM_PARSER_STATE.get('code', '')
+        self._code_edit.setPlainText(cur_code if cur_code else _PARSER_TEMPLATE_CODE)
+        self._code_edit.setPlaceholderText(
+            'def parse_line(line):\n'
+            '    # 每行日志喂进来，yield (ts, name, value) 三元组\n'
+            '    # ts: float 秒 / name: 变量名 / value: float\n'
+            '    if "3wd1t_1" in line:\n'
+            '        ...\n'
+            '        yield ts, "motor.rpm", float(parts[4])')
+        code_l.addWidget(self._code_edit)
+        v.addWidget(code_box, 2)
+
+        # 样本日志
+        sample_box = QGroupBox('样本日志（贴几行真实日志用于发现变量）')
+        sample_l = QVBoxLayout(sample_box)
+        sample_l.setContentsMargins(8, 8, 8, 8)
+        sample_btn_row = QHBoxLayout()
+        self._btn_load_sample = QPushButton('从文件加载…')
+        self._btn_load_sample.setToolTip('从 .txt / .log / .md 文件读样本日志')
+        self._btn_load_sample.clicked.connect(self._on_load_sample_file)
+        sample_btn_row.addWidget(self._btn_load_sample)
+        sample_btn_row.addStretch(1)
+        sample_l.addLayout(sample_btn_row)
+        self._sample_edit = QPlainTextEdit()
+        self._sample_edit.setFont(mono)
+        self._sample_edit.setPlainText(
+            _CUSTOM_PARSER_STATE.get('sample_log', ''))
+        self._sample_edit.setPlaceholderText(
+            '1783996615491 I model 3wd1t_1 ...')
+        sample_l.addWidget(self._sample_edit)
+        v.addWidget(sample_box, 1)
+
+        # 校验设置：≥ N 条成功解析即视为规则正确
+        val_box = QGroupBox('加载/连串口时格式校验')
+        val_form = QFormLayout(val_box)
+        val_form.setContentsMargins(8, 8, 8, 8)
+        val_cfg = _CUSTOM_PARSER_STATE.get('validation', {})
+        self._val_enabled = QCheckBox('启用（打开日志 / 连串口时扫前 N 行，'
+                                       '成功解析 ≥ M 条即视为规则正确）')
+        self._val_enabled.setChecked(bool(val_cfg.get('enabled', True)))
+        val_form.addRow('', self._val_enabled)
+        self._val_min_count = QSpinBox()
+        self._val_min_count.setRange(1, 1000)
+        self._val_min_count.setValue(int(val_cfg.get('min_parsed_count', 10)))
+        self._val_min_count.setToolTip(
+            '只要扫描的前 N 行里成功解析出 ≥ M 条，就视为规则正确。'
+            '默认 10 条——比成功率阈值更宽松，容忍日志中混入非数据行')
+        val_form.addRow('最低成功解析条数', self._val_min_count)
+        self._val_lines = QSpinBox()
+        self._val_lines.setRange(50, 5000)
+        self._val_lines.setSingleStep(50)
+        self._val_lines.setValue(int(val_cfg.get('sample_lines', 200)))
+        val_form.addRow('扫描行数', self._val_lines)
+        v.addWidget(val_box)
+
+        # 按钮区
+        btn_row = QHBoxLayout()
+        self._btn_test = QPushButton('测试解析')
+        self._btn_test.clicked.connect(self._on_test)
+        btn_row.addWidget(self._btn_test)
+        btn_row.addStretch(1)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText('保存')
+        bb.button(QDialogButtonBox.Cancel).setText('取消')
+        bb.accepted.connect(self._on_save)
+        bb.rejected.connect(dlg.reject)
+        btn_row.addWidget(bb)
+        v.addLayout(btn_row)
+
+        # 测试结果表
+        self._result_label = QLabel('（点"测试解析"查看结果）')
+        v.addWidget(self._result_label)
+        self._result_table = QTableWidget(0, 4)
+        self._result_table.setHorizontalHeaderLabels(
+            ['变量名', '首次值', '末次值', '出现次数'])
+        self._result_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch)
+        self._result_table.setVisible(False)
+        v.addWidget(self._result_table, 1)
+
+        return dlg
+
+    def _on_lang_changed(self, _idx):
+        """语言下拉变化：选"自动识别"时尝试 detect_language 回填。"""
+        lang_data = self._lang_combo.currentData()
+        if lang_data != 'auto':
+            return
+        src = self._src_edit.toPlainText()
+        if not src.strip():
+            return
+        try:
+            from serial_debug.ui.qt_parser_inference import detect_language
+            lang = detect_language(src)
+        except Exception:
+            return
+        if lang not in ('c', 'cpp', 'python', 'java', 'rust', 'html', 'js'):
+            return
+        # 不强制切下拉（保留"自动识别"项），只在状态栏提示
+        try:
+            self._result_label.setText(f'（自动识别语言：{lang}）')
+        except Exception:
+            pass
+
+    def _on_infer(self):
+        """从源码提取 print 语句 → 生成 parse_line → 填入代码区。"""
+        try:
+            from serial_debug.ui.qt_parser_inference import (
+                detect_language, extract_print_statements, generate_parse_line)
+        except Exception as e:
+            self._result_label.setText(f'❌ 推导模块不可用：{e!r}')
+            return
+        src = self._src_edit.toPlainText()
+        if not src.strip():
+            self._result_label.setText('⚠ 源码为空')
+            return
+        lang_data = self._lang_combo.currentData()
+        if lang_data == 'auto':
+            lang = detect_language(src)
+            # 找到下拉里的对应项并切换（保留用户能再次切回 auto）
+            for i in range(self._lang_combo.count()):
+                if self._lang_combo.itemData(i) == lang:
+                    self._lang_combo.blockSignals(True)
+                    self._lang_combo.setCurrentIndex(i)
+                    self._lang_combo.blockSignals(False)
+                    break
+        else:
+            lang = lang_data
+        if lang == 'html':
+            self._result_label.setText(
+                '⚠ HTML 不产生日志，不支持推导。请贴 C/C++/Python/Java/Rust/JS 源码')
+            return
+        try:
+            stmts = extract_print_statements(src, lang)
+        except Exception as e:
+            self._result_label.setText(f'❌ 提取失败：{e!r}')
+            return
+        if not stmts:
+            self._result_label.setText(
+                f'⚠ 未从源码识别到 print 语句（语言={lang}）')
+            return
+        try:
+            gen = generate_parse_line(stmts)
+        except Exception as e:
+            self._result_label.setText(f'❌ 生成失败：{e!r}')
+            return
+        self._code_edit.setPlainText(gen)
+        self._result_label.setText(
+            f'✓ 推导完成：识别 {len(stmts)} 条 print 语句（语言={lang}）'
+            '，已填入"解析器代码"区，可点"测试解析"验证')
+
+    def _on_load_source_file(self):
+        """从 .c/.cpp/.py/.java/.rs/.js/.md/.txt 文件读源码。"""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self._dlg, '选择源码文件', '',
+            '源码 (*.c *.cpp *.h *.hpp *.py *.java *.rs *.js *.ts *.md *.txt);;'
+            '所有文件 (*)')
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                data = f.read(10 * 1024 * 1024)  # 限 10MB
+        except Exception as e:
+            self._result_label.setText(f'❌ 读文件失败：{e!r}')
+            return
+        if path.lower().endswith('.md'):
+            # 取第一个 ``` 代码块
+            import re as _re
+            m = _re.search(r'```(?:\w+)?\s*\n(.*?)```', data, _re.DOTALL)
+            if m:
+                data = m.group(1)
+        self._src_edit.setPlainText(data)
+        self._result_label.setText(f'✓ 已加载源码：{path}')
+
+    def _on_load_sample_file(self):
+        """从 .txt/.log/.md 文件读样本日志。"""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self._dlg, '选择样本日志', '',
+            '日志 (*.txt *.log *.md);;所有文件 (*)')
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                data = f.read(10 * 1024 * 1024)
+        except Exception as e:
+            self._result_label.setText(f'❌ 读文件失败：{e!r}')
+            return
+        if path.lower().endswith('.md'):
+            import re as _re
+            m = _re.search(r'```(?:\w+)?\s*\n(.*?)```', data, _re.DOTALL)
+            if m:
+                data = m.group(1)
+        self._sample_edit.setPlainText(data)
+        self._result_label.setText(f'✓ 已加载样本日志：{path}')
+
+    def _on_test(self):
+        """跑当前代码 + 样本日志，结果填进表格。"""
+        code = self._code_edit.toPlainText()
+        sample = self._sample_edit.toPlainText()
+        try:
+            ns: dict = {}
+            exec(compile(code, '<custom_parser_test>', 'exec'), ns)
+        except SyntaxError as e:
+            self._result_label.setText(
+                f'❌ 语法错误（行 {e.lineno}）：{e.msg}')
+            self._result_table.setVisible(False)
+            return
+        except Exception as e:
+            self._result_label.setText(f'❌ exec 失败：{e!r}')
+            self._result_table.setVisible(False)
+            return
+        func = ns.get('parse_line')
+        if not callable(func):
+            self._result_label.setText('❌ 代码未定义 parse_line(line) 函数')
+            self._result_table.setVisible(False)
+            return
+
+        lines = [l for l in sample.splitlines() if l.strip()]
+        if not lines:
+            self._result_label.setText('⚠ 样本日志为空')
+            self._result_table.setVisible(False)
+            return
+
+        # name -> {first, last, count}
+        found: dict[str, dict] = {}
+        err_count = 0
+        for line in lines:
+            try:
+                result = func(line)
+                if result is None:
+                    continue
+                for item in result:
+                    if not item or len(item) != 3:
+                        continue
+                    _, name, val = item
+                    if name not in found:
+                        found[name] = {'first': val, 'last': val, 'count': 0}
+                    found[name]['last'] = val
+                    found[name]['count'] += 1
+            except Exception:
+                err_count += 1
+
+        self._result_table.setRowCount(len(found))
+        for i, (name, info) in enumerate(sorted(found.items())):
+            self._result_table.setItem(i, 0, QTableWidgetItem(str(name)))
+            self._result_table.setItem(i, 1, QTableWidgetItem(
+                _fmt_val(info['first'])))
+            self._result_table.setItem(i, 2, QTableWidgetItem(
+                _fmt_val(info['last'])))
+            self._result_table.setItem(i, 3, QTableWidgetItem(
+                str(info['count'])))
+        self._result_table.setVisible(True)
+        msg = (f'✓ 解析成功：{len(found)} 个变量，{len(lines)} 行'
+               f'（{err_count} 行解析失败）')
+        self._result_label.setText(msg)
+
+    def _on_save(self):
+        """保存：写 _CUSTOM_PARSER_STATE + 持久化 + 跑变量发现。"""
+        mode = ('built-in' if self._mode_built.isChecked()
+                else 'custom' if self._mode_custom.isChecked()
+                else 'both')
+        code = self._code_edit.toPlainText()
+        sample = self._sample_edit.toPlainText()
+        src_code = self._src_edit.toPlainText()
+        src_lang = self._lang_combo.currentData()
+        val_cfg = {
+            'enabled': self._val_enabled.isChecked(),
+            'min_parsed_count': int(self._val_min_count.value()),
+            'sample_lines': int(self._val_lines.value()),
+        }
+
+        # exec + 发现变量
+        func = None
+        discovered: list = []
+        if code and mode in ('custom', 'both'):
+            try:
+                ns: dict = {}
+                exec(compile(code, '<custom_parser>', 'exec'), ns)
+                if callable(ns.get('parse_line')):
+                    func = ns['parse_line']
+            except Exception:
+                pass  # 保存时坏代码：dialog 已校验过，这里再失败仅记日志
+            if func is not None:
+                discovered = _discover_vars_from_sample(func, sample)
+
+        new_state = {
+            'mode': mode,
+            'code': code,
+            'sample_log': sample,
+            'source_code': src_code,
+            'source_language': src_lang,
+            'func': func,
+            'discovered_vars': discovered,
+            'validation': val_cfg,
+        }
+        _CUSTOM_PARSER_STATE.update(new_state)
+        if callable(self.callback_save):
+            self.callback_save()
+        self.result = new_state
+        self._dlg.accept()
+
+    def exec(self):
+        dlg = self._build()
+        dlg.exec()
+        return self.result
+
+
+def _fmt_val(v) -> str:
+    """格式化解析出的值用于表格显示。"""
+    try:
+        f = float(v)
+        if abs(f) >= 1000 or (abs(f) < 0.01 and f != 0):
+            return f'{f:.4g}'
+        return f'{f:.3f}'
+    except Exception:
+        return str(v)
+
+
+def _discover_vars_from_sample(func, sample_log: str) -> list:
+    """跑 func 扫 sample_log 每行 → 收集所有唯一 name → 返回
+    `[{name, label}]` 列表。label 暂取 name 自身（用户后续可在侧栏改）。"""
+    out: dict[str, dict] = {}
+    for line in (sample_log or '').splitlines():
+        if not line.strip():
+            continue
+        try:
+            result = func(line)
+            if result is None:
+                continue
+            for item in result:
+                if not item or len(item) != 3:
+                    continue
+                name = str(item[1])
+                if name not in out:
+                    out[name] = {'name': name, 'label': name}
+        except Exception:
+            pass
+    return list(out.values())
+
+
 class QtMonitorWindow:
     """Qt 数据监视窗口（Stage 1：多 plot 子图 + 配置持久化）。"""
 
@@ -443,12 +1042,20 @@ class QtMonitorWindow:
         # 用户可改 color/label，持久化到 qt_monitor_vars
         self._var_meta: dict[str, dict] = self._load_var_meta()
         # 配置：plots list（每项 = {title, x_label, y_label, vars, show_*}）
+        # 这是"原始配置"，导入/导出用；运行时显示用 _visible_plots
         self._plots: list[dict] = self._load_plots()
+        # 运行时显示列表：用户在本会话里的 X 关闭 / 添加 都改这里，不动 _plots。
+        # 初始化 = _plots 的浅拷贝（独立列表，元素仍指向同一 dict）
+        self._visible_plots: list[dict] = list(self._plots)
         # UI：PlotWidget 列表 + 每个对应的 curves dict（name -> PlotDataItem）
         self._plot_widgets: list = []
         self._curves: list[dict] = []
         self._plot_headers: list = []  # 每个 plot 的顶部条（title + legend）
+        self._plot_containers: list = []  # 每个 plot 的容器（用于显隐）
         self._plots_layout = None
+        # 工具栏文件名显示（load_log / 串口连接时更新）
+        self._file_label = None
+        self._current_file_label: str = ''
         # 嵌套 splitter（每行一个 h_splitter，外层 v_splitter），用户拖动
         # 分隔条可调节每个 PlotWidget 的宽高，默认等分（视觉同 QGridLayout）
         self._v_splitter = None
@@ -473,15 +1080,207 @@ class QtMonitorWindow:
         self._refresh_timer = None
         self._max_points = 60_000
         self._data_lock = threading.Lock()  # 保护 _data 的线程安全
+        # 自定义解析器状态（模块级 _CUSTOM_PARSER_STATE 在启动时加载一次）
+        self._load_custom_parser_state()
+        # 串口校验缓冲（reader 线程攒够 sample_lines 或 2 秒后触发一次校验）
+        self._serial_validated: bool = False
+        self._serial_validation_buf: list[str] = []
+        self._serial_start_ts: float = 0.0
+        # 跨线程触发校验（reader 线程不能直接动 UI）
+        self._validation_bridge = _ValidationBridge(self._validate_log_format)
 
     # ---- 配置持久化 -------------------------------------------------
-    def _load_plots(self) -> list[dict]:
+    def _load_custom_parser_state(self) -> None:
+        """启动时读 config → exec 代码拿 parse_line → 写入 _CUSTOM_PARSER_STATE。"""
+        global _CUSTOM_PARSER_STATE
         from serial_debug.infra import config
         try:
             cfg = config.load()
+            raw = cfg.get('qt_monitor_custom_parser', {})
+            if not isinstance(raw, dict):
+                return
+            mode = raw.get('mode', 'built-in')
+            if mode not in ('built-in', 'custom', 'both'):
+                mode = 'built-in'
+            code = raw.get('code', '') or ''
+            sample_log = raw.get('sample_log', '') or ''
+            func = None
+            if code and mode in ('custom', 'both'):
+                try:
+                    ns: dict = {}
+                    exec(compile(code, '<custom_parser>', 'exec'), ns)
+                    if callable(ns.get('parse_line')):
+                        func = ns['parse_line']
+                except Exception:
+                    func = None  # 代码坏掉时退回 built-in，下次 dialog 修
+            disc = raw.get('discovered_vars', []) or []
+            if not isinstance(disc, list):
+                disc = []
+            val_cfg = raw.get('validation', {}) or {}
+            if not isinstance(val_cfg, dict):
+                val_cfg = {}
+            # 兼容旧 config：min_success_rate → min_parsed_count（10 默认）
+            if 'min_parsed_count' in val_cfg:
+                min_count = int(val_cfg['min_parsed_count'])
+            else:
+                min_count = 10
+            validation = {
+                'enabled': bool(val_cfg.get('enabled', True)),
+                'min_parsed_count': min_count,
+                'sample_lines': int(val_cfg.get('sample_lines', 200)),
+            }
+            src_code = raw.get('source_code', '') or ''
+            src_lang = raw.get('source_language', 'auto') or 'auto'
+            if src_lang not in ('auto', 'c', 'cpp', 'python', 'java',
+                                 'rust', 'html', 'js'):
+                src_lang = 'auto'
+            _CUSTOM_PARSER_STATE.update({
+                'mode': mode,
+                'code': code,
+                'sample_log': sample_log,
+                'source_code': src_code,
+                'source_language': src_lang,
+                'func': func,
+                'discovered_vars': disc,
+                'validation': validation,
+            })
+        except Exception:
+            pass
+
+    def _save_custom_parser_state(self) -> None:
+        """把 _CUSTOM_PARSER_STATE 持久化到 config。"""
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            cfg['qt_monitor_custom_parser'] = {
+                'mode': _CUSTOM_PARSER_STATE.get('mode', 'built-in'),
+                'code': _CUSTOM_PARSER_STATE.get('code', ''),
+                'sample_log': _CUSTOM_PARSER_STATE.get('sample_log', ''),
+                'source_code': _CUSTOM_PARSER_STATE.get('source_code', ''),
+                'source_language': _CUSTOM_PARSER_STATE.get('source_language', 'auto'),
+                'discovered_vars': _CUSTOM_PARSER_STATE.get('discovered_vars', []),
+                'validation': _CUSTOM_PARSER_STATE.get('validation', {
+                    'enabled': True, 'min_parsed_count': 10,
+                    'sample_lines': 200,
+                }),
+            }
+            config.save(cfg)
+        except Exception:
+            pass
+
+    def _load_last_config_path(self) -> str:
+        """读上次"打开过"的配置文件路径（指针，仅路径不存配置）。
+
+        历史命名保留——仅指"用户主动从'导入配置'选过的文件"。
+        启动时优先用 _load_last_exported_path（用户导出过的最新文件），
+        无导出记录才回退到本字段。
+        """
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            p = cfg.get('qt_monitor_last_config_path', '') or ''
+            return str(p) if p else ''
+        except Exception:
+            return ''
+
+    def _save_last_config_path(self, path: str) -> None:
+        """记录上次"打开过"的配置文件路径（导入时调）。仅指针。"""
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            cfg['qt_monitor_last_config_path'] = path or ''
+            config.save(cfg)
+        except Exception:
+            pass
+
+    def _load_last_exported_path(self) -> str:
+        """读上次"导出过"的配置文件路径（用户在 dialog 里点导出后记录）。
+
+        启动时优先用此路径加载曲线配置（包含用户调整后的布局）。
+        """
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            p = cfg.get('qt_monitor_last_exported_config_path', '') or ''
+            return str(p) if p else ''
+        except Exception:
+            return ''
+
+    def _save_last_exported_path(self, path: str) -> None:
+        """记录上次"导出过"的配置文件路径。仅指针。"""
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            cfg['qt_monitor_last_exported_config_path'] = path or ''
+            config.save(cfg)
+        except Exception:
+            pass
+
+    def _load_plots(self) -> list[dict]:
+        """加载 plots 配置。
+
+        优先级：
+          1. 上次导出过的配置文件（用户调整满意后保存的布局）
+          2. 上次打开过的配置文件（用户主动"导入配置"选过的文件）
+          3. 默认 config 内的 qt_monitor_plots key（兼容旧用户）
+        """
+        from serial_debug.infra import config
+        import json
+        import os
+
+        def _try_load(path: str):
+            """从给定 JSON 文件加载 plots + var_meta；返回 (plots, ok)。"""
+            if not path or not os.path.isfile(path):
+                return None, False
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                return None, False
+            raw = data.get('plots', []) or []
+            vm = data.get('var_meta', []) or data.get('var_meta_dict', {})
+            # 兼容两种存储格式：list（旧）或 dict（新）
+            new_meta: dict[str, dict] = {}
+            if isinstance(vm, list):
+                for v in vm:
+                    if isinstance(v, dict) and 'name' in v:
+                        new_meta[v['name']] = {
+                            'color': v.get('color', ''),
+                            'label': v.get('label', ''),
+                            'y_min': v.get('y_min'),
+                            'y_max': v.get('y_max'),
+                            'warn_min': v.get('warn_min'),
+                            'warn_max': v.get('warn_max'),
+                        }
+            elif isinstance(vm, dict):
+                for name, m in vm.items():
+                    if isinstance(m, dict):
+                        new_meta[name] = {
+                            'color': m.get('color', ''),
+                            'label': m.get('label', ''),
+                            'y_min': m.get('y_min'),
+                            'y_max': m.get('y_max'),
+                            'warn_min': m.get('warn_min'),
+                            'warn_max': m.get('warn_max'),
+                        }
+            if new_meta:
+                self._var_meta = new_meta
+            return [_normalize_plot(p) for p in raw], True
+
+        try:
+            # 1. 上次导出过的配置文件
+            exported = self._load_last_exported_path()
+            plots, ok = _try_load(exported)
+            if ok and plots is not None:
+                return plots
+            # 2. 上次打开过的配置文件
+            opened = self._load_last_config_path()
+            plots, ok = _try_load(opened)
+            if ok and plots is not None:
+                return plots
+            # 3. 默认 config 内的 qt_monitor_plots key
+            cfg = config.load()
             raw = cfg.get('qt_monitor_plots', []) or []
-            # 尊重配置值：[] 就返回 []，让用户删除所有 plot 后保持空白；
-            # 首次启动 cfg 默认也是 []，用户用工具栏"添加图表"自己加。
             return [_normalize_plot(p) for p in raw]
         except Exception:
             return []
@@ -540,10 +1339,13 @@ class QtMonitorWindow:
 
     # ---- 配置导入 / 导出 -------------------------------------------------
     def export_plots_config(self, file_path: str) -> None:
-        """导出当前曲线图配置 + 变量元信息到 JSON 文件。
+        """导出当前 _visible_plots + var_meta 到 JSON 文件。
+
+        导出 _visible_plots（含本会话里的增删改），让用户能"调整满意后
+        保存为新配置"。_plots（原始配置）不导出——它只是初始基准。
 
         导出内容：
-          - plots: self._plots（title / vars / show_* / hover_* / legend_*）
+          - plots: self._visible_plots（title / vars / show_* / hover_* / legend_*）
           - var_meta: self._var_meta（颜色 / label / y_min/y_max / warn_*
             等显示参数；导入时合并到当前 var_meta）
           - version: 格式版本号（向后兼容）
@@ -554,18 +1356,23 @@ class QtMonitorWindow:
         import json
         data = {
             'version': 1,
-            'plots': [_normalize_plot(p) for p in self._plots],
+            'plots': [_normalize_plot(p) for p in self._visible_plots],
             'var_meta': {k: dict(v) for k, v in self._var_meta.items()},
         }
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        # 记录指针：导出的文件作为下次启动的默认配置
+        self._save_last_exported_path(file_path)
+        # 同步：导出后 _plots 也对齐 _visible_plots（视为用户确认保存）
+        self._plots = list(self._visible_plots)
 
     def import_plots_config(self, file_path: str) -> int:
         """从 JSON 文件导入曲线图配置，替换当前 plots + 合并 var_meta。
 
-        返回导入的 plot 数量。导入后立即 _rebuild_plots_ui + _refresh_sidebar
-        + _refresh_plot + _save_plots，按导出时的 vars 配置显示曲线
-        （若已加载数据则曲线立刻画出）。
+        返回导入的 plot 数量。导入后 _plots 和 _visible_plots 都设为新
+        配置（视为新的基准），调 _rebuild_plots_ui + _refresh_sidebar +
+        _refresh_plot。不自动写配置——但会记录 file_path 指针，下次启动
+        自动加载该文件。
         """
         import json
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -585,11 +1392,13 @@ class QtMonitorWindow:
                 # 触发 _register_var 注册到 _all_var_names
                 self._register_var(name)
         self._plots = new_plots
+        self._visible_plots = list(new_plots)
         self._rebuild_plots_ui()
         self._refresh_sidebar()
         self._refresh_sidebar_visibility()
         self._refresh_plot()
-        self._save_plots()
+        # 记录指针，下次启动自动从此文件加载
+        self._save_last_config_path(file_path)
         return len(new_plots)
 
     def _save_geometry(self) -> None:
@@ -599,7 +1408,61 @@ class QtMonitorWindow:
                 return
             cfg = config.load()
             cfg['qt_monitor_geometry'] = self._win.saveGeometry().data().hex()
+            # 保存曲线图布局：v_splitter 各行高度 + 每个 h_splitter 各列宽度
+            cfg['qt_monitor_splitter_sizes'] = self._dump_splitter_sizes()
             config.save(cfg)
+        except Exception:
+            pass
+
+    def _dump_splitter_sizes(self) -> dict:
+        """导出 v_splitter + 子 h_splitter 的 sizes（便于启动恢复布局）。"""
+        out = {}
+        try:
+            if self._v_splitter is None:
+                return out
+            out['v'] = list(self._v_splitter.sizes())
+            # 找到所有 h_splitter（v_splitter 的子）
+            hs = []
+            for i in range(self._v_splitter.count()):
+                w = self._v_splitter.widget(i)
+                if w is not None and hasattr(w, 'sizes') and \
+                        w.__class__.__name__ == 'QSplitter':
+                    hs.append(list(w.sizes()))
+            out['h'] = hs
+        except Exception:
+            pass
+        return out
+
+    def _restore_splitter_sizes(self) -> None:
+        """启动时按保存的 sizes 恢复 v_splitter + h_splitter 布局。"""
+        from serial_debug.infra import config
+        try:
+            cfg = config.load()
+            saved = cfg.get('qt_monitor_splitter_sizes', {})
+            if not isinstance(saved, dict) or not saved:
+                return
+            v_sizes = saved.get('v')
+            if v_sizes and self._v_splitter is not None:
+                try:
+                    self._v_splitter.setSizes([int(x) for x in v_sizes])
+                except Exception:
+                    pass
+            h_sizes_list = saved.get('h', [])
+            if not isinstance(h_sizes_list, list):
+                return
+            h_idx = 0
+            for i in range(self._v_splitter.count()):
+                w = self._v_splitter.widget(i)
+                if w is None or w.__class__.__name__ != 'QSplitter':
+                    continue
+                if h_idx >= len(h_sizes_list):
+                    break
+                sizes = h_sizes_list[h_idx]
+                h_idx += 1
+                try:
+                    w.setSizes([int(x) for x in sizes])
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -612,6 +1475,9 @@ class QtMonitorWindow:
                 from PySide6.QtCore import QByteArray
                 ba = QByteArray.fromHex(bytes(geo_hex, 'ascii'))
                 self._win.restoreGeometry(ba)
+            # splitter sizes 在 _rebuild_plots_ui 之后调用
+            # （_make_plot_widget 已建出 _v_splitter + 子 h_splitter）
+            self._restore_splitter_sizes()
         except Exception:
             pass
 
@@ -640,12 +1506,18 @@ class QtMonitorWindow:
         """加载日志文件，复用 monitor_window 的 motor/BMS/IMU 解析器。
 
         自动按行内 tag 检测数据类型，变量名加 Panel 前缀（motor./bms./imu.）
-        避免冲突。返回解析命中的行数。
+        避免冲突。返回解析命中的行数。加载完成后跑一次格式校验（成功率
+        低于阈值则弹非模态警告 + 状态栏提示）。
         """
         n = 0
+        sample_lines: list[str] = []
+        sample_n = max(10, int(_CUSTOM_PARSER_STATE.get(
+            'validation', {}).get('sample_lines', 200)))
         try:
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
                 for line in f:
+                    if len(sample_lines) < sample_n:
+                        sample_lines.append(line)
                     hit = False
                     for ts, name, val in _iter_panel_vars(line):
                         self._data.setdefault(name, []).append((ts, val))
@@ -655,6 +1527,10 @@ class QtMonitorWindow:
                         n += 1
         except Exception:
             pass
+        # 加载完成后跑格式校验（前 sample_lines 行）
+        self._validate_log_format(sample_lines, f'日志 {path}')
+        # 更新工具栏文件名显示
+        self._update_file_label(path)
         return n
 
     def gen_mock_data(self, n_points: int) -> None:
@@ -709,6 +1585,9 @@ class QtMonitorWindow:
         win = QMainWindow()
         win.setWindowTitle('[Qt 试点] 数据监视窗口 - PySide6 + pyqtgraph')
         win.resize(1400, 800)
+
+        # 跨线程校验桥（在主线程 setup，避免 reader 线程直接动 UI）
+        self._validation_bridge.setup(win)
 
         # 中央：QSplitter 横向分栏，左侧变量列表，右侧 plot 滚动区
         from PySide6.QtWidgets import QSplitter
@@ -768,44 +1647,52 @@ class QtMonitorWindow:
                 initial=None, title='添加图表')
             res = dlg.exec()
             if res:
-                self._plots.append(_normalize_plot(res))
+                p = _normalize_plot(res)
+                self._plots.append(p)         # 配置侧（导出时用）
+                self._visible_plots.append(p)  # 运行时显示侧
                 self._rebuild_plots_ui()
-                self._save_plots()
                 self._refresh_plot()
                 win.statusBar().showMessage(
-                    f'已添加图表：{res["title"]}（{len(res["vars"])} 变量）')
+                    f'已添加图表：{res["title"]}（{len(res["vars"])} 变量）'
+                    '——变更未保存，需手动"导出配置"')
 
         def _edit_plot():
             idx = self._select_plot_idx(win, '编辑图表')
             if idx is None:
                 return
+            # 编辑 _visible_plots 中第 idx 个（idx 是显示序）
             dlg = _QtPlotDialog(
                 win, self._loaded_var_meta(),
-                initial=self._plots[idx], title='编辑图表')
+                initial=self._visible_plots[idx], title='编辑图表')
             res = dlg.exec()
             if res:
-                self._plots[idx] = _normalize_plot(res)
+                p = _normalize_plot(res)
+                self._visible_plots[idx] = p
+                # 同步到 _plots：找原始 idx（_plots 中可能含有已被 X 关闭的项，
+                # 这里简单策略——重设 _plots 为 visible 的拷贝）
+                self._plots = list(self._visible_plots)
                 self._rebuild_plots_ui()
-                self._save_plots()
                 self._refresh_plot()
-                win.statusBar().showMessage(f'已更新图表：{res["title"]}')
+                win.statusBar().showMessage(
+                    f'已更新图表：{res["title"]}——变更未保存，需手动"导出配置"')
 
         def _del_plot():
             from PySide6.QtWidgets import QMessageBox
             idx = self._select_plot_idx(win, '删除图表')
             if idx is None:
                 return
-            title = self._plots[idx].get('title', '数据曲线')
+            title = self._visible_plots[idx].get('title', '数据曲线')
             if QMessageBox.question(
                     win, '删除图表',
                     f'确认删除图表 "{title}" ？'
             ) != QMessageBox.Yes:
                 return
-            del self._plots[idx]
+            del self._visible_plots[idx]
+            self._plots = list(self._visible_plots)
             self._rebuild_plots_ui()
-            self._save_plots()
             self._refresh_plot()
-            win.statusBar().showMessage('已删除图表')
+            win.statusBar().showMessage(
+                '已删除图表——变更未保存，需手动"导出配置"')
 
         def _open_log():
             from PySide6.QtWidgets import QFileDialog
@@ -834,7 +1721,7 @@ class QtMonitorWindow:
 
         def _export_plots_cfg():
             from PySide6.QtWidgets import QFileDialog, QMessageBox
-            if not self._plots:
+            if not self._visible_plots:
                 QMessageBox.information(win, '导出', '当前没有曲线图配置')
                 return
             path, _ = QFileDialog.getSaveFileName(
@@ -845,7 +1732,7 @@ class QtMonitorWindow:
             try:
                 self.export_plots_config(path)
                 win.statusBar().showMessage(
-                    f'已导出 {len(self._plots)} 个曲线图配置：{path}')
+                    f'已导出 {len(self._visible_plots)} 个曲线图配置：{path}')
             except Exception as e:
                 QMessageBox.critical(win, '导出失败', str(e))
 
@@ -889,7 +1776,7 @@ class QtMonitorWindow:
                             axis.setTextPen(t.get('fg', '#cccccc'))
                 except Exception:
                     pass
-            self._curves = [{} for _ in self._plots]
+            self._curves = [{} for _ in self._visible_plots]
             self._refresh_plot()
 
         def _toggle_sidebar():
@@ -994,10 +1881,25 @@ class QtMonitorWindow:
         btn_popout = QPushButton('放大当前图…')
         btn_popout.clicked.connect(self._popout_current_plot)
         tb.addWidget(btn_popout)
+        btn_show_all = QPushButton('显示全部')
+        btn_show_all.clicked.connect(self._show_all_plots)
+        btn_show_all.setToolTip('恢复所有被隐藏的曲线图')
+        tb.addWidget(btn_show_all)
+        tb.addSeparator()
+        btn_parser_cfg = QPushButton('解析器配置…')
+        btn_parser_cfg.clicked.connect(self._open_parser_config)
+        btn_parser_cfg.setToolTip('配置 Python 解析代码 + 样本日志 + 格式校验')
+        tb.addWidget(btn_parser_cfg)
         tb.addSeparator()
         btn_open = QPushButton('打开日志…')
         btn_open.clicked.connect(_open_log)
         tb.addWidget(btn_open)
+        # 当前打开的文件名显示（load_log / 串口连接时更新）
+        self._file_label = QLabel('（未加载）')
+        self._file_label.setStyleSheet(
+            'QLabel { color: #88aa88; padding: 0 6px; }')
+        self._file_label.setToolTip('当前打开的日志文件 / 串口')
+        tb.addWidget(self._file_label)
         tb.addSeparator()
         btn_import_cfg = QPushButton('导入配置…')
         btn_import_cfg.clicked.connect(_import_plots_cfg)
@@ -1042,9 +1944,8 @@ class QtMonitorWindow:
 
         # 关闭时保存几何 + plots + var_meta
         def _close_event(event):
-            self._save_geometry()
-            self._save_plots()
-            self._save_var_meta()
+            # 不自动保存配置：用户需手动"导出配置"才保留变更
+            # 仅停止串口 reader 线程，避免悬挂
             try:
                 self.stop_serial()
             except Exception:
@@ -1064,16 +1965,29 @@ class QtMonitorWindow:
         return win
 
     def _loaded_var_meta(self) -> list[dict]:
-        """返回当前已加载变量的元数据，供对话框使用。"""
-        out = []
+        """返回当前已加载变量的元数据 + 静态注册表 + 自定义解析器发现的变量。"""
+        out: list[dict] = []
+        seen: set[str] = set()
+        # 1. 已加载变量（self._data）
         for name in self._data.keys():
             label = name
-            # 在静态注册表里查中文 label
             for v in _ALL_VARS:
                 if v['name'] == name:
                     label = v.get('label', name)
                     break
             out.append({'name': name, 'label': label})
+            seen.add(name)
+        # 2. 静态注册表（用户预先配置 plot 时可用）
+        for v in _ALL_VARS:
+            if v['name'] not in seen:
+                out.append({'name': v['name'], 'label': v.get('label', v['name'])})
+                seen.add(v['name'])
+        # 3. 自定义解析器发现的变量（在样本日志里出现过但还没加载）
+        for v in _CUSTOM_PARSER_STATE.get('discovered_vars', []):
+            name = v.get('name')
+            if name and name not in seen:
+                out.append({'name': name, 'label': v.get('label', name)})
+                seen.add(name)
         return out
 
     def _build_menubar(self, win, _add_plot, _edit_plot, _del_plot,
@@ -1256,7 +2170,8 @@ class QtMonitorWindow:
                 idx = self._select_plot_idx(tree, '添加到图表')
                 if idx is None:
                     return
-                vars_list = self._plots[idx].setdefault('vars', [])
+                # idx 是 _visible_plots 中的下标（_select_plot_idx 基于显示列表）
+                vars_list = self._visible_plots[idx].setdefault('vars', [])
                 if name not in vars_list:
                     vars_list.append(name)
                 self._save_plots()
@@ -1267,7 +2182,7 @@ class QtMonitorWindow:
                 idx = self._select_plot_idx(tree, '从图表移除')
                 if idx is None:
                     return
-                vars_list = self._plots[idx].get('vars', [])
+                vars_list = self._visible_plots[idx].get('vars', [])
                 while name in vars_list:
                     vars_list.remove(name)
                 self._save_plots()
@@ -1275,7 +2190,7 @@ class QtMonitorWindow:
                 self._refresh_sidebar_visibility()
 
             def _add_to_all_plots():
-                for p in self._plots:
+                for p in self._visible_plots:
                     if name not in p.get('vars', []):
                         p.setdefault('vars', []).append(name)
                 self._save_plots()
@@ -1286,7 +2201,7 @@ class QtMonitorWindow:
                 # 删除变量：从 var_meta / data / 所有 plot.vars 清理
                 self._var_meta.pop(name, None)
                 self._data.pop(name, None)
-                for p in self._plots:
+                for p in self._visible_plots:
                     while name in p.get('vars', []):
                         p['vars'].remove(name)
                 self._save_plots()
@@ -1412,7 +2327,7 @@ class QtMonitorWindow:
         # （空 vars 计为"全部 var 都在该 plot"）
         all_names = set(self._data.keys())
         counts: dict[str, int] = {n: 0 for n in all_names}
-        for p in self._plots:
+        for p in self._visible_plots:
             vs = p.get('vars', [])
             if not vs:
                 # 显示全部：每个已加载变量 +1
@@ -1606,11 +2521,14 @@ class QtMonitorWindow:
         return out_rows, step
 
     def _select_plot_idx(self, parent, title: str) -> int | None:
-        """弹出对话框让用户选择一个图表，返回索引；取消返回 None。"""
+        """弹出对话框让用户选择一个图表，返回索引；取消返回 None。
+
+        基于 _visible_plots（当前视图），不是 _plots（原始配置）。
+        """
         from PySide6.QtWidgets import (
             QDialog, QDialogButtonBox, QVBoxLayout, QComboBox, QLabel,
         )
-        if not self._plots:
+        if not self._visible_plots:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.information(parent, title, '没有可操作的图表')
             return None
@@ -1622,7 +2540,7 @@ class QtMonitorWindow:
         v.setSpacing(8)
         v.addWidget(QLabel('选择图表：'))
         combo = QComboBox()
-        for i, p in enumerate(self._plots):
+        for i, p in enumerate(self._visible_plots):
             vars_info = ''
             pv = p.get('vars', [])
             if pv:
@@ -1650,7 +2568,10 @@ class QtMonitorWindow:
         return 0
 
     def _rebuild_plots_ui(self):
-        """根据 self._plots 重建 PlotWidget 列表（增删改 plot 后调用）。
+        """根据 self._visible_plots 重建 PlotWidget 列表（增删改 plot 后调用）。
+
+        使用 _visible_plots（运行时显示列表）而非 _plots（原始配置）——
+        用户在本会话里 X 关闭的 plot 不会在添加新 plot 时复活。
 
         布局：嵌套 QSplitter。外层 vertical splitter 每行一个 horizontal
         splitter，水平 splitter 装 cols 个 PlotWidget。默认等分（视觉
@@ -1672,6 +2593,29 @@ class QtMonitorWindow:
         layout = self._plots_layout
         if layout is None:
             return
+        # 防闪烁：增删 plot 时关闭窗口级重绘，rebuild 完成后一次性恢复
+        win = self._win
+        host = win if win is not None else layout.parent()
+        if host is not None:
+            try:
+                host.setUpdatesEnabled(False)
+            except Exception:
+                host = None
+        try:
+            self._do_rebuild_plots(layout, pg, Qt, QSizePolicy, QSplitter, t)
+        finally:
+            if host is not None:
+                try:
+                    host.setUpdatesEnabled(True)
+                    host.update()
+                except Exception:
+                    pass
+
+    def _do_rebuild_plots(self, layout, pg, Qt, QSizePolicy, QSplitter, t):
+        """实际 rebuild 逻辑（_rebuild_plots_ui 包了防闪烁后调用）。"""
+        # 先保存旧布局（splitter sizes），rebuild 后尝试恢复——避免每次增删
+        # plot 都重置成等分布局
+        old_sizes = self._dump_splitter_sizes()
         # 清空旧内容（之前的 v_splitter 或残留 widget）
         for i in reversed(range(layout.count())):
             item = layout.itemAt(i)
@@ -1684,8 +2628,10 @@ class QtMonitorWindow:
         self._plot_widgets = []
         self._curves = []
         self._plot_headers = []
+        self._plot_containers = []
 
-        n = len(self._plots)
+        visible = self._visible_plots
+        n = len(visible)
         if n == 0:
             return
         # 计算列数：优先左右分栏（与原 QGridLayout 一致）
@@ -1715,26 +2661,68 @@ class QtMonitorWindow:
                 idx = row * cols + col
                 if idx >= n:
                     break
-                p = self._plots[idx]
-                container, pw, header = self._make_plot_widget(p, t)
+                p = visible[idx]
+                container, pw, header = self._make_plot_widget(p, t, idx)
                 self._plot_widgets.append(pw)
                 self._curves.append({})
                 self._plot_headers.append(header)
+                self._plot_containers.append(container)
                 h_splitter.addWidget(container)
             v_splitter.addWidget(h_splitter)
 
         layout.addWidget(v_splitter)
+        # 尝试恢复旧布局（增删 plot 时若行列数相同则保留用户拖动过的尺寸）
+        self._apply_splitter_sizes(old_sizes)
+
+    def _apply_splitter_sizes(self, sizes: dict):
+        """把保存的 sizes 应用到当前 _v_splitter + 子 h_splitter。
+
+        行列数不匹配时跳过对应部分（Qt setSizes 不匹配长度会忽略，
+        但我们更明确地按子 splitter 数量做对齐）。
+        """
+        if not isinstance(sizes, dict) or not sizes:
+            return
+        try:
+            v = sizes.get('v')
+            if v and self._v_splitter is not None and \
+                    len(v) == self._v_splitter.count():
+                self._v_splitter.setSizes([int(x) for x in v])
+        except Exception:
+            pass
+        try:
+            h_list = sizes.get('h', [])
+            if not isinstance(h_list, list):
+                return
+            h_idx = 0
+            for i in range(self._v_splitter.count()):
+                w = self._v_splitter.widget(i)
+                if w is None or w.__class__.__name__ != 'QSplitter':
+                    continue
+                if h_idx >= len(h_list):
+                    break
+                cur = h_list[h_idx]
+                h_idx += 1
+                if isinstance(cur, list) and len(cur) == w.count():
+                    try:
+                        w.setSizes([int(x) for x in cur])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     # ---- plot 容器构建（顶部标题+图例条 + PlotWidget）---------------
-    def _make_plot_widget(self, p: dict, t: dict):
+    def _make_plot_widget(self, p: dict, t: dict, idx: int | None = None):
         """创建 plot 容器：顶部标题+图例条（同一行）+ PlotWidget。
 
         返回 (container, plot_widget, header)。header 存 title_label /
-        legend_box / legend_flow / legend_items 引用，便于刷新。
+        legend_box / legend_flow / legend_items / close_btn 引用，便于刷新。
+
+        idx 为本 plot 在 self._plots 中的下标；为 None 表示 popout 单窗口，
+        不渲染 X 关闭按钮（QDialog 自带原生关闭）。
         """
         import pyqtgraph as pg
         from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout,
-                                       QLabel, QSizePolicy)
+                                       QLabel, QSizePolicy, QPushButton)
         from PySide6.QtGui import QFont
         from PySide6.QtCore import Qt
         from serial_debug.ui.qt_flow_layout import QFlowLayout
@@ -1755,6 +2743,11 @@ class QtMonitorWindow:
         sp.setVerticalPolicy(QSizePolicy.Expanding)
         sp.setHorizontalPolicy(QSizePolicy.Expanding)
         pw.setSizePolicy(sp)
+        # 首次创建时启用 autoRange 让曲线立即可见；之后用户手动 zoom 会
+        # 自动 disable autoRange，增删曲线 / checkbox 切换不再重置视图。
+        pw.enableAutoRange(x=True, y=True)
+        # 标记：后续 _refresh_plot 不再调 enableAutoRange（依赖此初始 auto 状态）
+        pw._auto_ranged_init = True
 
         header_frame = QFrame()
         header_frame.setObjectName('plotHeader')
@@ -1783,6 +2776,24 @@ class QtMonitorWindow:
         legend_box.setLayout(legend_flow)
         header_layout.addWidget(legend_box, 1)
 
+        close_btn = None
+        if idx is not None:
+            close_btn = QPushButton('×')
+            close_btn.setObjectName('plotCloseBtn')
+            close_btn.setFixedSize(20, 20)
+            close_btn.setCursor(Qt.PointingHandCursor)
+            close_btn.setToolTip('隐藏本曲线图（仅本次视图，不修改配置；'
+                                  '可通过工具栏"显示全部"恢复）')
+            close_btn.setStyleSheet(
+                "QPushButton { border: none; background: transparent;"
+                f" color: {t.get('muted', '#cccccc')};"
+                " font-size: 16px; font-weight: bold; padding: 0; }"
+                "QPushButton:hover {"
+                f" color: {t.get('accent', '#ff5555')}; }}")
+            close_btn.clicked.connect(
+                lambda _=False, i=idx: self._hide_plot(i))
+            header_layout.addWidget(close_btn)
+
         container = QFrame()
         container.setObjectName('plotContainer')
         container.setStyleSheet(
@@ -1800,14 +2811,163 @@ class QtMonitorWindow:
             'legend_box': legend_box,
             'legend_flow': legend_flow,
             'legend_items': {},  # name -> (square_label, text_label)
+            'close_btn': close_btn,
         }
         return container, pw, header
 
-    def _refresh_header_legend(self, header, curves: dict, p: dict):
-        """刷新顶部条：标题文本 + 重建图例项（color square + label）。
+    def _hide_plot(self, idx: int):
+        """从当前视图移除指定 plot（仅运行时显示，不写配置）。
 
-        legend_pos == 'hidden' 时隐藏整个图例条。其他值（top-left /
-        top-right 等）在重构后统一放标题右侧同一行，位置参数被忽略。
+        不调 setVisible(False)——直接从 _visible_plots 移除 + 重建布局，
+        这样后续添加新 plot 时不会复活本图，剩余 plot 自动填空（QSplitter
+        原生行为）。配置 _plots 不动，"显示全部"按钮可恢复。
+        """
+        if idx < 0 or idx >= len(self._visible_plots):
+            return
+        removed = self._visible_plots.pop(idx)
+        self._rebuild_plots_ui()
+        self._refresh_plot()
+        if self._win is not None:
+            try:
+                self._win.statusBar().showMessage(
+                    f'已从视图移除：{removed.get("title", "曲线")}（'
+                    '工具栏点"显示全部"可从配置恢复）', 4000)
+            except Exception:
+                pass
+
+    def _show_all_plots(self):
+        """从配置 _plots 恢复所有曲线（撤销本会话里所有 X 关闭）。"""
+        self._visible_plots = list(self._plots)
+        self._rebuild_plots_ui()
+        self._refresh_plot()
+        if self._win is not None:
+            try:
+                self._win.statusBar().showMessage(
+                    f'已从配置恢复 {len(self._visible_plots)} 个曲线图', 3000)
+            except Exception:
+                pass
+
+    def _update_file_label(self, label: str) -> None:
+        """更新工具栏上的文件名显示。load_log / 串口连接时调。"""
+        self._current_file_label = label or ''
+        if self._file_label is not None:
+            try:
+                # 仅显示文件名（避免过长），完整路径在 tooltip
+                import os
+                short = label
+                if label and os.path.isfile(label):
+                    short = os.path.basename(label)
+                self._file_label.setText(short or '（未加载）')
+                self._file_label.setToolTip(label or '当前打开的日志文件 / 串口')
+            except Exception:
+                pass
+
+    def _open_parser_config(self):
+        """打开"解析器配置"对话框：贴代码 + 样本日志 → 测试 → 保存。"""
+        win = self._win
+        if win is None:
+            return
+        dlg = _QtParserConfigDialog(win, callback_save=self._save_custom_parser_state)
+        res = dlg.exec()
+        if res:
+            n = len(_CUSTOM_PARSER_STATE.get('discovered_vars', []))
+            try:
+                win.statusBar().showMessage(
+                    f'解析器配置已保存：mode={_CUSTOM_PARSER_STATE["mode"]}'
+                    f'，{n} 个发现变量', 5000)
+            except Exception:
+                pass
+            # 重新刷侧栏 / plot 对话框预览（已加载的曲线不动）
+            try:
+                self._refresh_plot()
+            except Exception:
+                pass
+
+    def _validate_log_format(self, lines: list, source_label: str) -> None:
+        """扫前 sample_lines 行，成功解析 ≥ min_count 条即视为规则正确；
+        否则弹非模态警告。
+
+        :param lines: 已读到的日志行（日志文件场景）或串口缓冲行
+            （feed 场景）。仅取前 N 行做样本
+        :param source_label: '日志 /tmp/xxx.log' 或 '串口 /dev/ttyUSB0@921600'
+        """
+        cfg = _CUSTOM_PARSER_STATE.get('validation', {})
+        if not cfg.get('enabled', True):
+            return
+        try:
+            sample_n = max(10, int(cfg.get('sample_lines', 200)))
+            min_count = max(1, int(cfg.get('min_parsed_count', 10)))
+        except (TypeError, ValueError):
+            sample_n, min_count = 200, 10
+        scan = list(lines)[:sample_n]
+        if not scan:
+            return
+        total = len(scan)
+        parsed = 0
+        for line in scan:
+            try:
+                got = list(_iter_panel_vars(line))
+            except Exception:
+                got = []
+            if got:
+                parsed += 1
+        win = self._win
+        if win is None:
+            return
+        if parsed >= min_count:
+            try:
+                rate = parsed / total if total else 0.0
+                win.statusBar().showMessage(
+                    f'{source_label} 格式校验通过：成功解析 {parsed}/{total} 行'
+                    f'（≥ 阈值 {min_count}，命中率 {rate:.0%}）', 4000)
+            except Exception:
+                pass
+            return
+        self._show_validation_warning(source_label, total, parsed, min_count)
+
+    def _show_validation_warning(self, source_label, total, parsed, min_count):
+        """非模态警告对话框：提示+提供"打开解析器配置"/"忽略"。"""
+        from PySide6.QtWidgets import QMessageBox
+        msg = (
+            f'解析成功条数过低！\n\n'
+            f'数据源：{source_label}\n'
+            f'扫描 {total} 行，成功解析 {parsed} 行'
+            f'（< 阈值 {min_count}）\n\n'
+            f'可能原因：\n'
+            f'• 日志关键字 / tag 名变了，与解析器代码不匹配\n'
+            f'• 字段位置变了（位数不匹配）\n'
+            f'• 用了新的日志格式但解析器配置还是旧的\n'
+            f'• 日志中混入大量非数据行（启动 banner / 注释等）\n\n'
+            f'建议打开"解析器配置"对话框修改代码 / 样本日志 / 重新发现变量，'
+            f'或调低阈值 / 关闭校验。'
+        )
+        dlg = QMessageBox(self._win)
+        dlg.setIcon(QMessageBox.Warning)
+        dlg.setWindowTitle('解析器配置与数据不匹配')
+        dlg.setText(msg)
+        btn_cfg = dlg.addButton('打开解析器配置…', QMessageBox.AcceptRole)
+        dlg.addButton('忽略并继续', QMessageBox.RejectRole)
+        dlg.setModal(False)
+
+        def _on_finished(_result):
+            try:
+                if dlg.clickedButton() is btn_cfg:
+                    self._open_parser_config()
+            except Exception:
+                pass
+        dlg.finished.connect(_on_finished)
+        dlg.show()
+
+    def _refresh_header_legend(self, header, vars_to_show, p: dict):
+        """刷新顶部条：标题文本 + 重建图例项（checkbox + label）。
+
+        每个图例项是一个 QCheckBox（无文字）+ QLabel（变量名）：
+          - checkbox 勾选 → 曲线显示，indicator 填充曲线颜色
+          - checkbox 未勾选 → 曲线隐藏，indicator 透明
+
+        基于 vars_to_show（plot 配置的变量列表，含被取消勾选的），
+        而非 curves（实际绘制的曲线）——否则取消勾选后 chip 消失，
+        用户无法重新勾选。
         """
         if header is None:
             return
@@ -1821,10 +2981,15 @@ class QtMonitorWindow:
         header['legend_box'].setVisible(True)
         font_size = int(p.get('legend_font_size', 9))
         from serial_debug.ui import qt_theme
-        from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+        from PySide6.QtWidgets import (QWidget, QHBoxLayout, QLabel,
+                                       QCheckBox)
+        from PySide6.QtCore import Qt as _Qt
         t = qt_theme.palette(self.theme_name)
-        # 移除不再存在的曲线对应的图例项
-        current = set(curves.keys())
+        vis = p.get('var_visibility') or {}
+        with self._data_lock:
+            all_keys = list(self._data.keys())
+        # 移除不再属于该 plot 的图例项
+        current = set(vars_to_show)
         existing = set(header['legend_items'].keys())
         for name in list(existing - current):
             chip = header['legend_items'].pop(name)
@@ -1834,27 +2999,34 @@ class QtMonitorWindow:
                 chip.deleteLater()
             except Exception:
                 pass
-        # 添加新的 / 更新已有的（色块 + 文字作为一个整体，避免换行拆开）
-        for name, item in curves.items():
-            color = self._curve_color(item)
+        muted = t.get('muted', '#888888')
+        fg = t.get('fg', '#cccccc')
+        for name in vars_to_show:
+            color = self._var_color(name, all_keys)
             meta = self._var_meta.get(name, {})
             label = meta.get('label') or name
+            checked = bool(vis.get(name, True))
             if name in header['legend_items']:
                 chip = header['legend_items'][name]
-                sq = chip.findChild(QLabel)
-                if sq is not None:
-                    sq.setStyleSheet(
-                        f"background-color: {color};"
-                        f"border: 1px solid {t.get('muted', '#888888')};")
-                # 更新文字（chip 内第二个 QLabel）
+                cb = chip.findChild(QCheckBox)
+                # checkbox 是 chip 的第一个子控件（findChildren 顺序：先 cb 后 label）
+                if cb is not None:
+                    # 阻塞信号避免 setChecked 触发 _on_legend_toggled 死循环
+                    try:
+                        cb.blockSignals(True)
+                        cb.setChecked(checked)
+                    finally:
+                        cb.blockSignals(False)
+                    cb.setStyleSheet(self._legend_checkbox_qss(color, muted))
+                # 更新文字 label
                 labels = chip.findChildren(QLabel)
-                if len(labels) >= 2 and labels[1].text() != label:
-                    labels[1].setText(label)
+                if labels and labels[0].text() != label:
+                    labels[0].setText(label)
                 try:
-                    font = labels[1].font() if len(labels) >= 2 else None
-                    if font is not None:
-                        font.setPointSize(font_size)
-                        labels[1].setFont(font)
+                    f = labels[0].font() if labels else None
+                    if f is not None:
+                        f.setPointSize(font_size)
+                        labels[0].setFont(f)
                 except Exception:
                     pass
             else:
@@ -1863,20 +3035,124 @@ class QtMonitorWindow:
                 cl = QHBoxLayout(chip)
                 cl.setContentsMargins(0, 0, 0, 0)
                 cl.setSpacing(4)
-                sq = QLabel()
-                sq.setFixedSize(12, 12)
-                sq.setStyleSheet(
-                    f"background-color: {color};"
-                    f"border: 1px solid {t.get('muted', '#888888')};")
+                cb = QCheckBox()
+                cb.setChecked(checked)
+                cb.setStyleSheet(self._legend_checkbox_qss(color, muted))
+                # 关联 toggled 信号到 plot 索引（_visible_plots 中的下标）
+                # 不能直接闭包 plot_idx——_visible_plots 后续可能增删导致
+                # idx 漂移。改用 chip 引用 + 实时查 idx。
+                cb.stateChanged.connect(
+                    self._make_legend_toggled_cb(name, chip))
                 txt = QLabel(label)
                 txt.setStyleSheet(
-                    f"color: {t.get('fg', '#cccccc')};"
+                    f"color: {fg};"
                     f"font-size: {font_size}pt;"
                     "background: transparent; border: none;")
-                cl.addWidget(sq)
+                cl.addWidget(cb)
                 cl.addWidget(txt)
                 header['legend_flow'].addWidget(chip)
                 header['legend_items'][name] = chip
+
+    def _legend_checkbox_qss(self, color: str, muted: str) -> str:
+        """生成 QCheckBox 样式表：勾选时 indicator 填充曲线颜色，
+        未勾选时透明；边框统一用 muted。"""
+        return (
+            f"QCheckBox::indicator {{ width: 12px; height: 12px;"
+            f" border: 1px solid {muted}; }}"
+            f"QCheckBox::indicator:checked {{ background-color: {color}; }}"
+            "QCheckBox::indicator:unchecked { background-color: transparent; }"
+            "QCheckBox { background: transparent; border: none; padding: 0; }"
+        )
+
+    def _make_legend_toggled_cb(self, var_name: str, chip):
+        """构造 checkbox stateChanged 回调：更新 plot 配置 + 仅重画本 plot。
+
+        通过 chip 反查 header/plot_idx（避免 plot_idx 闭包在 _visible_plots
+        增删后失效）。
+        """
+        def _cb(_state):
+            # 找到包含此 chip 的 header
+            for plot_idx, header in enumerate(self._plot_headers):
+                if header is None:
+                    continue
+                if header['legend_items'].get(var_name) is chip:
+                    p = self._visible_plots[plot_idx]
+                    vv = p.setdefault('var_visibility', {})
+                    vv[var_name] = bool(_state == 2)  # Qt.Checked=2
+                    # 只重画本 plot，不刷全部
+                    self._refresh_single_plot(plot_idx)
+                    return
+        return _cb
+
+    def _refresh_single_plot(self, plot_idx: int):
+        """只刷新指定 plot 的曲线 + 图例（不重画所有 plot）。
+
+        legend checkbox 切换时调——避免全量 _refresh_plot 抖动其他 plot。
+        """
+        if plot_idx < 0 or plot_idx >= len(self._visible_plots):
+            return
+        if plot_idx >= len(self._plot_widgets):
+            return
+        import numpy as np
+        import pyqtgraph as pg
+        p = self._visible_plots[plot_idx]
+        pw = self._plot_widgets[plot_idx]
+        curves = self._curves[plot_idx]
+        with self._data_lock:
+            all_data_keys = list(self._data.keys())
+        vars_to_show = p.get('vars') or all_data_keys
+        vis = p.get('var_visibility') or {}
+        for name in list(curves.keys()):
+            if name not in vars_to_show or not vis.get(name, True):
+                try:
+                    pw.removeItem(curves[name])
+                except Exception:
+                    pass
+                del curves[name]
+        for name in vars_to_show:
+            if name not in self._data:
+                continue
+            if not vis.get(name, True):
+                continue
+            pts = self._data[name]
+            if not pts:
+                continue
+            xs, ys = self._get_xy(name)
+            if xs is None or len(xs) == 0:
+                continue
+            color = self._var_color(name, all_data_keys)
+            meta = self._var_meta.get(name, {})
+            label = meta.get('label') or name
+            if name in curves:
+                item = curves[name]
+                try:
+                    item.setData(xs, ys, pen=pg.mkPen(color, width=1.5))
+                except Exception:
+                    pass
+            else:
+                item = pw.plot(xs, ys, pen=pg.mkPen(color, width=1.5),
+                               name=label)
+                curves[name] = item
+            item._legend_color = color
+        # checkbox 切换时不重置视图——保留用户手动 zoom 状态。
+        # 仅 _make_plot_widget 创建 pw 时调一次 enableAutoRange 让曲线首屏可见。
+        if plot_idx < len(self._plot_headers):
+            self._refresh_header_legend(
+                self._plot_headers[plot_idx], vars_to_show, p)
+        self._draw_stat_markers(pw, curves, p)
+        self._refresh_sidebar_visibility()
+
+    def _var_color(self, name: str, all_data_keys: list) -> str:
+        """取变量颜色：优先 var_meta.color，缺省回退到调色板（按数据顺序）。"""
+        meta = self._var_meta.get(name, {})
+        c = meta.get('color')
+        if c:
+            return c
+        try:
+            idx = (all_data_keys.index(name) if name in all_data_keys else 0)
+        except ValueError:
+            idx = 0
+        return self._palette[idx % len(self._palette)]
 
     @staticmethod
     def _curve_color(item) -> str:
@@ -1903,12 +3179,20 @@ class QtMonitorWindow:
     def start_serial(self, port: str, baudrate: int = 921600):
         """启动后台线程读串口，按 \\n 切行喂给解析器，QTimer 节流刷新。"""
         import threading
+        import time
         import serial
         self.stop_serial()
         ser = serial.Serial(port, baudrate, timeout=0.1)
         self._serial = ser
         self._serial_stop = threading.Event()
         self._serial_buf = ''
+        # 重置一次性校验状态（reader 攒够 N 行或 2 秒后触发）
+        self._serial_validated = False
+        self._serial_validation_buf = []
+        self._serial_start_ts = time.time()
+        port_label = f'串口 {port}@{baudrate}'
+        # 工具栏显示当前串口
+        self._update_file_label(port_label)
 
         def _reader():
             import time
@@ -1929,6 +3213,17 @@ class QtMonitorWindow:
                     line = line.rstrip('\r')
                     if not line:
                         continue
+                    # 攒缓冲用于一次性格式校验（前 N 行 或 2 秒到）
+                    if not self._serial_validated:
+                        self._serial_validation_buf.append(line)
+                        cfg_n = max(10, int(_CUSTOM_PARSER_STATE.get(
+                            'validation', {}).get('sample_lines', 200)))
+                        elapsed = time.time() - self._serial_start_ts
+                        if (len(self._serial_validation_buf) >= cfg_n or
+                                elapsed > 2.0):
+                            self._serial_validated = True
+                            buf_snapshot = list(self._serial_validation_buf)
+                            self._validation_bridge.emit(buf_snapshot, port_label)
                     try:
                         for ts, name, val in _iter_panel_vars(
                                 line + '\n', ts_fallback=time.time()):
@@ -2010,24 +3305,32 @@ class QtMonitorWindow:
 
         with self._data_lock:
             all_data_keys = list(self._data.keys())
-        for plot_idx, p in enumerate(self._plots):
+        # 迭代 _visible_plots（运行时显示列表）而非 _plots（原始配置），
+        # 否则 X 关闭 plot 4 + 新加 plot 5 后，_visible_plots=[1,2,3,5] 而
+        # _plots=[1,2,3,4,5]，_refresh_plot 会拿 _plots[3]=plot4 的配置
+        # 去刷新 widget[3]（其实显示的是 plot5）→ 用户看到 1,2,3,4
+        for plot_idx, p in enumerate(self._visible_plots):
             if plot_idx >= len(self._plot_widgets):
                 continue
             pw = self._plot_widgets[plot_idx]
             curves = self._curves[plot_idx]
             vars_to_show = p.get('vars') or all_data_keys
-            # 清理不再属于该 plot 的曲线
+            # 图例 checkbox 可见性：缺失键 = True（默认可见）
+            vis = p.get('var_visibility') or {}
+            # 清理不再属于该 plot 或被 checkbox 取消勾选的曲线
             for name in list(curves.keys()):
-                if name not in vars_to_show:
+                if name not in vars_to_show or not vis.get(name, True):
                     try:
                         pw.removeItem(curves[name])
                     except Exception:
                         pass
                     del curves[name]
-            # 创建/更新曲线
+            # 创建/更新曲线（跳过被取消勾选的变量）
             for name in vars_to_show:
                 if name not in self._data:
                     continue
+                if not vis.get(name, True):
+                    continue  # checkbox 未勾选：不画曲线
                 pts = self._data[name]
                 if not pts:
                     continue
@@ -2036,12 +3339,9 @@ class QtMonitorWindow:
                 if xs is None or len(xs) == 0:
                     continue
                 # 颜色：优先 var_meta，缺省回退到调色板
-                meta = self._var_meta.get(name, {})
-                color = meta.get('color') or self._palette[
-                    (all_data_keys.index(name)
-                     if name in all_data_keys else 0)
-                    % len(self._palette)]
+                color = self._var_color(name, all_data_keys)
                 # 图例用中文 label
+                meta = self._var_meta.get(name, {})
                 label = meta.get('label') or name
                 if name in curves:
                     item = curves[name]
@@ -2056,10 +3356,15 @@ class QtMonitorWindow:
                     curves[name] = item
                 # 记录颜色字符串供图例使用（pen 反推不可靠）
                 item._legend_color = color
-            pw.enableAutoRange()
-            # 顶部条图例刷新（标题 + 颜色块 + 中文 label，同一行）
+            # 不在每次 refresh 时调 enableAutoRange——会让用户手动 zoom 后
+            # 增删图例（曲线 / checkbox 切换）时自动重置视图范围。
+            # autoRange 已在 _make_plot_widget 创建 pw 时调用一次（首次进入
+            # 时让曲线可见）；之后由用户手动操作触发（右键 View All / 双击）。
+            # 顶部条图例刷新：基于 vars_to_show（含被取消勾选的变量，
+            # chip 保留 + checkbox 显示未选中状态，便于用户重新勾选）
             if plot_idx < len(self._plot_headers):
-                self._refresh_header_legend(self._plot_headers[plot_idx], curves, p)
+                self._refresh_header_legend(
+                    self._plot_headers[plot_idx], vars_to_show, p)
             # 在曲线上标注 max/min/avg/last
             self._draw_stat_markers(pw, curves, p)
             # 悬停提示：延迟绑定（只绑一次）
@@ -2247,7 +3552,7 @@ class QtMonitorWindow:
         import pyqtgraph as pg
         from serial_debug.ui import qt_theme
         t = qt_theme.palette(self.theme_name)
-        if not self._plots:
+        if not self._visible_plots:
             return
         idx = self._current_plot_idx()
         if idx is None:
@@ -2258,13 +3563,13 @@ class QtMonitorWindow:
                 dlg.raise_()
                 dlg.activateWindow()
                 return
-        p = self._plots[idx]
+        p = self._visible_plots[idx]
         dlg = QDialog(self._win if hasattr(self, '_win') else None)
         dlg.setWindowTitle(f'{p.get("title", "数据曲线")} - 单独显示')
         dlg.resize(900, 560)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(0, 0, 0, 0)
-        container, pw, header = self._make_plot_widget(p, t)
+        container, pw, header = self._make_plot_widget(p, t, None)
         v.addWidget(container)
         curves: dict = {}
         self._popout_dialogs.append((idx, dlg, pw, curves, header))
@@ -2288,26 +3593,29 @@ class QtMonitorWindow:
 
     def _draw_popout(self, plot_idx, dlg, pw, curves, header=None):
         """在 popout PlotWidget 上画一遍 plot_idx 的曲线。"""
-        if plot_idx >= len(self._plots):
+        if plot_idx >= len(self._visible_plots):
             return
         import numpy as np
         import pyqtgraph as pg
         from PySide6.QtCore import Qt as _Qt
-        p = self._plots[plot_idx]
+        p = self._visible_plots[plot_idx]
         with self._data_lock:
             all_data_keys = list(self._data.keys())
         vars_to_show = p.get('vars') or all_data_keys
+        vis = p.get('var_visibility') or {}
         # 清理不再属于该 plot 的曲线
         for name in list(curves.keys()):
-            if name not in vars_to_show:
+            if name not in vars_to_show or not vis.get(name, True):
                 try:
                     pw.removeItem(curves[name])
                 except Exception:
                     pass
                 del curves[name]
-        # 创建/更新曲线
+        # 创建/更新曲线（跳过被取消勾选的变量）
         for name in vars_to_show:
             if name not in self._data:
+                continue
+            if not vis.get(name, True):
                 continue
             pts = self._data[name]
             if not pts:
@@ -2315,10 +3623,8 @@ class QtMonitorWindow:
             xs, ys = self._get_xy(name)
             if xs is None or len(xs) == 0:
                 continue
+            color = self._var_color(name, all_data_keys)
             meta = self._var_meta.get(name, {})
-            color = meta.get('color') or self._palette[
-                (all_data_keys.index(name)
-                 if name in all_data_keys else 0) % len(self._palette)]
             label = meta.get('label') or name
             if name in curves:
                 try:
@@ -2331,9 +3637,9 @@ class QtMonitorWindow:
                 curves[name] = item
             curves[name]._legend_color = color
         pw.enableAutoRange()
-        # 顶部条图例刷新
+        # 顶部条图例刷新（popout 单图也用 checkbox 图例）
         if header is not None:
-            self._refresh_header_legend(header, curves, p)
+            self._refresh_header_legend(header, vars_to_show, p)
         # 在曲线上标注 max/min/avg/last
         self._draw_stat_markers(pw, curves, p)
 
