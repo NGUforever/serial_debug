@@ -1,4 +1,4 @@
-"""Qt 主程序 - 串口调试助手（Stage 4.1-4.5）。
+"""Qt 主程序 - 串口调试助手。
 
 迁移自 tkinter 版 app.py。功能：
   - 串口连接 / 断开（端口 + 波特率 + 数据位/校验/停止位/流控）
@@ -7,12 +7,12 @@
   - 响应检测 + 超时提示 + pending 配对
   - 主题切换（VSCode Dark+ / 浅色，复用 qt_theme）
   - 状态栏：状态点（灰/绿/黄/红）+ 状态文本
-  - 菜单栏：工具（Qt 监视窗口 / AT 命令面板 / 日志查看器 / 刷新端口）
+  - 菜单栏：工具（数据监视窗口 / AT 命令面板 / 日志查看器 / 刷新端口）
   - 筛选：正则表达式 + 启用开关，仅对周期日志行生效
   - 日志落盘：独立线程写入，不影响收发显示
   - 日志查看器：子进程启动 tkinter LogViewerWindow
 
-入口：默认即 Qt 主程序（Stage 4.5 起，无需环境变量）
+入口：默认即 Qt 主程序
       SERIAL_DEBUG_TK=1 回退到 tkinter 版
 """
 from __future__ import annotations
@@ -195,7 +195,7 @@ class QtSerialDebugApp:
         self._app = app
 
         win = QMainWindow()
-        win.setWindowTitle('串口调试助手 (Qt)')
+        win.setWindowTitle('串口调试助手')
         try:
             geo = self.cfg.get('geometry') or '1100x680'
             parts = geo.split('x')
@@ -495,7 +495,7 @@ class QtSerialDebugApp:
         # 工具菜单
         m_tools = mb.addMenu('工具')
         act_qt_monitor = QAction(_icon(QStyle.SP_ComputerIcon),
-                                  'Qt 监视窗口…', win)
+                                  '数据监视窗口…', win)
         act_qt_monitor.setShortcut('Ctrl+M')
         act_qt_monitor.triggered.connect(self._open_qt_monitor)
         m_tools.addAction(act_qt_monitor)
@@ -980,7 +980,7 @@ class QtSerialDebugApp:
 
     # ---- 菜单动作 -----------------------------------------------------
     def _open_qt_monitor(self):
-        """启动 Qt 监视窗口子进程（避免双事件循环冲突）。
+        """启动数据监视窗口子进程（避免双事件循环冲突）。
 
         用 sys.executable + 环境变量 SERIAL_DEBUG_QT_PILOT=1 走 main()
         里的 QtMonitorWindow 路径，兼容 PyInstaller 打包后 -m 不识别。
@@ -1134,7 +1134,7 @@ class QtSerialDebugApp:
             versions = f'版本获取失败: {e}'
         QMessageBox.information(
             self._win, '关于',
-            '串口调试助手 (Qt) - Stage 4.1-4.5\n\n'
+            '串口调试助手\n\n'
             '技术栈:\n' + versions + '\n\n'
             '功能:\n'
             '  - 串口连接 / 断开（端口/波特率/数据位/校验/停止位/流控）\n'
@@ -1143,7 +1143,7 @@ class QtSerialDebugApp:
             '  - 追加 CRLF / 自动滚动 / 时间戳转换 / 清空\n'
             '  - 响应检测 + 超时提示 + pending 配对\n'
             '  - 主题切换（VSCode Dark+ / 浅色）\n'
-            '  - 工具菜单：Qt 监视窗口 / AT 命令面板 / 日志查看器\n'
+            '  - 工具菜单：数据监视窗口 / AT 命令面板 / 日志查看器\n'
             '  - 筛选（正则）+ 日志落盘（独立线程）\n'
             '  - 默认入口即 Qt（SERIAL_DEBUG_TK=1 回退 tkinter）')
 

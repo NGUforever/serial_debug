@@ -289,19 +289,15 @@ class SerialDebugApp:
         m_tools.add_command(label='AT 命令列表…',
                             command=self._open_at_window)
         m_tools.add_separator()
-        m_tools.add_command(label='电机数据监视…',
+        m_tools.add_command(label='数据监视…',
                             command=self._open_motor_monitor)
-        m_tools.add_command(label='BMS 数据监视…',
-                            command=self._open_bms_monitor)
-        m_tools.add_command(label='IMU 数据监视…',
-                            command=self._open_imu_monitor)
 
         # 帮助
         m_help = tk.Menu(menubar, tearoff=False)
         menubar.add_cascade(label='帮助(H)', menu=m_help)
-        m_help.add_command(label='Qt 试点曲线窗口…',
+        m_help.add_command(label='数据监视窗口…',
                            command=self._open_qt_monitor_pilot)
-        m_help.add_command(label='Qt 主程序（Stage 4 试点）…',
+        m_help.add_command(label='串口调试助手 (Qt)…',
                            command=self._open_qt_main_pilot)
         m_help.add_separator()
         m_help.add_command(label='关于', command=self._show_about)
@@ -360,14 +356,14 @@ class SerialDebugApp:
         self._on_autoscroll_toggle()
 
     def _open_qt_monitor_pilot(self):
-        """启动 Qt + pyqtgraph 试点窗口（独立进程）。
+        """启动数据监视窗口（独立进程）。
 
         与 tkinter 主应用隔离，避免双事件循环冲突。
 
         实现方式：用环境变量 SERIAL_DEBUG_QT_PILOT=1 启动 sys.executable
         子进程。PyInstaller 打包后 sys.executable 是 bootloader，不识别
         `-m <module>` 参数，所以不能用 `python -m` 方式启动。改用环境变量
-        让主入口 main() 在子进程里走 Qt 试点路径。
+        让主入口 main() 在子进程里走数据监视路径。
         """
         import subprocess
         env = os.environ.copy()
@@ -382,14 +378,14 @@ class SerialDebugApp:
         except Exception as e:
             try:
                 messagebox.showerror(
-                    'Qt 试点启动失败',
-                    f'启动 Qt 试点窗口失败：{e}\n'
+                    '数据监视窗口启动失败',
+                    f'启动数据监视窗口失败：{e}\n'
                     '请确认已安装 PySide6 + pyqtgraph（pip install PySide6 pyqtgraph）')
             except Exception:
                 pass
 
     def _open_qt_main_pilot(self):
-        """启动 Qt 主程序试点（独立进程）。
+        """启动 Qt 串口调试助手（独立进程）。
 
         环境变量 SERIAL_DEBUG_QT_MAIN=1 让 main() 走 qt_app.QtSerialDebugApp
         路径，与 tkinter 主事件循环隔离。

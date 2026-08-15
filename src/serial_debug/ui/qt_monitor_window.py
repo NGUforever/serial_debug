@@ -1324,10 +1324,18 @@ class QtMonitorWindow:
             pass
 
     def _save_plots(self) -> None:
+        """保存当前显示的 plots 到 config 的 qt_monitor_plots。
+
+        保存 _visible_plots（运行时显示列表，包含本会话里的增删改 + X 关闭），
+        下次启动 _load_plots 第 3 级会读到——这样关闭时用户调整后的布局
+        自动恢复，不强制用户"导出配置"。
+        """
         from serial_debug.infra import config
         try:
             cfg = config.load()
-            cfg['qt_monitor_plots'] = self._plots
+            # 同步 _plots = _visible_plots，避免下次启动 _plots 还指向旧基准
+            self._plots = [dict(p) for p in self._visible_plots]
+            cfg['qt_monitor_plots'] = [_normalize_plot(p) for p in self._visible_plots]
             if self._win is not None:
                 try:
                     cfg['qt_monitor_geometry'] = self._win.saveGeometry().data().hex()
@@ -1413,6 +1421,36 @@ class QtMonitorWindow:
             config.save(cfg)
         except Exception:
             pass
+
+    def _last_dir(self, key: str, default: str = '') -> str:
+        """读上次 file dialog 记的目录（key 为 config 字段名）。
+
+        无记录或目录不存在时回退到 ~。
+        """
+        from serial_debug.infra import config
+        import os
+        try:
+            d = config.load().get(key, '') or ''
+            if d and os.path.isdir(d):
+                return d
+        except Exception:
+            pass
+        return os.path.expanduser(default or '~')
+
+    def _remember_dir(self, key: str, file_path: str) -> None:
+        """把 file_path 所在目录记到 config[key]——下次打开同类型文件时默认此目录。"""
+        from serial_debug.infra import config
+        import os
+        try:
+            d = os.path.dirname(os.path.abspath(file_path)) if file_path else ''
+            if not d:
+                return
+            cfg = config.load()
+            cfg[key] = d
+            config.save(cfg)
+        except Exception:
+            pass
+
 
     def _dump_splitter_sizes(self) -> dict:
         """导出 v_splitter + 子 h_splitter 的 sizes（便于启动恢复布局）。"""
@@ -1508,7 +1546,18 @@ class QtMonitorWindow:
         自动按行内 tag 检测数据类型，变量名加 Panel 前缀（motor./bms./imu.）
         避免冲突。返回解析命中的行数。加载完成后跑一次格式校验（成功率
         低于阈值则弹非模态警告 + 状态栏提示）。
+
+        加载完毕后刷新 plot + sidebar：从日志查看器入口的 _replay_to_monitor
+        会主动调 _refresh_plot，但 monitor 自身"打开日志"按钮走这条路径，
+        必须自刷新，否则曲线显示陈旧 / 错位。
+
+        先清 _data + _data_cache：避免旧日志/mock 数据残留导致时间戳跳跃，
+        曲线错位（与 _replay_to_monitor 走新实例 _data={} 路径对齐）。
+        var_meta 不清——颜色/label 等用户配置应跨日志保留。
         """
+        # 清数据点（保留 var_meta 配置）
+        self._data.clear()
+        self._data_cache.clear()
         n = 0
         sample_lines: list[str] = []
         sample_n = max(10, int(_CUSTOM_PARSER_STATE.get(
@@ -1531,6 +1580,13 @@ class QtMonitorWindow:
         self._validate_log_format(sample_lines, f'日志 {path}')
         # 更新工具栏文件名显示
         self._update_file_label(path)
+        # 刷新 plot + sidebar：与 _replay_to_monitor 路径对齐
+        try:
+            self._refresh_plot()
+            self._refresh_sidebar()
+            self._refresh_sidebar_visibility()
+        except Exception:
+            pass
         return n
 
     def gen_mock_data(self, n_points: int) -> None:
@@ -1546,6 +1602,7 @@ class QtMonitorWindow:
         spikes = rng.random(n_points) < 0.001
         data2 = np.where(spikes, data2 + 80, data2)
         data3 = t + rng.uniform(-0.5, 0.5, n_points)
+        self._data_cache.clear()
         self._data = {
             'sin_50hz': (t, data1),
             'cos_with_spikes': (t.copy(), data2),
@@ -1583,7 +1640,7 @@ class QtMonitorWindow:
             pass
 
         win = QMainWindow()
-        win.setWindowTitle('[Qt 试点] 数据监视窗口 - PySide6 + pyqtgraph')
+        win.setWindowTitle('数据监视窗口')
         win.resize(1400, 800)
 
         # 跨线程校验桥（在主线程 setup，避免 reader 线程直接动 UI）
@@ -1666,7 +1723,15 @@ class QtMonitorWindow:
                 initial=self._visible_plots[idx], title='编辑图表')
             res = dlg.exec()
             if res:
-                p = _normalize_plot(res)
+                # 合并而非替换：res 只含 dialog 收集的字段（title/vars/
+                # show_*/hover_*/legend_*），不含 var_visibility（图例
+                # checkbox 勾选状态）等运行时字段。直接 _normalize_plot(res)
+                # 会让 var_visibility 丢失 → 用户编辑图例位置后，原本取消
+                # 勾选的曲线又重新可见（"还原到全部显示"）。
+                # 修复：把旧 plot 的字段作底，让 res 覆盖 dialog 改的部分。
+                old = self._visible_plots[idx] or {}
+                merged = {**old, **res}
+                p = _normalize_plot(merged)
                 self._visible_plots[idx] = p
                 # 同步到 _plots：找原始 idx（_plots 中可能含有已被 X 关闭的项，
                 # 这里简单策略——重设 _plots 为 visible 的拷贝）
@@ -1696,10 +1761,12 @@ class QtMonitorWindow:
 
         def _open_log():
             from PySide6.QtWidgets import QFileDialog
+            start_dir = self._last_dir('qt_monitor_last_log_dir')
             path, _ = QFileDialog.getOpenFileName(
-                win, '打开日志文件', os.path.expanduser('~'),
+                win, '打开日志文件', start_dir,
                 '日志 (*.txt *.log);;所有文件 (*)')
             if path:
+                self._remember_dir('qt_monitor_last_log_dir', path)
                 n = self.load_log(path)
                 self._refresh_plot()
                 win.statusBar().showMessage(
@@ -1707,11 +1774,13 @@ class QtMonitorWindow:
 
         def _import_plots_cfg():
             from PySide6.QtWidgets import QFileDialog, QMessageBox
+            start_dir = self._last_dir('qt_monitor_last_import_cfg_dir')
             path, _ = QFileDialog.getOpenFileName(
-                win, '导入曲线图配置', os.path.expanduser('~'),
+                win, '导入曲线图配置', start_dir,
                 '曲线图配置 (*.json);;所有文件 (*)')
             if not path:
                 return
+            self._remember_dir('qt_monitor_last_import_cfg_dir', path)
             try:
                 n = self.import_plots_config(path)
                 win.statusBar().showMessage(
@@ -1724,11 +1793,14 @@ class QtMonitorWindow:
             if not self._visible_plots:
                 QMessageBox.information(win, '导出', '当前没有曲线图配置')
                 return
+            start_dir = self._last_dir('qt_monitor_last_export_cfg_dir')
+            default_path = os.path.join(start_dir, 'plots_config.json')
             path, _ = QFileDialog.getSaveFileName(
-                win, '导出曲线图配置', os.path.expanduser('~/plots_config.json'),
+                win, '导出曲线图配置', default_path,
                 '曲线图配置 (*.json);;所有文件 (*)')
             if not path:
                 return
+            self._remember_dir('qt_monitor_last_export_cfg_dir', path)
             try:
                 self.export_plots_config(path)
                 win.statusBar().showMessage(
@@ -1790,11 +1862,13 @@ class QtMonitorWindow:
             if not self._data:
                 QMessageBox.information(win, '导出 CSV', '没有可导出的数据')
                 return
+            start_dir = self._last_dir('qt_monitor_last_csv_dir')
             path, _ = QFileDialog.getSaveFileName(
-                win, '导出 CSV', os.path.expanduser('~'),
+                win, '导出 CSV', start_dir,
                 'CSV (*.csv);;所有文件 (*)')
             if not path:
                 return
+            self._remember_dir('qt_monitor_last_csv_dir', path)
             try:
                 n_rows, step = self._export_csv(path)
                 QMessageBox.information(
@@ -1942,12 +2016,16 @@ class QtMonitorWindow:
         win.statusBar().addPermanentWidget(tech_label)
         win.statusBar().showMessage('就绪')
 
-        # 关闭时保存几何 + plots + var_meta
+        # 关闭时保存几何 + plots + var_meta——让下次启动自动恢复
         def _close_event(event):
-            # 不自动保存配置：用户需手动"导出配置"才保留变更
-            # 仅停止串口 reader 线程，避免悬挂
             try:
                 self.stop_serial()
+            except Exception:
+                pass
+            try:
+                self._save_plots()
+                self._save_var_meta()
+                self._save_geometry()
             except Exception:
                 pass
             event.accept()
@@ -3177,11 +3255,19 @@ class QtMonitorWindow:
 
     # ---- 实时串口 feed ----------------------------------------------
     def start_serial(self, port: str, baudrate: int = 921600):
-        """启动后台线程读串口，按 \\n 切行喂给解析器，QTimer 节流刷新。"""
+        """启动后台线程读串口，按 \\n 切行喂给解析器，QTimer 节流刷新。
+
+        清空 _data + _data_cache：与 load_log 对齐，避免之前日志/mock 数据
+        残留导致时间戳跳跃、曲线错位（串口实时数据应从空白开始）。
+        var_meta 不清——颜色/label 跨会话保留。
+        """
         import threading
         import time
         import serial
         self.stop_serial()
+        # 清数据点（保留 var_meta 配置）
+        self._data.clear()
+        self._data_cache.clear()
         ser = serial.Serial(port, baudrate, timeout=0.1)
         self._serial = ser
         self._serial_stop = threading.Event()
@@ -3474,9 +3560,11 @@ class QtMonitorWindow:
     def _draw_stat_markers(self, pw, curves: dict, p_cfg: dict):
         """在曲线上标注 max/min 点位 + 数值标签。
 
-        只在曲线上画 max/min（点位明确，argmax/argmin 给出具体坐标）；
-        avg/last 不在曲线上画——avg 是统计值无对应点，last 由悬停 tooltip
-        显示。avg/last 开关只影响悬停 tooltip 显示，不影响曲线标注。
+        借鉴 PlotJuggler QwtPlotMarker 的做法：标记用小圆点（6-8px）+
+        文本固定方向偏移——max 文本放在点上方、min 文本放在点下方，
+        避免直接覆盖曲线本体。y 偏移按当前视图 y 范围的 4% 动态计算，
+        跟随用户 zoom 适配（不写死像素，因为 pyqtgraph TextItem 用
+        数据坐标系）。
         """
         import numpy as np
         import pyqtgraph as pg
@@ -3496,6 +3584,16 @@ class QtMonitorWindow:
         if not curves:
             return
 
+        # y 偏移：取当前视图 y 范围的 4%（所有曲线共用，保证视觉一致）
+        try:
+            vr = pw.getViewBox().viewRange()
+            y_span = vr[1][1] - vr[1][0]
+            if not np.isfinite(y_span) or y_span <= 0:
+                y_span = 1.0
+        except Exception:
+            y_span = 1.0
+        y_off = y_span * 0.04
+
         def _fmt(v):
             try:
                 if v == int(v):
@@ -3512,29 +3610,34 @@ class QtMonitorWindow:
                     continue
                 meta = self._var_meta.get(name, {})
                 color = meta.get('color', '#cccccc')
-                pts = []  # ScatterPlot 点
-                txts = []  # TextItem 数值
+                pts = []  # ScatterPlot 点（小圆，不遮挡曲线）
+                txts = []  # (x, y, text, anchor)
                 if show_max:
                     i = int(np.argmax(yd))
                     pts.append((xd[i], yd[i]))
-                    txts.append((xd[i], yd[i], f'max={_fmt(float(yd[i]))}'))
+                    # 文本在 max 点上方：anchor=(0.5, 1) = 文本底边对齐到 y
+                    txts.append((xd[i], yd[i] + y_off,
+                                  f'max={_fmt(float(yd[i]))}', (0.5, 1)))
                 if show_min:
                     i = int(np.argmin(yd))
                     pts.append((xd[i], yd[i]))
-                    txts.append((xd[i], yd[i], f'min={_fmt(float(yd[i]))}'))
+                    # 文本在 min 点下方：anchor=(0.5, 0) = 文本顶边对齐到 y
+                    txts.append((xd[i], yd[i] - y_off,
+                                  f'min={_fmt(float(yd[i]))}', (0.5, 0)))
                 if pts:
                     xs = np.array([p[0] for p in pts])
                     ys = np.array([p[1] for p in pts])
+                    # 小圆点 size=7：标记点位但不遮挡曲线
                     sc = pg.ScatterPlotItem(
                         xs=xs, ys=ys,
-                        symbol='star', size=12,
+                        symbol='o', size=7,
                         pen=pg.mkPen(color, width=1),
                         brush=pg.mkBrush(color))
                     pw.addItem(sc, ignoreBounds=True)
                     pw._stat_markers.append(sc)
-                for tx, ty, text in txts:
+                for tx, ty, text, anchor in txts:
                     t = pg.TextItem(text, color=color,
-                                    fill='#1e1e1ecc', anchor=(0, 1))
+                                    fill='#1e1e1ed9', anchor=anchor)
                     t.setPos(tx, ty)
                     pw.addItem(t, ignoreBounds=True)
                     pw._stat_markers.append(t)

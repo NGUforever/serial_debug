@@ -17,7 +17,8 @@ import time
 from bisect import bisect_right
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QRect, QSize, QPoint
+from PySide6.QtCore import (Qt, QTimer, QRect, QSize, QPoint, Signal,
+                            Slot, QThread, QObject)
 from PySide6.QtGui import (QColor, QFont, QTextCharFormat, QTextCursor,
                             QAction, QKeySequence, QPainter, QShortcut,
                             QTextBlockUserData)
@@ -42,8 +43,12 @@ TS_RE = re.compile(r'^(\d{13})\b')
 RENDER_BATCH = 50000
 SEARCH_SCAN_LIMIT = 2_000_000
 GLOBAL_SEARCH_MAX = 500
+SEARCH_SCAN_TIMEOUT_MS = 5000   # 单次搜索墙钟超时
+SEARCH_MAX_LINE_LEN = 8000      # 单行搜索截断上限：避免超长行 + 灾难性正则回溯
 FILTER_RESULT_MAX = 50000
 FILTER_INSERT_BATCH = 5000
+FILTER_MAX_LINE_LEN = 8000  # 单行搜索时截断上限：避免超长行 + 灾难性正则回溯
+FILTER_SCAN_TIMEOUT_MS = 800  # 单次筛选扫描超时（墙钟）：超过就中断 + 报警
 LIVE_POLL_MS = 500
 LIVE_IDLE_POLL_MS = 2000
 LIVE_IDLE_THRESHOLD = 6
@@ -209,6 +214,9 @@ class _QtLogViewTab(QWidget):
         self._search_re: re.Pattern | None = None
         self._search_matches: list[int] = []
         self._search_pos = -1
+        self._search_epoch = 0  # 异步搜索序号：旧 epoch 结果丢弃
+        self._search_pending: str | None = None  # 'next' / 'prev' / None
+        self._search_worker = None  # 由主窗口注入
         self._auto_load = True
         self._loading = False
         self._placeholder_block: int = -1  # 占位符 block number
@@ -541,9 +549,9 @@ class _QtLogViewTab(QWidget):
 
     def _search_next_match(self):
         if not self._search_matches:
+            # matches 空时触发异步搜索 + 等 done 回调中跳第一个
+            self._search_pending = 'next'
             self._do_search()
-        if not self._search_matches:
-            self._search_info.setText('无匹配')
             return
         self._search_pos = (self._search_pos + 1) % len(self._search_matches)
         self._goto_match(self._search_matches[self._search_pos])
@@ -552,9 +560,8 @@ class _QtLogViewTab(QWidget):
 
     def _search_prev_match(self):
         if not self._search_matches:
+            self._search_pending = 'prev'
             self._do_search()
-        if not self._search_matches:
-            self._search_info.setText('无匹配')
             return
         self._search_pos = (self._search_pos - 1) % len(self._search_matches)
         self._goto_match(self._search_matches[self._search_pos])
@@ -562,10 +569,16 @@ class _QtLogViewTab(QWidget):
             f'{self._search_pos + 1}/{len(self._search_matches)}')
 
     def _do_search(self):
+        """触发后台搜索：UI 线程不阻塞，反复回车时旧 epoch 结果丢弃。"""
         text = self._search_edit.text()
         if not text:
             self._search_matches = []
             self._search_info.setText('')
+            return
+        # 静态预检：危险正则 + 语法错误立即提示
+        if _is_dangerous_regex(text):
+            self._search_info.setText('正则存在嵌套量词，可能引发灾难性回溯')
+            self._search_matches = []
             return
         try:
             self._search_re = re.compile(text)
@@ -573,18 +586,63 @@ class _QtLogViewTab(QWidget):
             self._search_info.setText('正则错误')
             self._search_matches = []
             return
+        if self._search_worker is None:
+            # 无 worker 回退到同步（不应出现，主窗口总会注入）
+            self._do_search_sync()
+            return
+        self._search_epoch += 1
+        ep = self._search_epoch
+        self._search_info.setText('搜索中…')
+        # 用 Signal 触发 worker（跨线程 QueuedConnection 自动派发）；
+        # 不用 Q_ARG(list) —— PySide6 打包后 qArgDataFromPyType 崩
+        self._search_worker.start_run_single.emit(
+            ep, list(self._all_lines), text)
+
+    def _do_search_sync(self):
+        """回退路径：UI 线程同步搜索（无 worker 时）。"""
         matches: list[int] = []
         scanned = 0
         for i, ln in enumerate(self._all_lines):
             if scanned > SEARCH_SCAN_LIMIT:
                 break
             scanned += 1
-            if self._search_re.search(ln):
+            scan_ln = ln if len(ln) <= SEARCH_MAX_LINE_LEN \
+                else ln[:SEARCH_MAX_LINE_LEN]
+            if self._search_re and self._search_re.search(scan_ln):
                 matches.append(i)
                 if len(matches) >= GLOBAL_SEARCH_MAX * 4:
                     break
         self._search_matches = matches
         self._search_pos = -1
+
+    def _on_search_done(self, epoch: int, matches: list, info: str):
+        """worker 完成回调：过期 epoch 丢弃。若有 pending 动作则跳第一个/末个。"""
+        if epoch != self._search_epoch:
+            return
+        self._search_matches = matches
+        self._search_pos = -1
+        pending = self._search_pending
+        self._search_pending = None
+        if matches and pending == 'next':
+            self._search_pos = 0
+            self._goto_match(matches[0])
+            self._search_info.setText(f'1/{len(matches)}')
+            return
+        if matches and pending == 'prev':
+            self._search_pos = len(matches) - 1
+            self._goto_match(matches[-1])
+            self._search_info.setText(f'{len(matches)}/{len(matches)}')
+            return
+        self._search_info.setText(info if not matches
+                                   else f'{len(matches)} 个匹配，按 ↓ 跳转')
+
+    def _on_search_error(self, epoch: int, msg: str):
+        if epoch != self._search_epoch:
+            return
+        self._search_matches = []
+        self._search_pos = -1
+        self._search_pending = None
+        self._search_info.setText(msg)
 
     def _goto_match(self, line_idx: int):
         self.goto_line(line_idx)
@@ -768,12 +826,14 @@ class _QtGlobalSearchBar(QDockWidget):
     """
 
     def __init__(self, parent, theme, on_locate=None,
-                 tab_widget=None, tabs_list_fn=None):
+                 tab_widget=None, tabs_list_fn=None, search_worker=None):
         super().__init__('全局搜索', parent)
         self._theme = theme
         self._on_locate = on_locate
         self._tab_widget = tab_widget
         self._tabs_list_fn = tabs_list_fn
+        self._search_worker = search_worker
+        self._search_epoch = 0
         self.setFeatures(QDockWidget.DockWidgetMovable
                          | QDockWidget.DockWidgetFloatable
                          | QDockWidget.DockWidgetClosable)
@@ -830,34 +890,60 @@ class _QtGlobalSearchBar(QDockWidget):
         self._edit.selectAll()
 
     def _do_search(self):
+        """全局搜索：投递后台 worker，UI 线程不阻塞。"""
         text = self._edit.text()
         if not text:
             self._info_lbl.setText('请输入搜索词')
             return
+        if _is_dangerous_regex(text):
+            self._info_lbl.setText('正则存在嵌套量词，可能引发灾难性回溯，已拒绝')
+            self._tree.clear()
+            return
         try:
-            pattern = re.compile(text)
-        except re.error:
-            self._info_lbl.setText('正则错误')
+            re.compile(text)
+        except re.error as e:
+            self._info_lbl.setText(f'正则错误：{e}')
             return
-        self._tree.clear()
-        if self._tabs_list_fn is None:
+        if self._search_worker is None or self._tabs_list_fn is None:
+            self._info_lbl.setText('搜索未就绪')
             return
-        total = 0
+        # 取 tabs 快照（只复制 lines + filename，避免 worker 线程访问 Qt 对象）
+        tabs_snap = []
         for i, tab in enumerate(self._tabs_list_fn()):
             if not isinstance(tab, _QtLogViewTab):
                 continue
-            results = tab.global_search(pattern)
-            for line_idx, col, preview in results:
-                item = QTreeWidgetItem([
-                    tab.filename(), str(line_idx + 1), preview])
-                item.setData(0, Qt.UserRole, (i, line_idx))
-                self._tree.addTopLevelItem(item)
-                total += 1
-                if total >= GLOBAL_SEARCH_MAX:
-                    self._info_lbl.setText(
-                        f'已截断 {GLOBAL_SEARCH_MAX} 个结果（共更多）')
-                    return
-        self._info_lbl.setText(f'{total} 个结果')
+            tabs_snap.append((i, list(tab.all_lines()), tab.filename()))
+        self._search_epoch += 1
+        ep = self._search_epoch
+        self._tree.clear()
+        self._info_lbl.setText('搜索中…')
+        # 用 Signal 触发 worker（跨线程 QueuedConnection 自动派发）；
+        # 不用 Q_ARG(list) —— PySide6 打包后 qArgDataFromPyType 崩
+        self._search_worker.start_run_global.emit(ep, tabs_snap, text)
+
+    def _on_search_done(self, epoch: int, results: list, info: str):
+        """worker 完成回调：批量插入 + setUpdatesEnabled 包裹减少闪烁。"""
+        if epoch != self._search_epoch:
+            return
+        self._tree.setUpdatesEnabled(False)
+        try:
+            self._tree.clear()
+            items = []
+            for tab_idx, line_idx, col, preview, fname in results:
+                item = QTreeWidgetItem([fname, str(line_idx + 1), preview])
+                item.setData(0, Qt.UserRole, (tab_idx, line_idx))
+                items.append(item)
+            if items:
+                self._tree.addTopLevelItems(items)
+        finally:
+            self._tree.setUpdatesEnabled(True)
+        self._info_lbl.setText(info)
+
+    def _on_search_error(self, epoch: int, msg: str):
+        if epoch != self._search_epoch:
+            return
+        self._tree.clear()
+        self._info_lbl.setText(msg)
 
     def _on_double_click(self, item):
         data = item.data(0, Qt.UserRole)
@@ -885,10 +971,21 @@ class QtLogViewerWindow(QMainWindow):
         self._theme = themes.THEMES[themes.resolve(theme_name)]
         self._tabs: list[_QtLogViewTab] = []
         self._filter_panel: _QtFilterPanel | None = None  # Phase 2
+        # 后台共享搜索线程：当前文件搜索 + 全局搜索都丢这里跑，避免阻塞 UI
+        self._search_thread = QThread(self)
+        self._search_worker = _SearchWorker()
+        self._search_worker.moveToThread(self._search_thread)
+        self._search_worker.done_single.connect(self._on_search_done_single)
+        self._search_worker.done_global.connect(self._on_search_done_global)
+        self._search_worker.error.connect(self._on_search_error)
+        self._search_thread.start()
         # 监视窗口单例（Phase 5）
         self._motor_monitor = None
         self._bms_monitor = None
         self._imu_monitor = None
+        # 统一单例：不区分 motor/bms/imu，用户打开后通过导入配置文件
+        # 决定显示哪些曲线（不同设备日志格式靠自定义解析器区分）
+        self._monitor = None
 
         # 应用 QSS
         app = QApplication.instance() or QApplication(sys.argv)
@@ -896,7 +993,7 @@ class QtLogViewerWindow(QMainWindow):
         qt_theme.apply_qss(app, theme_name)
 
         # 窗口
-        self.setWindowTitle('日志查看')
+        self.setWindowTitle('日志查看器')
         self.resize(1400, 800)
         self.setMinimumSize(900, 540)
         # 持久化几何
@@ -930,7 +1027,8 @@ class QtLogViewerWindow(QMainWindow):
         self._global_search = _QtGlobalSearchBar(
             self, self._theme,
             on_locate=self._on_global_search_locate,
-            tabs_list_fn=lambda: self._tabs)
+            tabs_list_fn=lambda: self._tabs,
+            search_worker=self._search_worker)
         self.addDockWidget(Qt.TopDockWidgetArea, self._global_search)
         self._global_search.hide()
         self._global_search.visibilityChanged.connect(self._on_global_search_visibility)
@@ -1075,14 +1173,8 @@ class QtLogViewerWindow(QMainWindow):
         a.triggered.connect(self._focus_current_search)
         m_tools.addAction(a)
         m_tools.addSeparator()
-        a = QAction('电机数据监视…', self)
-        a.triggered.connect(lambda: self._open_monitor('motor'))
-        m_tools.addAction(a)
-        a = QAction('BMS 数据监视…', self)
-        a.triggered.connect(lambda: self._open_monitor('bms'))
-        m_tools.addAction(a)
-        a = QAction('IMU 数据监视…', self)
-        a.triggered.connect(lambda: self._open_monitor('imu'))
+        a = QAction('数据监视…', self)
+        a.triggered.connect(self._open_monitor)
         m_tools.addAction(a)
         # 帮助菜单
         m_help = mb.addMenu('帮助(H)')
@@ -1099,6 +1191,7 @@ class QtLogViewerWindow(QMainWindow):
                 return
         tab = _QtLogViewTab(self, path, self._theme,
                             on_line_click=self._on_text_click)
+        tab._search_worker = self._search_worker
         tab._feed_monitor_cb = self._feed_monitor_from_line
         idx = self._tab_widget.addTab(tab, tab.filename())
         self._tabs.append(tab)
@@ -1137,6 +1230,18 @@ class QtLogViewerWindow(QMainWindow):
         self._tab_widget.removeTab(idx)
         self._tabs.pop(idx)
         self._info_lbl.setText(f'{len(self._tabs)} 个文件打开')
+        # removeTab 后若 currentIndex 数值未变（如关闭的就是当前 tab 且
+        # 还有别的 tab 顶上来），Qt 不会发 currentChanged 信号——
+        # 必须显式重绑 filter panel，否则 _tab 还指向已关闭的旧 tab，
+        # 后续筛选会继续扫旧 tab 的行数据。
+        new_tab = self._current_tab()
+        if self._filter_panel is not None:
+            self._filter_panel.set_tab(new_tab)
+        # 实时刷新按钮状态同步
+        if new_tab is not None:
+            live = new_tab.is_live_mode()
+            self._live_action.setChecked(live)
+            self._live_action_menu.setChecked(live)
 
     def _current_tab(self) -> _QtLogViewTab | None:
         idx = self._tab_widget.currentIndex()
@@ -1253,9 +1358,8 @@ class QtLogViewerWindow(QMainWindow):
             tab.goto_line(line_idx)
 
     def _feed_monitor_from_line(self, line: str):
-        # Phase 5：实时新行喂给监视窗口
-        for monitor in (self._motor_monitor, self._bms_monitor,
-                        self._imu_monitor):
+        # 统一单例：实时新行喂给监视窗口（不分 motor/bms/imu）
+        for monitor in (self._monitor,):
             if monitor is not None:
                 try:
                     monitor.feed(line)
@@ -1283,15 +1387,14 @@ class QtLogViewerWindow(QMainWindow):
             self._global_search.setVisible(False)
 
     # ---- 监视窗口入口（Phase 5）-------------------------------------
-    def _open_monitor(self, kind: str):
-        """电机/BMS/IMU 监视入口 → 同进程打开 QtMonitorWindow。
+    def _open_monitor(self):
+        """统一数据监视入口 → 同进程打开 QtMonitorWindow 单例。
 
-        单例：第一次创建，之后 lift/focus。复用 config 持久化字段
-        motor_vars/motor_plots 等。打开时 replay 当前 Tab 全量日志
+        不再区分 motor/bms/imu：用户通过"导入配置文件"决定显示什么曲线。
+        单例：第一次创建，之后 lift/focus。打开时 replay 当前 Tab 全量日志
         （分块 CHUNK=5000，QTimer.singleShot 让出主线程避免卡顿）。
         """
-        attr = f'_{kind}_monitor'
-        monitor = getattr(self, attr, None)
+        monitor = self._monitor
         if monitor is not None and monitor._win is not None and monitor._win.isVisible():
             monitor._win.raise_()
             monitor._win.activateWindow()
@@ -1299,12 +1402,11 @@ class QtLogViewerWindow(QMainWindow):
         from serial_debug.ui.qt_monitor_window import QtMonitorWindow
         monitor = QtMonitorWindow(theme_name=self._theme_name)
         monitor._create()
-        # 应用主题 + 持久化字段读取
         try:
             monitor._win.show()
         except Exception:
             pass
-        setattr(self, attr, monitor)
+        self._monitor = monitor
         # replay 当前 Tab 全量日志
         tab = self._current_tab()
         if tab is not None:
@@ -1367,8 +1469,35 @@ class QtLogViewerWindow(QMainWindow):
             tab.stop_live()
 
     def closeEvent(self, event):
+        if self._filter_panel is not None:
+            try:
+                self._filter_panel.shutdown_filter_thread()
+            except Exception:
+                pass
+        try:
+            self._search_thread.quit()
+            self._search_thread.wait(2000)
+        except Exception:
+            pass
         self._on_close()
         super().closeEvent(event)
+
+    # ---- 后台搜索回调 -------------------------------------------------
+    def _on_search_done_single(self, epoch: int, matches: list, info: str):
+        """当前文件搜索完成：路由到当前 tab。"""
+        tab = self._tab_widget.currentWidget()
+        if isinstance(tab, _QtLogViewTab):
+            tab._on_search_done(epoch, matches, info)
+
+    def _on_search_done_global(self, epoch: int, results: list, info: str):
+        self._global_search._on_search_done(epoch, results, info)
+
+    def _on_search_error(self, epoch: int, msg: str):
+        # 当前 tab 单文件搜索 + 全局搜索共享 epoch 空间：两个面板都尝试接收
+        tab = self._tab_widget.currentWidget()
+        if isinstance(tab, _QtLogViewTab):
+            tab._on_search_error(epoch, msg)
+        self._global_search._on_search_error(epoch, msg)
 
     def run(self):
         self.show()
@@ -1376,6 +1505,208 @@ class QtLogViewerWindow(QMainWindow):
 
 
 # ---- 筛选面板（Phase 2）---------------------------------------------
+def _is_dangerous_regex(text: str) -> bool:
+    """检测灾难性回溯正则模式：嵌套量词 + 同一分支重叠。
+
+    例如 (a+)+, (a*)*, (a|a)*, (.+)* 等会让长行进入指数级回溯。
+    仅做粗略静态检测——足够阻止用户粘贴的明显危险模式。
+    """
+    if not text:
+        return False
+    # 嵌套量词：(...)+ 内部又以 +/?/*/{} 结尾，且内部非锚定常量
+    # 例：(\w+)+, (a+)*, (.*?)+
+    if re.search(r'\([^()]*[+*?][^()]*\)[+*?]', text):
+        return True
+    # 重复量词本身嵌套：a++, a*+, a?+
+    if re.search(r'[+*?]\s*[+*?]', text):
+        return True
+    # 大括号嵌套量词：a{2,}{3,}
+    if re.search(r'\}\s*\{', text):
+        return True
+    return False
+
+
+class _FilterWorker(QObject):
+    """后台筛选 worker：扫描行 + 编译正则 + 截断超长行 + 超时中断。
+
+    通过 done 信号把结果回传主线程；通过 epoch 序号让主线程丢弃过期结果。
+    运行在独立 QThread 中，避免正则灾难性回溯冻结 UI。
+    """
+    # 触发 worker：用 Signal（跨线程自动 QueuedConnection），不用
+    # QMetaObject.invokeMethod + Q_ARG(list)——PySide6 不支持 Python list
+    # 作为 QMetaType（打包后 RuntimeError: qArgDataFromPyType）
+    start_run = Signal(int, object, object, str, int, int)
+    done = Signal(int, object, int, str)  # epoch, filtered_idx, total, info
+    error = Signal(int, str)              # epoch, error_msg
+
+    def __init__(self):
+        super().__init__()
+        self._epoch = 0
+        self.start_run.connect(self.run, Qt.QueuedConnection)
+
+    @Slot(int, object, object, str, int, int)
+    def run(self, epoch: int, lines: list, tags: list,
+             regex_text: str, level_idx: int, result_cap: int):
+        """单次筛选扫描。主线程通过 epoch 序号取消过期结果。"""
+        try:
+            if regex_text:
+                if _is_dangerous_regex(regex_text):
+                    self.error.emit(epoch, '正则存在灾难性回溯风险（嵌套量词）'
+                                    '，已拒绝执行。请简化正则。')
+                    return
+                try:
+                    regex = re.compile(regex_text)
+                except re.error as e:
+                    self.error.emit(epoch, f'正则错误：{e}')
+                    return
+            else:
+                regex = None
+            start_ts = time.monotonic()
+            deadline = start_ts + FILTER_SCAN_TIMEOUT_MS / 1000.0
+            total = len(lines)
+            filtered: list[int] = []
+            last_level = level_idx
+            for i, ln in enumerate(lines):
+                if (i & 0x3FF) == 0 and time.monotonic() > deadline:
+                    # 超时：返回已扫到的部分 + 警告
+                    self.done.emit(epoch, filtered, total,
+                                   f'筛选超时，已扫 {i}/{total} 行'
+                                   f'（{len(filtered)} 命中）。'
+                                   f'可能正则过慢或行数过多。')
+                    return
+                if len(filtered) >= result_cap:
+                    break
+                if last_level != 0:
+                    tag = tags[i] if i < len(tags) else 'log'
+                    if not _level_filter_static(last_level, ln, tag):
+                        continue
+                if regex is not None:
+                    scan_ln = ln if len(ln) <= FILTER_MAX_LINE_LEN \
+                        else ln[:FILTER_MAX_LINE_LEN]
+                    if not regex.search(scan_ln):
+                        continue
+                filtered.append(i)
+            self.done.emit(epoch, filtered, total,
+                            f'{len(filtered)} / {total} 行')
+        except Exception as e:
+            self.error.emit(epoch, f'筛选异常：{e}')
+
+
+def _level_filter_static(level_idx: int, line: str, tag: str) -> bool:
+    """级别筛选纯函数（worker 线程也能用，不依赖 self）。"""
+    if level_idx == 0:
+        return True
+    if level_idx == 1:
+        return tag == 'log'
+    if level_idx == 2:
+        return tag == 'resp'
+    if level_idx == 3:
+        return tag == 'note'
+    return True
+
+
+class _SearchWorker(QObject):
+    """后台搜索 worker：单文件搜索 + 全局（多文件）搜索。
+
+    单线程串行扫所有 tab：re 模块会释放 GIL，但 Python 字节码本身受 GIL
+    约束。真正加速来自不阻塞 UI + 超时截断 + 批量结果回传。
+    """
+    # 触发信号：主线程 emit → worker 线程事件循环调槽（QueuedConnection）
+    start_run_single = Signal(int, object, str)
+    start_run_global = Signal(int, object, str)
+    done_single = Signal(int, object, str)  # epoch, matches, info
+    done_global = Signal(int, object, str)   # epoch, results, info
+    error = Signal(int, str)
+
+    def __init__(self):
+        super().__init__()
+        self.start_run_single.connect(self.run_single, Qt.QueuedConnection)
+        self.start_run_global.connect(self.run_global, Qt.QueuedConnection)
+
+    @Slot(int, object, str)
+    def run_single(self, epoch: int, lines: list, regex_text: str):
+        """单文件搜索：返回匹配行号 list[int]。"""
+        try:
+            if _is_dangerous_regex(regex_text):
+                self.error.emit(epoch, '正则存在嵌套量词，可能引发灾难性回溯，已拒绝')
+                return
+            try:
+                regex = re.compile(regex_text)
+            except re.error as e:
+                self.error.emit(epoch, f'正则错误：{e}')
+                return
+            start = time.monotonic()
+            deadline = start + SEARCH_SCAN_TIMEOUT_MS / 1000.0
+            matches: list[int] = []
+            scanned = 0
+            total = len(lines)
+            for i, ln in enumerate(lines):
+                if (i & 0x3FF) == 0 and time.monotonic() > deadline:
+                    self.done_single.emit(epoch, matches,
+                        f'搜索超时：已扫 {i}/{total} 行（{len(matches)} 命中）')
+                    return
+                if scanned > SEARCH_SCAN_LIMIT:
+                    break
+                scanned += 1
+                scan_ln = ln if len(ln) <= SEARCH_MAX_LINE_LEN \
+                    else ln[:SEARCH_MAX_LINE_LEN]
+                if regex.search(scan_ln):
+                    matches.append(i)
+                    if len(matches) >= GLOBAL_SEARCH_MAX * 4:
+                        break
+            self.done_single.emit(epoch, matches,
+                f'{len(matches)} 个匹配 / {total} 行')
+        except Exception as e:
+            self.error.emit(epoch, f'搜索异常：{e}')
+
+    @Slot(int, object, str)
+    def run_global(self, epoch: int, tabs_snapshot: list, regex_text: str):
+        """全局搜索：扫所有 tab，cap GLOBAL_SEARCH_MAX。
+
+        tabs_snapshot 是 [(tab_idx, lines_copy, filename)] 的快照，
+        避免 worker 线程访问 _QtLogViewTab 实例对象（线程安全）。
+        """
+        try:
+            if _is_dangerous_regex(regex_text):
+                self.error.emit(epoch, '正则存在嵌套量词，可能引发灾难性回溯，已拒绝')
+                return
+            try:
+                regex = re.compile(regex_text)
+            except re.error as e:
+                self.error.emit(epoch, f'正则错误：{e}')
+                return
+            start = time.monotonic()
+            deadline = start + SEARCH_SCAN_TIMEOUT_MS / 1000.0
+            results: list = []  # (tab_idx, line_idx, col, preview, filename)
+            total = 0
+            for tab_idx, lines, fname in tabs_snapshot:
+                if time.monotonic() > deadline:
+                    self.done_global.emit(epoch, results,
+                        f'搜索超时：已扫 {len(results) and results[-1][4] or "?"}'
+                        f'（{total} 命中）')
+                    return
+                for i, ln in enumerate(lines):
+                    if (i & 0x3FF) == 0 and time.monotonic() > deadline:
+                        self.done_global.emit(epoch, results,
+                            f'搜索超时：文件 {fname} 已扫 {i}/{len(lines)}'
+                            f'（{total} 命中）')
+                        return
+                    scan_ln = ln if len(ln) <= SEARCH_MAX_LINE_LEN \
+                        else ln[:SEARCH_MAX_LINE_LEN]
+                    m = regex.search(scan_ln)
+                    if m:
+                        preview = ln[:100]
+                        results.append((tab_idx, i, m.start(), preview, fname))
+                        total += 1
+                        if total >= GLOBAL_SEARCH_MAX:
+                            self.done_global.emit(epoch, results,
+                                f'已截断 {GLOBAL_SEARCH_MAX} 个结果（共更多）')
+                            return
+            self.done_global.emit(epoch, results, f'{total} 个结果')
+        except Exception as e:
+            self.error.emit(epoch, f'搜索异常：{e}')
+
+
 class _QtFilterPanel(QDockWidget):
     """筛选面板（QDockWidget，自动支持拖出/嵌入）。
 
@@ -1392,6 +1723,14 @@ class _QtFilterPanel(QDockWidget):
         self._filtered_idx: list[int] = []
         self._last_scanned_idx = 0
         self._on_locate = on_locate
+        # 后台筛选：worker 运行在独立 QThread，避免正则灾难性回溯冻结 UI
+        self._filter_epoch = 0
+        self._filter_thread = QThread(self)
+        self._filter_worker = _FilterWorker()
+        self._filter_worker.moveToThread(self._filter_thread)
+        self._filter_worker.done.connect(self._on_filter_done)
+        self._filter_worker.error.connect(self._on_filter_error)
+        self._filter_thread.start()
         # DockWidget 设置：可移动 / 可拖出 / 可关闭
         self.setFeatures(QDockWidget.DockWidgetMovable
                          | QDockWidget.DockWidgetFloatable
@@ -1538,6 +1877,13 @@ class _QtFilterPanel(QDockWidget):
     # ---- Tab 绑定 ----------------------------------------------------
     def set_tab(self, tab: _QtLogViewTab | None):
         self._tab = tab
+        # 立即清旧 tab 的结果显示 + 重置 epoch（旧 worker 回调被丢弃）；
+        # 否则切 tab 时旧结果还会显示一会儿，且 _insert_into_tree 用
+        # 当前 self._tab 的行数据但旧 line_idx 会跨文件错位。
+        self._filter_epoch += 1
+        self._filtered_idx = []
+        self._last_scanned_idx = 0
+        self._tree.clear()
         if tab is not None:
             tab._on_lines_appended = self._on_lines_appended
         self._apply_filter()
@@ -1561,29 +1907,58 @@ class _QtFilterPanel(QDockWidget):
         return True
 
     def _apply_filter(self):
-        """全量筛选：扫所有行，cap FILTER_RESULT_MAX。"""
+        """全量筛选：投递给后台 worker，避免正则灾难性回溯冻结 UI。
+
+        反复修改关键字时，前一次扫描还没完，又一次触发——
+        主线程立即返回，worker 用新 epoch 启动新扫描，旧 epoch 的结果
+        在 _on_filter_done 中被丢弃。这样 UI 线程永远不阻塞。
+        """
         if self._tab is None:
             return
         lines = self._tab.all_lines()
         tags = self._tab._line_tags
-        try:
-            text = self._regex_edit.text()
-            regex = re.compile(text) if text else None
-        except re.error:
-            self._info_lbl.setText('正则错误')
+        text = self._regex_edit.text()
+        # 静态预检：语法错误立即显示，无需丢给 worker
+        if text:
+            if _is_dangerous_regex(text):
+                self._info_lbl.setText(
+                    '正则存在嵌套量词，可能引发灾难性回溯，已拒绝执行')
+                self._filtered_idx = []
+                self._tree.clear()
+                return
+            try:
+                re.compile(text)
+            except re.error as e:
+                self._info_lbl.setText(f'正则错误：{e}')
+                self._filtered_idx = []
+                self._tree.clear()
+                return
+        # 取新序号 + 通过 Signal 触发 worker（跨线程 QueuedConnection）
+        self._filter_epoch += 1
+        ep = self._filter_epoch
+        level_idx = self._level_box.currentIndex()
+        self._info_lbl.setText('筛选中…')
+        # Signal 自动跨线程派发到 worker 所在线程的事件循环
+        self._filter_worker.start_run.emit(
+            ep, lines, tags, text, level_idx, FILTER_RESULT_MAX)
+
+    @Slot(int, list, int, str)
+    def _on_filter_done(self, epoch: int, filtered: list, total: int, info: str):
+        """worker 完成回调：过期 epoch 丢弃，避免旧结果覆盖新状态。"""
+        if epoch != self._filter_epoch:
             return
-        filtered: list[int] = []
-        for i, ln in enumerate(lines):
-            if len(filtered) >= FILTER_RESULT_MAX:
-                break
-            if not self._level_filter(ln, tags[i] if i < len(tags) else 'log'):
-                continue
-            if regex is not None and not regex.search(ln):
-                continue
-            filtered.append(i)
         self._filtered_idx = filtered
-        self._last_scanned_idx = len(lines)
-        self._render_results(filtered, len(lines))
+        self._last_scanned_idx = total
+        self._render_results(filtered, total)
+        self._info_lbl.setText(info)
+
+    @Slot(int, str)
+    def _on_filter_error(self, epoch: int, msg: str):
+        if epoch != self._filter_epoch:
+            return
+        self._filtered_idx = []
+        self._tree.clear()
+        self._info_lbl.setText(msg)
 
     def _apply_filter_incremental(self, new_count: int):
         """增量筛选：扫 [last, last+new_count)，cap = FILTER_RESULT_MAX - len(already)。"""
@@ -1609,8 +1984,11 @@ class _QtFilterPanel(QDockWidget):
             tag = tags[i] if i < len(tags) else 'log'
             if not self._level_filter(ln, tag):
                 continue
-            if regex is not None and not regex.search(ln):
-                continue
+            if regex is not None:
+                scan_ln = ln if len(ln) <= FILTER_MAX_LINE_LEN \
+                    else ln[:FILTER_MAX_LINE_LEN]
+                if not regex.search(scan_ln):
+                    continue
             new_filtered.append(i)
         if new_filtered:
             self._filtered_idx.extend(new_filtered)
@@ -1620,9 +1998,13 @@ class _QtFilterPanel(QDockWidget):
             f'{len(self._filtered_idx)} / {len(lines)} 行（增量 +{len(new_filtered)}）')
 
     def _render_results(self, filtered: list[int], total: int = 0):
-        """全量渲染：清 Tree + 分批插。"""
-        self._tree.clear()
-        self._insert_into_tree(filtered)
+        """全量渲染：清 Tree + 分批插。包 setUpdatesEnabled 减少闪烁/卡顿。"""
+        self._tree.setUpdatesEnabled(False)
+        try:
+            self._tree.clear()
+            self._insert_into_tree(filtered)
+        finally:
+            self._tree.setUpdatesEnabled(True)
         if total == 0:
             total = len(self._tab.all_lines()) if self._tab else 0
         self._info_lbl.setText(f'{len(filtered)} / {total} 行')
@@ -1697,6 +2079,16 @@ class _QtFilterPanel(QDockWidget):
         self._filtered_idx = []
         self._last_scanned_idx = 0
         self._info_lbl.setText('就绪')
+
+    def shutdown_filter_thread(self):
+        """关闭 worker 线程：主窗口 closeEvent 时调用，避免 QThread 析构警告。"""
+        try:
+            # 推进 epoch 让 worker 即便完成也丢弃结果
+            self._filter_epoch += 1
+            self._filter_thread.quit()
+            self._filter_thread.wait(2000)  # 最多等 2s
+        except Exception:
+            pass
 
 
 def main():

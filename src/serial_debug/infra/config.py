@@ -89,6 +89,11 @@ DEFAULTS = {
     'qt_monitor_vars': [],            # list[dict]：每变量元数据（color/label/y_min/max/warn_min/max）
     'qt_monitor_sidebar_visible': True, # 侧栏显隐
     'qt_monitor_sidebar_width': 260,   # 侧栏宽度（QSplitter 持久化）
+    # 数据监视窗口 file dialog 上次目录（分别记忆，避免来回切目录）
+    'qt_monitor_last_log_dir': '',       # 打开日志文件
+    'qt_monitor_last_import_cfg_dir': '',# 导入曲线图配置
+    'qt_monitor_last_export_cfg_dir': '',# 导出曲线图配置
+    'qt_monitor_last_csv_dir': '',      # 导出 CSV
     # Qt 主程序
     'qt_main_geometry': '',            # 窗口几何（hex）
     'qt_at_geometry': '',              # AT 面板独立窗口几何（hex）
