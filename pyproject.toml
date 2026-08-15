@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "ericslzwang" }]
 keywords = ["serial", "uart", "AT", "debug", "ch343", "tkinter", "log-viewer"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: X11 Applications",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
@@ -34,3 +34,77 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "serial_debug.resources" = ["assets/*", "common_at.json"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "smoke: quick smoke tests (deselect with '-m \"not smoke\"')",
+]
+
+[tool.coverage.run]
+source = ["src/serial_debug"]
+branch = true
+omit = [
+    "*/ui/qt_app.py",
+    "*/ui/qt_theme.py",
+    "*/ui/qt_flow_layout.py",
+    "*/ui/qt_at_cmd_window.py",
+    "*/ui/qt_log_viewer_window.py",
+    "*/ui/qt_monitor_window.py",
+    "*/ui/at_cmd_window.py",
+    "*/ui/log_viewer_window.py",
+    "*/ui/monitor_window.py",
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4"]
+ignore = [
+    "E501",   # line too long (we use 120, formatter handles it)
+    "B008",   # function call in default argument (common in Tk/Qt)
+    "E402",   # module-level import after code (resource_path pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811"]
+"src/serial_debug/app.py" = ["F401", "E402"]
+
+[tool.mypy]
+python_version = "3.9"
+mypy_path = ["src", "stubs"]
+packages = ["serial_debug"]
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_redundant_casts = true
+warn_unused_ignores = false
+check_untyped_defs = false       # relaxed for v1.0.0 — turn on incrementally
+disallow_untyped_defs = false    # relaxed for v1.0.0 — turn on incrementally
+warn_return_any = false
+no_implicit_optional = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["PySide6.*", "pyqtgraph.*", "serial.*", "numpy.*"]
+ignore_missing_imports = true

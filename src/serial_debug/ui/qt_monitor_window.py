@@ -880,6 +880,7 @@ class _QtParserConfigDialog:
 
     def _on_test(self):
         """跑当前代码 + 样本日志，结果填进表格。"""
+        from PySide6.QtWidgets import QTableWidgetItem
         code = self._code_edit.toPlainText()
         sample = self._sample_edit.toPlainText()
         try:
