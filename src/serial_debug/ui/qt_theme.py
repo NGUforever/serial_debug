@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from serial_debug.infra import themes
 
-
 # Qt 字体（与 tkinter 保持一致）
 QT_FONT_FAMILY = 'DejaVu Sans'
 QT_MONO_FAMILY = 'DejaVu Sans Mono'
@@ -398,7 +397,6 @@ def apply_qss(app, theme_name: str) -> None:
     """
     try:
         from PySide6.QtGui import QFont
-        from PySide6.QtWidgets import QApplication
     except Exception:
         return
     try:

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 
-from serial_debug.infra import config
+from serial_debug.infra.error_log import log_exc
 
 
 def _norm(item: dict) -> dict:
@@ -69,11 +69,18 @@ class AtCmdPanelQt:
 
     # ---- UI 构建 -----------------------------------------------------
     def _build(self, parent=None):
-        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
-            QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-            QTableWidgetItem, QHeaderView, QFrame, QLabel, QSizePolicy,
+            QFrame,
+            QHBoxLayout,
+            QHeaderView,
+            QLabel,
+            QPushButton,
+            QSizePolicy,
+            QTableWidget,
+            QVBoxLayout,
+            QWidget,
         )
+
         from .qt_flow_layout import QFlowLayout
 
         w = QFrame(parent)
@@ -188,13 +195,16 @@ class AtCmdPanelQt:
         return w
 
     def _refresh_table(self):
-        """根据 self.commands 重建表格行。"""
+        """根据 self.commands 重建表格行。
+
+        注意：不在此处调 _sync_from_table——_refresh_table 被多个流程调用
+        （含 _delete_selected / _delete_row），内部 sync 会用表格旧行覆盖
+        调用方刚做的 commands 修改。调用方应在调 _refresh_table 前自行 sync。
+        """
         if self._table is None:
             return
         from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QTableWidgetItem, QPushButton, QWidget, QHBoxLayout
-        # 同步编辑中的内容到 commands（避免用户正在编辑的格子被覆盖）
-        self._sync_from_table()
+        from PySide6.QtWidgets import QHBoxLayout, QPushButton, QTableWidgetItem, QWidget
         self._table.setRowCount(len(self.commands))
         for row, c in enumerate(self.commands):
             # cmd
@@ -246,8 +256,9 @@ class AtCmdPanelQt:
                 editor = self._table.viewport().focusWidget()
                 if editor is not None:
                     self._table.commitData(editor)
-        except Exception:
-            pass
+        except Exception as e:
+            # Qt 内部状态查询，失败不致命（取旧值即可）
+            log_exc('debug', f'{__file__}:_sync_from_table commitData failed', e)
         n = self._table.rowCount()
         # 如果表格行数多于 self.commands（新增行还没 append），先扩容
         if n > len(self.commands):
@@ -268,15 +279,16 @@ class AtCmdPanelQt:
                     'seq': int(seq_text or 0),
                     'period_ms': int(per_text or 0),
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                # 单行同步失败不影响其他行
+                log_exc('warning', f'{__file__}:_sync_from_table row {r} sync failed', e)
 
     def _notify_change(self):
         if self.on_change is not None:
             try:
                 self.on_change(list(self.commands))
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_notify_change on_change failed', e)
 
     # ---- 行操作 ------------------------------------------------------
     def _send_row(self, row: int):
@@ -290,8 +302,10 @@ class AtCmdPanelQt:
             return
         try:
             self.send_callback(cmd)
-        except Exception:
-            pass
+        except Exception as e:
+            # M3: send_callback 抛异常时通过 status bar 报错给用户
+            log_exc('error', f'{__file__}:_send_row send_callback failed cmd={cmd!r}', e)
+            self._update_batch_status(f'发送失败: {e}')
 
     def _delete_row(self, row: int):
         if row >= len(self.commands):
@@ -337,8 +351,9 @@ class AtCmdPanelQt:
         """加载默认 AT 命令集（与 tkinter 版一致）。"""
         try:
             from serial_debug.resources import common_at
-        except Exception:
+        except Exception as e:
             # fallback：硬编码几条
+            log_exc('info', f'{__file__}:_load_default common_at module not available, using hardcoded fallback', e)
             self.commands = [
                 _norm({'cmd': 'AT', 'desc': '测试', 'seq': 1, 'period_ms': 100}),
                 _norm({'cmd': 'AT+VER', 'desc': '版本', 'seq': 2, 'period_ms': 200}),
@@ -349,12 +364,13 @@ class AtCmdPanelQt:
         try:
             path = os.path.join(os.path.dirname(common_at.__file__),
                                'common_at.json')
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             if isinstance(data, list):
                 self.commands = [_norm(c) for c in data]
             self._refresh_table()
-        except Exception:
+        except Exception as e:
+            log_exc('warning', f'{__file__}:_load_default common_at.json load failed', e)
             self.commands = []
             self._refresh_table()
 
@@ -367,7 +383,7 @@ class AtCmdPanelQt:
         if not path:
             return
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 raise ValueError('JSON 必须是命令数组')
@@ -426,14 +442,20 @@ class AtCmdPanelQt:
         cmd = c.get('cmd', '').strip()
         try:
             self.send_callback(cmd)
-        except Exception:
-            pass
+        except Exception as e:
+            # M3: send_callback 抛异常 → 停止批量 + 状态栏报错给用户
+            log_exc('error', f'{__file__}:_exec_next send_callback failed '
+                    f'cmd={cmd!r} idx={self._batch_idx}', e)
+            self._stop_batch()
+            self._update_batch_status(f'批量执行失败 (idx={self._batch_idx}): {e}')
+            return
         self._batch_idx += 1
         per = c.get('period_ms', 0)
         if self._batch_idx < len(self._batch_queue):
             self._update_batch_status(
                 f'{self._batch_idx}/{len(self._batch_queue)} 已发送，等待 {per}ms')
-            self._batch_timer = QTimer()
+            # M2 同源问题：QTimer 必须给 parent，否则 Qt 不自动释放
+            self._batch_timer = QTimer(self._table) if self._table is not None else QTimer()
             self._batch_timer.setSingleShot(True)
             self._batch_timer.timeout.connect(self._exec_next)
             self._batch_timer.start(max(per, 1))
@@ -441,7 +463,7 @@ class AtCmdPanelQt:
             # 最后一条：等响应后完成（简化：直接完成）
             self._update_batch_status(
                 f'{self._batch_idx}/{len(self._batch_queue)} 已发送')
-            self._batch_timer = QTimer()
+            self._batch_timer = QTimer(self._table) if self._table is not None else QTimer()
             self._batch_timer.setSingleShot(True)
             self._batch_timer.timeout.connect(self._stop_batch)
             self._batch_timer.start(max(per, 1))
@@ -451,8 +473,9 @@ class AtCmdPanelQt:
         if self._batch_timer is not None:
             try:
                 self._batch_timer.stop()
-            except Exception:
-                pass
+                self._batch_timer.deleteLater()
+            except Exception as e:
+                log_exc('debug', f'{__file__}:_stop_batch timer cleanup failed', e)
             self._batch_timer = None
         if self._batch_btn is not None:
             self._batch_btn.setEnabled(True)
@@ -467,8 +490,8 @@ class AtCmdPanelQt:
         if self.close_callback is not None:
             try:
                 self.close_callback()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_on_close_clicked close_callback failed', e)
 
     # ---- 对外 -------------------------------------------------------
     def get_widget(self):
@@ -485,7 +508,6 @@ class AtCmdWindowQt:
         self._dlg = None
 
     def _build(self, parent=None):
-        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QDialog, QVBoxLayout
         dlg = QDialog(parent)
         dlg.setWindowTitle(self.TITLE)

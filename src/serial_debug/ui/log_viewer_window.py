@@ -17,14 +17,10 @@ import os
 import re
 import time as _time
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import filedialog, messagebox, ttk
 
-from serial_debug.infra import themes
-from serial_debug.infra import config
-from serial_debug.ui.monitor_window import (MotorMonitorWindow,
-                                            BmsMonitorWindow,
-                                            ImuMonitorWindow)
-
+from serial_debug.infra import config, themes
+from serial_debug.ui.monitor_window import BmsMonitorWindow, ImuMonitorWindow, MotorMonitorWindow
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')
 TS_RE = re.compile(r'^(\d{13})\b')
@@ -212,7 +208,7 @@ class _LogViewTab(ttk.Frame):
     # ---- 文件加载 ------------------------------------------------------
     def _load_file(self):
         try:
-            with open(self._path, 'r', encoding='utf-8',
+            with open(self._path, encoding='utf-8',
                       errors='replace') as f:
                 self._all_lines = f.readlines()
                 self._live_pos = f.tell()  # 记录 EOF 位置，供实时刷新用
@@ -242,7 +238,7 @@ class _LogViewTab(ttk.Frame):
         # 智能检测：文件 mtime 距今 < 60 秒（说明正在被写入），自动开启实时刷新
         try:
             mtime = os.path.getmtime(self._path)
-            if time.time() - mtime < 60:
+            if _time.time() - mtime < 60:
                 self.set_live_mode(True)
         except Exception:
             pass
@@ -384,7 +380,7 @@ class _LogViewTab(ttk.Frame):
             return
         new_count = 0
         try:
-            with open(self._path, 'r', encoding='utf-8',
+            with open(self._path, encoding='utf-8',
                       errors='replace') as f:
                 f.seek(self._live_pos)
                 new_text = f.read()

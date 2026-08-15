@@ -17,23 +17,22 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
+import math
 import re
 import time
-import math
-import datetime as _dt
 import tkinter as tk
 from array import array as _farray
-from tkinter import ttk, messagebox, colorchooser, filedialog
-from tkinter import font as tkfont
 from collections import deque
+from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 try:
-    from serial_debug.infra import themes
-    from serial_debug.infra import config
+    from serial_debug.infra import config, themes
 except Exception:
     try:
-        import themes
         import config
+        import themes
     except Exception:
         themes = None
         config = None
@@ -1307,7 +1306,7 @@ class MonitorPanel(ttk.Frame):
         if not path:
             return
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(path, encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
         except Exception as e:
             messagebox.showerror('打开失败', f'{e}',
@@ -1379,10 +1378,8 @@ class MonitorPanel(ttk.Frame):
         # 数据源：_history 优先，否则 _buffers
         if self._history is not None:
             data = self._history
-            source_name = '历史日志'
         else:
             data = {n: list(buf) for n, buf in self._buffers.items()}
-            source_name = '实时缓冲'
         if not any(pts for pts in data.values()):
             messagebox.showinfo('提示', '没有可导出的数据',
                                 parent=self.winfo_toplevel())
@@ -1404,7 +1401,7 @@ class MonitorPanel(ttk.Frame):
                 # 收集所有时间戳排序
                 all_ts = sorted({ts for pts in data.values() for ts, _ in pts})
                 # 每变量按 ts 索引当前值
-                cursor = {n: 0 for n in names}
+                cursor = dict.fromkeys(names, 0)
                 for ts in all_ts:
                     row = [f'{ts:.3f}']
                     for n in names:

@@ -176,7 +176,6 @@ class AutoCombobox(ttk.Frame):
         lb_fg = t.get('panel_fg', '#333333')
         lb_select = t.get('select_bg', '#cce5ff')
         top_bg = t.get('border', '#dcdcdc')  # 弹出框边框用 border 色
-        panel_bg = t.get('panel_bg', '#ffffff')
 
         lb = tk.Listbox(top, selectmode='single', font=self._font,
                         activestyle='dotbox', borderwidth=0,

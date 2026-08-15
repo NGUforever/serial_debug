@@ -16,7 +16,7 @@ QHBoxLayout 在窗口变窄时会把子部件压缩到 minimumSizeHint 以下，
 from __future__ import annotations
 
 from PySide6.QtCore import QMargins, QPoint, QRect, QSize, Qt
-from PySide6.QtWidgets import QLayout, QSizePolicy, QWidgetItem
+from PySide6.QtWidgets import QLayout
 
 
 class QFlowLayout(QLayout):

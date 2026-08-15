@@ -153,3 +153,127 @@ def test_generate_parse_line_empty_stmts(parser_mod):
     exec(src, ns)
     # 占位 parse_line 调用应不报错（可能 return None / 不 yield）
     assert callable(ns['parse_line'])
+
+
+# ---- _extract_java (M4 补测) -----------------------------------
+
+def test_extract_java_printf(parser_mod):
+    """Java System.out.printf("...", args) 正常解析 + %n 转 \\n。"""
+    code = 'System.out.printf("rpm=%d speed=%.2f%n", rpm, speed);\n'
+    stmts = parser_mod._extract_java(code)
+    assert len(stmts) == 1
+    s = stmts[0]
+    assert s.language == 'java'
+    assert s.style == 'printf'
+    assert 'rpm=' in s.format_str
+    assert '\n' in s.format_str  # %n 已替换为 \n
+    assert len(s.args) == 2
+    assert 'rpm' in s.args and 'speed' in s.args
+
+
+def test_extract_java_println_concat(parser_mod):
+    """Java System.out.println("a" + x) 字符串拼接解析（regex 支持 literal+id+literal 链）。"""
+    # 当前 regex 要求首 token 为字符串字面量 + 标识符，后续可选 (+ "literal")
+    code = 'System.out.println("rpm=" + rpm + " unit");\n'
+    stmts = parser_mod._extract_java(code)
+    assert len(stmts) == 1
+    s = stmts[0]
+    assert s.style == 'concat'
+    assert 'rpm=' in s.format_str
+    assert 'unit' in s.format_str
+    assert 'rpm' in s.args
+
+
+def test_extract_java_no_match(parser_mod):
+    """非 Java printf 代码不应误识别。"""
+    code = 'int x = 1;\nSystem.out.println();\n'
+    stmts = parser_mod._extract_java(code)
+    # println() 空参不匹配 println(concat) 正则 → 空
+    assert stmts == []
+
+
+# ---- _extract_rust (M4 补测) ------------------------------------
+
+def test_extract_rust_println(parser_mod):
+    """Rust println!("...", args) 正常解析。"""
+    code = 'println!("rpm={} speed={:.2}", rpm, speed);\n'
+    stmts = parser_mod._extract_rust(code)
+    assert len(stmts) == 1
+    s = stmts[0]
+    assert s.language == 'rust'
+    assert s.style == 'format'
+    assert 'rpm=' in s.format_str
+    assert 'speed=' in s.format_str
+    assert len(s.args) == 2
+
+
+def test_extract_rust_named_args(parser_mod):
+    """Rust println!("rpm={rpm}") 命名参数解析。"""
+    code = 'println!("rpm={rpm}");\n'
+    stmts = parser_mod._extract_rust(code)
+    assert len(stmts) == 1
+    s = stmts[0]
+    assert 'rpm' in s.args
+
+
+def test_extract_rust_no_match(parser_mod):
+    """无 println! 调用 → 空。"""
+    code = 'let x = 1;\n'
+    stmts = parser_mod._extract_rust(code)
+    assert stmts == []
+
+
+# ---- _extract_js (M4 补测) -------------------------------------
+
+def test_extract_js_template_literal(parser_mod):
+    """JS console.log(`...${name}...`) 模板字面量解析。"""
+    code = 'console.log(`rpm=${rpm} speed=${speed}`);\n'
+    stmts = parser_mod._extract_js(code)
+    assert len(stmts) == 1
+    s = stmts[0]
+    assert s.language == 'js'
+    assert s.style == 'template'
+    assert 'rpm' in s.args and 'speed' in s.args
+
+
+def test_extract_js_printf_style(parser_mod):
+    """JS console.log("...", args) printf-style 解析。"""
+    code = 'console.log("rpm=%d speed=%.2f", rpm, speed);\n'
+    stmts = parser_mod._extract_js(code)
+    assert len(stmts) == 1
+    s = stmts[0]
+    assert s.style == 'printf'
+    assert len(s.args) == 2
+
+
+def test_extract_js_no_match(parser_mod):
+    """无 console.log → 空。"""
+    code = 'const f = () => 1;\n'
+    stmts = parser_mod._extract_js(code)
+    assert stmts == []
+
+
+# ---- 各语言 extract via extract_print_statements 集成 ----
+
+def test_extract_print_statements_java(parser_mod):
+    """extract_print_statements 按 'java' 调度 _extract_java。"""
+    code = 'System.out.printf("v=%d%n", v);\n'
+    stmts = parser_mod.extract_print_statements(code, 'java')
+    assert len(stmts) == 1
+    assert stmts[0].language == 'java'
+
+
+def test_extract_print_statements_rust(parser_mod):
+    """extract_print_statements 按 'rust' 调度 _extract_rust。"""
+    code = 'println!("v={}", v);\n'
+    stmts = parser_mod.extract_print_statements(code, 'rust')
+    assert len(stmts) == 1
+    assert stmts[0].language == 'rust'
+
+
+def test_extract_print_statements_js(parser_mod):
+    """extract_print_statements 按 'js' 调度 _extract_js。"""
+    code = 'console.log(`v=${v}`);\n'
+    stmts = parser_mod.extract_print_statements(code, 'js')
+    assert len(stmts) == 1
+    assert stmts[0].language == 'js'

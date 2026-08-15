@@ -4,15 +4,23 @@
 经 after() 轮询队列完成（tkinter 非线程安全）。"""
 from __future__ import annotations
 
-import threading
+import glob
 import queue
+import struct
+import sys
+import threading
+import time
+
 import serial
 import serial.tools.list_ports
-import sys
-import time
-import fcntl
-import struct
-import glob
+
+from serial_debug.infra.error_log import log_exc
+
+try:
+    import fcntl  # POSIX only (Linux/macOS)
+    HAS_FCNTL = True
+except ImportError:  # Windows lacks fcntl
+    HAS_FCNTL = False
 
 # Debug 开关：把 reader 每次读到的 chunk 时间戳打到 stderr
 # 用法：从终端启动 `python3 app.py 2>debug.log`，复现后看 debug.log
@@ -76,15 +84,19 @@ class SerialBackend:
         try:
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-        except Exception:
-            pass
+        except Exception as e:
+            # 某些驱动不支持 reset_input_buffer，不致命
+            log_exc('debug', f'{__file__}:open reset_input_buffer failed', e)
         # 设置 ASYNC_LOW_LATENCY（CH343 可能不支持，失败也无所谓）
         self._try_set_low_latency()
         # 清空上次会话残留的队列项
         while not self.rx_queue.empty():
             try:
                 self.rx_queue.get_nowait()
-            except Exception:
+            except queue.Empty:
+                break
+            except Exception as e:
+                log_exc('warning', f'{__file__}:open drain queue failed', e)
                 break
         self._stop_evt.clear()
         self._reader = threading.Thread(
@@ -105,10 +117,12 @@ class SerialBackend:
         if self.ser is not None:
             try:
                 self.ser.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:close ser.close failed', e)
         if self._reader is not None:
-            self._reader.join(timeout=1.0)
+            self._reader.join(timeout=2.0)  # 原 1.0s 偶发 reader 卡 read(1) 不够
+            if self._reader.is_alive():
+                log_exc('warning', f'{__file__}:close reader thread did not exit in 2s', None)
             self._reader = None
         if self._writer is not None:
             self._writer.join(timeout=1.0)
@@ -148,7 +162,8 @@ class SerialBackend:
                 while n:
                     rest += ser.read(n)
                     n = ser.in_waiting
-            except Exception:
+            except Exception as e:
+                log_exc('debug', f'{__file__}:_read_loop in_waiting read failed', e)
                 rest = b''
             chunk = first + rest
             _dbg(f'reader chunk {len(chunk)}B in_waiting_was={n if "n" in dir() else "?"} '
@@ -167,7 +182,8 @@ class SerialBackend:
                         continue  # 跳过纯空行
                     try:
                         text = line.decode('utf-8', errors='replace')
-                    except Exception:
+                    except Exception as e:
+                        log_exc('debug', f'{__file__}:_read_loop decode failed', e)
                         text = repr(line)
                     _dbg(f'reader emit line: {text[:80]!r}')
                     self.rx_queue.put(('line', text))
@@ -187,8 +203,8 @@ class SerialBackend:
         if self.ser is not None and self.ser.is_open:
             try:
                 self.ser.reset_input_buffer()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('debug', f'{__file__}:flush_input reset_input_buffer failed', e)
         # 清掉 reader 线程累积的半行 buf，防止 OK,0% 被拼到旧日志行末尾
         with self._buf_lock:
             self._buf.clear()
@@ -201,7 +217,8 @@ class SerialBackend:
                 item = self.rx_queue.get_nowait()
             except queue.Empty:
                 break
-            except Exception:
+            except Exception as e:
+                log_exc('warning', f'{__file__}:flush_input drain queue failed', e)
                 break
             if item[0] != 'line':
                 keep.append(item)
@@ -247,8 +264,9 @@ class SerialBackend:
                     n = ser.write(data)
                     try:
                         ser.flush()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # flush 失败不致命（pyserial write 已成功），仅记日志
+                        log_exc('debug', f'{__file__}:_write_loop ser.flush failed', e)
                 _dbg(f'writer wrote {n} bytes')
                 self._status('info', f'已发送 {n} 字节')
             except Exception as e:
@@ -261,7 +279,11 @@ class SerialBackend:
         OK 响应（几字节）卡在 FIFO 直到周期日志涌入才被推出。
         ASYNC_LOW_LATENCY 让内核更主动从 USB 拷贝 short packet。
         cdc_acm 驱动可能不支持 TIOCSSERIAL，失败也无所谓。
+        Windows/macOS 无 fcntl 模块，直接跳过（pyserial 在 Win/Mac 走自己的
+        latency timer 配置路径，不需要 TIOCSSERIAL）。
         """
+        if not HAS_FCNTL:
+            return  # Windows/macOS: no fcntl, no TIOCSSERIAL ioctl
         if self.ser is None:
             return
         TIOCGSERIAL = 0x541E
@@ -286,5 +308,5 @@ class SerialBackend:
         if self.on_status:
             try:
                 self.on_status(level, msg)
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_status on_status callback failed', e)

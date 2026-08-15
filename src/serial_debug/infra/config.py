@@ -104,7 +104,7 @@ def load() -> dict:
     """读配置，合并默认值；读失败返回 DEFAULTS 副本。"""
     cfg = dict(DEFAULTS)
     try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        with open(CONFIG_FILE, encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict):
             for k, v in data.items():

@@ -6,9 +6,11 @@
 """
 from __future__ import annotations
 
-import threading
 import queue
+import threading
 import time
+
+from serial_debug.infra.error_log import log_exc
 
 
 class LogWriter:
@@ -27,6 +29,7 @@ class LogWriter:
         except Exception as e:
             self.error = str(e)
             self._f = None
+            log_exc('error', f'{__file__}:LogWriter.start open failed path={self.path}', e)
             return False
         self._thread = threading.Thread(target=self._run, name='log-writer',
                                         daemon=True)
@@ -54,8 +57,10 @@ class LogWriter:
                 break
             try:
                 self._f.write(text)
-            except Exception:
-                pass
+            except Exception as e:
+                # 磁盘满 / 设备拔出等：记日志，不退出线程（继续消费 queue
+                # 避免上游 put 端 queue 无限增长）
+                log_exc('error', f'{__file__}:LogWriter._run write failed', e)
             now = time.monotonic()
             if now - last_flush >= 0.2:
                 self._flush()
@@ -69,26 +74,30 @@ class LogWriter:
                 self._f.write(text)
         except queue.Empty:
             pass
+        except Exception as e:
+            log_exc('warning', f'{__file__}:LogWriter._run drain tail failed', e)
         try:
             self._f.write(f"=== log stop {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-        except Exception:
-            pass
+        except Exception as e:
+            log_exc('warning', f'{__file__}:LogWriter._run stop marker failed', e)
         self._flush()
         try:
             self._f.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log_exc('warning', f'{__file__}:LogWriter._run close failed', e)
 
     def _flush(self):
         try:
             self._f.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            log_exc('warning', f'{__file__}:LogWriter._flush failed', e)
 
     def stop(self):
         if self._thread is None:
             return
         self._stop.set()
         self._q.put(None)
-        self._thread.join(timeout=1.0)
+        self._thread.join(timeout=2.0)
+        if self._thread.is_alive():
+            log_exc('warning', f'{__file__}:LogWriter.stop thread did not exit in 2s', None)
         self._thread = None

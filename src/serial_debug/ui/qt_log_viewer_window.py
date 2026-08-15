@@ -17,25 +17,46 @@ import time
 from bisect import bisect_right
 from datetime import datetime
 
-from PySide6.QtCore import (Qt, QTimer, QRect, QSize, QPoint, Signal,
-                            Slot, QThread, QObject)
-from PySide6.QtGui import (QColor, QFont, QTextCharFormat, QTextCursor,
-                            QAction, QKeySequence, QPainter, QShortcut,
-                            QTextBlockUserData)
-from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow,
-                                QPlainTextEdit, QWidget, QHBoxLayout,
-                                QVBoxLayout, QToolBar, QLabel, QLineEdit,
-                                QPushButton, QStatusBar, QMessageBox,
-                                QTabWidget, QComboBox,
-                                QTreeWidget, QTreeWidgetItem,
-                                QDockWidget, QSplitter, QCheckBox,
-                                QHeaderView, QStyle, QStyleOptionViewItem,
-                                QToolButton)
+from PySide6.QtCore import QObject, QRect, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QKeySequence,
+    QPainter,
+    QShortcut,
+    QTextBlockUserData,
+    QTextCharFormat,
+    QTextCursor,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDockWidget,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QStatusBar,
+    QStyle,
+    QTabWidget,
+    QToolBar,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
-from serial_debug.infra import themes, config
+from serial_debug.infra import config, themes
+from serial_debug.infra.error_log import log_exc
 from serial_debug.ui import qt_theme
 from serial_debug.ui.qt_monitor_window import _iter_panel_vars
-
 
 # ---- 常量（与 tkinter 版一致）----------------------------------------
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')
@@ -351,7 +372,7 @@ class _QtLogViewTab(QWidget):
     # ---- 文件加载 -----------------------------------------------------
     def _load_file(self):
         try:
-            with open(self._path, 'r', encoding='utf-8',
+            with open(self._path, encoding='utf-8',
                        errors='replace') as f:
                 lines = f.readlines()
         except Exception as e:
@@ -367,7 +388,8 @@ class _QtLogViewTab(QWidget):
         self._line_tags = [_classify(ln) for ln in self._all_lines]
         try:
             size = os.path.getsize(self._path)
-        except Exception:
+        except Exception as e:
+            log_exc('debug', f'{__file__}:_load_file getsize failed path={self._path!r}', e)
             size = 0
         self._info_lbl.setText(
             f'{self._path} | {len(self._all_lines)} 行 | {size/1024:.1f} KB')
@@ -378,8 +400,8 @@ class _QtLogViewTab(QWidget):
             mtime = os.path.getmtime(self._path)
             if time.time() - mtime < 60:
                 self.set_live_mode(True)
-        except Exception:
-            pass
+        except Exception as e:
+            log_exc('debug', f'{__file__}:_load_file getmtime failed path={self._path!r}', e)
 
     def _render_batch(self, start, count):
         """批量插入 [start, start+count) 行，末尾插占位符标记未加载部分。"""
@@ -485,8 +507,8 @@ class _QtLogViewTab(QWidget):
         if self._on_line_click:
             try:
                 self._on_line_click(self, block_number)
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_on_text_click on_line_click callback failed', e)
 
     def get_line(self, idx: int) -> str:
         if 0 <= idx < len(self._all_lines):
@@ -693,7 +715,8 @@ class _QtLogViewTab(QWidget):
             self._live_pos = self._file_size()
             try:
                 self._live_last_mtime = os.path.getmtime(self._path)
-            except Exception:
+            except Exception as e:
+                log_exc('debug', f'{__file__}:set_live_mode getmtime failed', e)
                 self._live_last_mtime = 0
             self._live_idle_count = 0
             if self._live_timer is None:
@@ -716,7 +739,8 @@ class _QtLogViewTab(QWidget):
     def _file_size(self):
         try:
             return os.path.getsize(self._path)
-        except Exception:
+        except Exception as e:
+            log_exc('debug', f'{__file__}:_file_size getsize failed', e)
             return 0
 
     def _poll_file(self):
@@ -727,7 +751,8 @@ class _QtLogViewTab(QWidget):
         try:
             cur_size = self._file_size()
             cur_mtime = os.path.getmtime(self._path)
-        except Exception:
+        except Exception as e:
+            log_exc('debug', f'{__file__}:_poll_file stat failed', e)
             return
         if cur_size < self._live_pos:
             # 文件被截断或轮转，重置
@@ -746,11 +771,12 @@ class _QtLogViewTab(QWidget):
         self._live_idle_count = 0
         self._live_timer.start(LIVE_POLL_MS)
         try:
-            with open(self._path, 'r', encoding='utf-8',
+            with open(self._path, encoding='utf-8',
                        errors='replace') as f:
                 f.seek(self._live_pos)
                 chunk = f.read(cur_size - self._live_pos)
-        except Exception:
+        except Exception as e:
+            log_exc('warning', f'{__file__}:_poll_file read tail failed', e)
             return
         self._live_pos = cur_size
         self._live_last_mtime = cur_mtime
@@ -772,8 +798,8 @@ class _QtLogViewTab(QWidget):
             if self._feed_monitor_cb:
                 try:
                     self._feed_monitor_cb(ln + '\n')
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_exc('warning', f'{__file__}:_poll_file feed_monitor_cb failed', e)
         if new_count == 0:
             return
         # 追加渲染（若用户在底部，则追加；否则只更新数据）
@@ -1324,7 +1350,6 @@ class QtLogViewerWindow(QMainWindow):
         self._live_action_menu.setChecked(checked)
 
     def _show_about(self):
-        from PySide6.QtWidgets import QMessageBox
         try:
             import PySide6
             versions = (f'PySide6: {PySide6.__version__}\n'
@@ -1742,7 +1767,7 @@ class _QtFilterPanel(QDockWidget):
         # 让 DockWidget 拖不到更窄。覆盖为可缩到 0 的自定义标题栏。
         # 用 QToolButton + QStyle 标准图标，避免字体缺字渲染成方框。
         # 关闭按钮的语义保留在 visibilityChanged 信号 + 主菜单 checkable 项。
-        from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton
+        from PySide6.QtWidgets import QHBoxLayout, QLabel
         style = self.style()
 
         class _SlimTitleBar(QWidget):

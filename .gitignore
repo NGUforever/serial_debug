@@ -20,3 +20,5 @@ appimagetool-x86_64.AppImage
 .coverage
 htmlcov/
 .pytest_cache/
+# Editable install metadata
+*.egg-info/

@@ -18,15 +18,13 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
 import sys
 import time
-import queue
 
 from serial_debug.core.serial_backend import SerialBackend
-from serial_debug.infra import config
-from serial_debug.infra import themes
-
+from serial_debug.infra import config, themes
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')   # 响应行判定
 TS_RE = re.compile(r'^(\d{13})\b')             # 设备时间戳：13 位毫秒
@@ -53,6 +51,7 @@ def _make_status_dot_class():
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QColor, QPainter
     from PySide6.QtWidgets import QWidget
+
     from serial_debug.infra import themes
 
     class _StatusDot(QWidget):
@@ -172,12 +171,23 @@ class QtSerialDebugApp:
 
     # ---- UI 构建 -----------------------------------------------------
     def _create(self):
-        from PySide6.QtCore import Qt, QTimer
-        from PySide6.QtGui import QAction, QIcon
+        from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import (
-            QApplication, QMainWindow, QToolBar, QPlainTextEdit, QLineEdit,
-            QPushButton, QComboBox, QLabel, QWidget, QHBoxLayout, QCheckBox,
-            QFrame, QSizePolicy, QMessageBox, QVBoxLayout,
+            QApplication,
+            QCheckBox,
+            QComboBox,
+            QFrame,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QMainWindow,
+            QPlainTextEdit,
+            QPushButton,
+            QSizePolicy,
+            QToolBar,
+            QVBoxLayout,
+            QWidget,
         )
 
         from serial_debug.ui import qt_theme
@@ -326,6 +336,7 @@ class QtSerialDebugApp:
         bottom = QFrame()
         bottom.setProperty('card', True)
         from PySide6.QtWidgets import QStyle
+
         from .qt_flow_layout import QFlowLayout
         bl = QFlowLayout(bottom, margin=10, h_spacing=12, v_spacing=6)
 
@@ -482,7 +493,7 @@ class QtSerialDebugApp:
 
     def _build_menubar(self, win):
         from PySide6.QtGui import QAction, QIcon
-        from PySide6.QtWidgets import QMenuBar, QStyle
+        from PySide6.QtWidgets import QStyle
         mb = win.menuBar()
         style = win.style()
 
@@ -586,7 +597,7 @@ class QtSerialDebugApp:
         这里按 文字宽度 + 图标宽度 + padding 算出 minimumWidth，
         让 layout 优先压缩 stretch=1 的 QLineEdit 而不是按钮。
         """
-        from PySide6.QtWidgets import QPushButton, QStyle, QApplication
+        from PySide6.QtWidgets import QApplication, QPushButton
         btn = QPushButton(text)
         if primary:
             btn.setProperty('primary', True)
@@ -912,7 +923,7 @@ class QtSerialDebugApp:
                 pass
         if self._log_edit is None:
             return
-        from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
+        from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
         t = themes.THEMES.get(self._theme_name_resolved,
                               themes.THEMES['dark'])
         color_map = {
@@ -972,7 +983,6 @@ class QtSerialDebugApp:
             return
         t = themes.THEMES.get(self._theme_name_resolved,
                               themes.THEMES['dark'])
-        from PySide6.QtGui import QColor
         self._log_edit.setStyleSheet(
             f'background-color: {t.get("panel_bg", t.get("bg", "#1e1e1e"))};'
             f'color: {t.get("fg", "#cccccc")};')
@@ -1071,6 +1081,7 @@ class QtSerialDebugApp:
 
     def _start_log_writer(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
+
         from serial_debug.core.log_writer import LogWriter
         # 默认目录：上次保存路径所在目录，否则用户家目录
         if self.log_path:

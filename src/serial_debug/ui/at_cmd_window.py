@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import filedialog, messagebox, ttk
 
 
 def _norm(item: dict) -> dict:
@@ -367,7 +367,7 @@ class AtCmdPanel(ttk.Frame):
         if not path:
             return
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 raise ValueError('JSON 顶层必须是列表')

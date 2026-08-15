@@ -22,12 +22,15 @@ import os
 import sys
 import threading
 
+from serial_debug.infra.error_log import log_exc
+
 # 延迟导入 PySide6/pyqtgraph：仅 Qt 窗口实际启动时才加载
 # 让 tkinter 主程序不强制依赖 Qt（即便没装 Qt 也能跑 tkinter 路径）
-
 # 复用 tkinter 监视窗口的日志解析器（时间戳提取 + motor/BMS/IMU 三类 Panel）
 from serial_debug.ui.monitor_window import (
-    MotorMonitorPanel, BmsMonitorPanel, ImuMonitorPanel,
+    BmsMonitorPanel,
+    ImuMonitorPanel,
+    MotorMonitorPanel,
     _extract_log_ts,
 )
 
@@ -255,6 +258,7 @@ def _make_time_axis(theme):
     < 5s 显示 ms；< 1h 显示 HH:MM:SS；> 1h 显示 MM-DD HH:MM。
     """
     import datetime as _dt
+
     import pyqtgraph as pg
 
     class _TimeAxis(pg.AxisItem):
@@ -304,9 +308,19 @@ class _QtPlotDialog:
     def _build(self):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
-            QCheckBox, QListWidget, QListWidgetItem, QVBoxLayout,
-            QHBoxLayout, QPushButton, QGroupBox, QLabel, QComboBox,
+            QCheckBox,
+            QComboBox,
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QListWidget,
+            QListWidgetItem,
+            QPushButton,
+            QVBoxLayout,
         )
 
         dlg = QDialog(self.parent)
@@ -567,13 +581,24 @@ class _QtParserConfigDialog:
         self._dlg = None
 
     def _build(self):
-        from PySide6.QtCore import Qt
         from PySide6.QtGui import QFont
         from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QFormLayout,
-            QGroupBox, QLabel, QPlainTextEdit, QPushButton, QRadioButton,
-            QButtonGroup, QSpinBox, QCheckBox, QTableWidget, QTableWidgetItem,
-            QHeaderView, QComboBox, QFileDialog,
+            QButtonGroup,
+            QCheckBox,
+            QComboBox,
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QHeaderView,
+            QLabel,
+            QPlainTextEdit,
+            QPushButton,
+            QRadioButton,
+            QSpinBox,
+            QTableWidget,
+            QVBoxLayout,
         )
 
         dlg = QDialog(self.parent)
@@ -789,7 +814,10 @@ class _QtParserConfigDialog:
         """从源码提取 print 语句 → 生成 parse_line → 填入代码区。"""
         try:
             from serial_debug.ui.qt_parser_inference import (
-                detect_language, extract_print_statements, generate_parse_line)
+                detect_language,
+                extract_print_statements,
+                generate_parse_line,
+            )
         except Exception as e:
             self._result_label.setText(f'❌ 推导模块不可用：{e!r}')
             return
@@ -842,7 +870,7 @@ class _QtParserConfigDialog:
         if not path:
             return
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(path, encoding='utf-8', errors='replace') as f:
                 data = f.read(10 * 1024 * 1024)  # 限 10MB
         except Exception as e:
             self._result_label.setText(f'❌ 读文件失败：{e!r}')
@@ -865,7 +893,7 @@ class _QtParserConfigDialog:
         if not path:
             return
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(path, encoding='utf-8', errors='replace') as f:
                 data = f.read(10 * 1024 * 1024)
         except Exception as e:
             self._result_label.setText(f'❌ 读文件失败：{e!r}')
@@ -1225,16 +1253,17 @@ class QtMonitorWindow:
           2. 上次打开过的配置文件（用户主动"导入配置"选过的文件）
           3. 默认 config 内的 qt_monitor_plots key（兼容旧用户）
         """
-        from serial_debug.infra import config
         import json
         import os
+
+        from serial_debug.infra import config
 
         def _try_load(path: str):
             """从给定 JSON 文件加载 plots + var_meta；返回 (plots, ok)。"""
             if not path or not os.path.isfile(path):
                 return None, False
             try:
-                with open(path, 'r', encoding='utf-8') as f:
+                with open(path, encoding='utf-8') as f:
                     data = json.load(f)
             except Exception:
                 return None, False
@@ -1384,7 +1413,7 @@ class QtMonitorWindow:
         自动加载该文件。
         """
         import json
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             data = json.load(f)
         if not isinstance(data, dict) or 'plots' not in data:
             raise ValueError('JSON 格式不对：缺少 plots 字段')
@@ -1428,8 +1457,9 @@ class QtMonitorWindow:
 
         无记录或目录不存在时回退到 ~。
         """
-        from serial_debug.infra import config
         import os
+
+        from serial_debug.infra import config
         try:
             d = config.load().get(key, '') or ''
             if d and os.path.isdir(d):
@@ -1440,8 +1470,9 @@ class QtMonitorWindow:
 
     def _remember_dir(self, key: str, file_path: str) -> None:
         """把 file_path 所在目录记到 config[key]——下次打开同类型文件时默认此目录。"""
-        from serial_debug.infra import config
         import os
+
+        from serial_debug.infra import config
         try:
             d = os.path.dirname(os.path.abspath(file_path)) if file_path else ''
             if not d:
@@ -1564,7 +1595,7 @@ class QtMonitorWindow:
         sample_n = max(10, int(_CUSTOM_PARSER_STATE.get(
             'validation', {}).get('sample_lines', 200)))
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(path, encoding='utf-8', errors='replace') as f:
                 for line in f:
                     if len(sample_lines) < sample_n:
                         sample_lines.append(line)
@@ -1615,13 +1646,19 @@ class QtMonitorWindow:
 
     # ---- UI ----------------------------------------------------------
     def _create(self):
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QAction
-        from PySide6.QtWidgets import (
-            QApplication, QMainWindow, QToolBar, QPushButton, QStatusBar,
-            QVBoxLayout, QSplitter, QWidget, QScrollArea, QSizePolicy, QLabel,
-        )
         import pyqtgraph as pg
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import (
+            QApplication,
+            QLabel,
+            QMainWindow,
+            QPushButton,
+            QScrollArea,
+            QSplitter,
+            QToolBar,
+            QVBoxLayout,
+            QWidget,
+        )
 
         from serial_debug.ui import qt_theme
 
@@ -1648,7 +1685,6 @@ class QtMonitorWindow:
         self._validation_bridge.setup(win)
 
         # 中央：QSplitter 横向分栏，左侧变量列表，右侧 plot 滚动区
-        from PySide6.QtWidgets import QSplitter
         central = QSplitter(Qt.Horizontal)
         central.setHandleWidth(4)
         central.setChildrenCollapsible(False)
@@ -1879,9 +1915,7 @@ class QtMonitorWindow:
                 QMessageBox.critical(win, '导出失败', str(e))
 
         def _connect_serial():
-            from PySide6.QtWidgets import (
-                QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
-                QMessageBox, QComboBox)
+            from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QMessageBox
             dlg = QDialog(win)
             dlg.setWindowTitle('连接串口（实时 feed）')
             form = QFormLayout(dlg)
@@ -1912,8 +1946,9 @@ class QtMonitorWindow:
             try:
                 self.stop_serial()
                 win.statusBar().showMessage('已断开串口')
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_disconnect_serial stop_serial failed', e)
+                win.statusBar().showMessage(f'断开失败: {e}')
 
         def _perf_test():
             import time
@@ -2008,8 +2043,8 @@ class QtMonitorWindow:
 
         # 状态栏
         try:
-            import PySide6
             import pyqtgraph
+            import PySide6
             tech_label = QLabel(
                 f'PySide6 {PySide6.__version__} | pyqtgraph {pyqtgraph.__version__}')
         except Exception:
@@ -2019,16 +2054,26 @@ class QtMonitorWindow:
 
         # 关闭时保存几何 + plots + var_meta——让下次启动自动恢复
         def _close_event(event):
+            # M2: closeEvent 必须显式释放 reader 线程 + QTimer
+            # 不能裸 except 吞所有错（参见 Agent-Head/memory/FACT.md 教训 5）
             try:
                 self.stop_serial()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_close_event stop_serial failed', e)
+            # 显式停 _refresh_timer 并 deleteLater，避免 QTimer 无 parent 时泄露
+            if getattr(self, '_refresh_timer', None) is not None:
+                try:
+                    self._refresh_timer.stop()
+                    self._refresh_timer.deleteLater()
+                except Exception as e:
+                    log_exc('debug', f'{__file__}:_close_event timer cleanup failed', e)
+                self._refresh_timer = None
             try:
                 self._save_plots()
                 self._save_var_meta()
                 self._save_geometry()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_close_event persist state failed', e)
             event.accept()
         win.closeEvent = _close_event
 
@@ -2176,8 +2221,8 @@ class QtMonitorWindow:
     def _show_about_dialog(self):
         from PySide6.QtWidgets import QMessageBox
         try:
-            import PySide6
             import pyqtgraph
+            import PySide6
             versions = (f'PySide6: {PySide6.__version__}\n'
                         f'pyqtgraph: {pyqtgraph.__version__}\n'
                         f'Python: {sys.version.split()[0]}')
@@ -2201,10 +2246,14 @@ class QtMonitorWindow:
         - 自动从 self._var_meta 派生行
         """
         from PySide6.QtCore import Qt
-        from PySide6.QtGui import QColor, QAction
+        from PySide6.QtGui import QAction, QColor
         from PySide6.QtWidgets import (
-            QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-            QHeaderView, QMenu, QLabel,
+            QHeaderView,
+            QLabel,
+            QMenu,
+            QTreeWidget,
+            QVBoxLayout,
+            QWidget,
         )
 
         container = QWidget()
@@ -2405,7 +2454,7 @@ class QtMonitorWindow:
         # 把所有 plot 的 vars 并集，标记在哪些图出现
         # （空 vars 计为"全部 var 都在该 plot"）
         all_names = set(self._data.keys())
-        counts: dict[str, int] = {n: 0 for n in all_names}
+        counts: dict[str, int] = dict.fromkeys(all_names, 0)
         for p in self._visible_plots:
             vs = p.get('vars', [])
             if not vs:
@@ -2494,8 +2543,13 @@ class QtMonitorWindow:
         """弹窗显示每变量统计信息。"""
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QVBoxLayout, QTableWidget,
-            QTableWidgetItem, QHeaderView, QLabel,
+            QDialog,
+            QDialogButtonBox,
+            QHeaderView,
+            QLabel,
+            QTableWidget,
+            QTableWidgetItem,
+            QVBoxLayout,
         )
         dlg = QDialog(parent_win)
         dlg.setWindowTitle('统计信息')
@@ -2561,7 +2615,6 @@ class QtMonitorWindow:
         数据量超过 max_rows 时按等间隔采样降采样到 max_rows，避免巨型 CSV。
         返回 (实际行数, 采样步长)。
         """
-        import numpy as np
         names = list(self._data.keys())
         if not names:
             raise ValueError('没有可导出的数据')
@@ -2605,7 +2658,11 @@ class QtMonitorWindow:
         基于 _visible_plots（当前视图），不是 _plots（原始配置）。
         """
         from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QVBoxLayout, QComboBox, QLabel,
+            QComboBox,
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QVBoxLayout,
         )
         if not self._visible_plots:
             from PySide6.QtWidgets import QMessageBox
@@ -2800,10 +2857,10 @@ class QtMonitorWindow:
         不渲染 X 关闭按钮（QDialog 自带原生关闭）。
         """
         import pyqtgraph as pg
-        from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout,
-                                       QLabel, QSizePolicy, QPushButton)
-        from PySide6.QtGui import QFont
         from PySide6.QtCore import Qt
+        from PySide6.QtGui import QFont
+        from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout
+
         from serial_debug.ui.qt_flow_layout import QFlowLayout
 
         pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
@@ -3059,10 +3116,9 @@ class QtMonitorWindow:
             return
         header['legend_box'].setVisible(True)
         font_size = int(p.get('legend_font_size', 9))
+        from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QWidget
+
         from serial_debug.ui import qt_theme
-        from PySide6.QtWidgets import (QWidget, QHBoxLayout, QLabel,
-                                       QCheckBox)
-        from PySide6.QtCore import Qt as _Qt
         t = qt_theme.palette(self.theme_name)
         vis = p.get('var_visibility') or {}
         with self._data_lock:
@@ -3172,7 +3228,6 @@ class QtMonitorWindow:
             return
         if plot_idx >= len(self._plot_widgets):
             return
-        import numpy as np
         import pyqtgraph as pg
         p = self._visible_plots[plot_idx]
         pw = self._plot_widgets[plot_idx]
@@ -3264,6 +3319,7 @@ class QtMonitorWindow:
         """
         import threading
         import time
+
         import serial
         self.stop_serial()
         # 清数据点（保留 var_meta 配置）
@@ -3286,13 +3342,16 @@ class QtMonitorWindow:
             while not self._serial_stop.is_set() and ser.is_open:
                 try:
                     chunk = ser.read(ser.in_waiting or 1024)
-                except Exception:
+                except Exception as e:
+                    # reader 读失败：记日志，退出 reader 循环
+                    log_exc('warning', f'{__file__}:start_serial._reader read failed', e)
                     break
                 if not chunk:
                     continue
                 try:
                     text = chunk.decode('utf-8', errors='replace')
-                except Exception:
+                except Exception as e:
+                    log_exc('debug', f'{__file__}:start_serial._reader decode failed', e)
                     continue
                 self._serial_buf += text
                 while '\n' in self._serial_buf:
@@ -3323,19 +3382,21 @@ class QtMonitorWindow:
                                 if len(buf) > self._max_points:
                                     del buf[:len(buf) - self._max_points]
                             self._register_var(name)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # 解析失败：记日志，不退出（继续读后续行）
+                        log_exc('debug', f'{__file__}:start_serial._reader parse failed line={line[:80]!r}', e)
             try:
                 ser.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('debug', f'{__file__}:start_serial._reader final ser.close failed', e)
 
         t = threading.Thread(target=_reader, daemon=True)
         self._serial_thread = t
         t.start()
         from PySide6.QtCore import QTimer
         if self._refresh_timer is None:
-            self._refresh_timer = QTimer()
+            # M2: QTimer 必须给 parent，让 Qt 自动随窗口释放，避免无主对象泄露
+            self._refresh_timer = QTimer(self._win if hasattr(self, '_win') and self._win is not None else None)
             self._refresh_timer.timeout.connect(self._refresh_plot)
         self._refresh_timer.start(40)
 
@@ -3345,18 +3406,19 @@ class QtMonitorWindow:
         if self._serial is not None:
             try:
                 self._serial.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('warning', f'{__file__}:stop_serial ser.close failed', e)
         if self._serial_thread is not None:
             try:
-                self._serial_thread.join(timeout=1.0)
-            except Exception:
-                pass
+                # M2: join timeout 提升到 2s（原 1s 在 read 卡等数据时不一定够）
+                self._serial_thread.join(timeout=2.0)
+            except Exception as e:
+                log_exc('warning', f'{__file__}:stop_serial thread join failed', e)
         if self._refresh_timer is not None:
             try:
                 self._refresh_timer.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exc('debug', f'{__file__}:stop_serial timer stop failed', e)
         self._serial = None
         self._serial_thread = None
         self._serial_stop = None
@@ -3375,7 +3437,8 @@ class QtMonitorWindow:
         if self._sidebar is not None:
             try:
                 cur_rows = self._sidebar.topLevelItemCount()
-            except Exception:
+            except Exception as e:
+                log_exc('debug', f'{__file__}:_refresh_plot topLevelItemCount failed', e)
                 cur_rows = 0
             if cur_rows != len(self._var_meta):
                 self._refresh_sidebar()
@@ -3386,7 +3449,6 @@ class QtMonitorWindow:
             self._refresh_sidebar_values()
             self._refresh_sidebar_visibility()
             return
-        import numpy as np
         import pyqtgraph as pg
         from PySide6.QtCore import Qt
 
@@ -3409,8 +3471,8 @@ class QtMonitorWindow:
                 if name not in vars_to_show or not vis.get(name, True):
                     try:
                         pw.removeItem(curves[name])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log_exc('debug', f'{__file__}:_refresh_plot removeItem failed name={name!r}', e)
                     del curves[name]
             # 创建/更新曲线（跳过被取消勾选的变量）
             for name in vars_to_show:
@@ -3434,8 +3496,8 @@ class QtMonitorWindow:
                     item = curves[name]
                     try:
                         item.setData(xs, ys, pen=pg.mkPen(color, width=1.5))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log_exc('warning', f'{__file__}:_refresh_plot setData failed name={name!r}', e)
                 else:
                     item = pw.plot(xs, ys,
                                    pen=pg.mkPen(color, width=1.5),
@@ -3487,12 +3549,11 @@ class QtMonitorWindow:
         说明重合；尝试 4 个角，选重合最少的。保留用户拖拽后的位置
         （若用户已拖离默认角落，不强制挪回）。
         """
-        import pyqtgraph as pg
         legend = getattr(pw, '_legend_obj', None)
         if legend is None:
             return
         try:
-            vb = pw.getViewBox()
+            pw.getViewBox()
             # 图例在 view 坐标系中的矩形
             leg_rect = legend.mapRectToParent(legend.boundingRect())
             if leg_rect.width() <= 0 or leg_rect.height() <= 0:
@@ -3506,7 +3567,6 @@ class QtMonitorWindow:
                         yd = item.yData
                         if xd is None or len(xd) == 0:
                             continue
-                        import numpy as np
                         # 筛选 x 在 rect 范围的点
                         mask = (xd >= rect.left()) & (xd <= rect.right())
                         ys_in = yd[mask]
@@ -3521,7 +3581,6 @@ class QtMonitorWindow:
             if cur_overlap < 5:
                 return
             # 尝试 4 个角，找重合最少的位置
-            view_rect = vb.viewRect()
             best_pos = None
             best_overlap = cur_overlap
             # 4 个角的锚点（itemPos, parentPos）
@@ -3653,7 +3712,7 @@ class QtMonitorWindow:
         _refresh_plot 末尾会同步刷新所有 popout 窗口；关闭时清理。
         """
         from PySide6.QtWidgets import QDialog, QVBoxLayout
-        import pyqtgraph as pg
+
         from serial_debug.ui import qt_theme
         t = qt_theme.palette(self.theme_name)
         if not self._visible_plots:
@@ -3699,9 +3758,7 @@ class QtMonitorWindow:
         """在 popout PlotWidget 上画一遍 plot_idx 的曲线。"""
         if plot_idx >= len(self._visible_plots):
             return
-        import numpy as np
         import pyqtgraph as pg
-        from PySide6.QtCore import Qt as _Qt
         p = self._visible_plots[plot_idx]
         with self._data_lock:
             all_data_keys = list(self._data.keys())
@@ -3761,7 +3818,6 @@ class QtMonitorWindow:
         """鼠标在 plot 上移动时显示竖线 + 数据标签。"""
         import numpy as np
         import pyqtgraph as pg
-        from PySide6.QtCore import Qt
         # 检查鼠标是否在 plot 区域内
         if pw.sceneBoundingRect().contains(pos):
             mouse_point = pw.getViewBox().mapSceneToView(pos)

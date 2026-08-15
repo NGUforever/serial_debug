@@ -51,17 +51,11 @@ markers = [
 [tool.coverage.run]
 source = ["src/serial_debug"]
 branch = true
+# omit 名单只保留真正合理的不需测试的文件（入口 shim）
+# 不能因"难测"而 omit UI 文件——UI 用 pytest-qt + QtBot 做事件级测试覆盖
+# 参见 Agent-Head/memory/FACT.md 跨 Agent 协作教训 4
 omit = [
-    "*/ui/qt_app.py",
-    "*/ui/qt_theme.py",
-    "*/ui/qt_flow_layout.py",
-    "*/ui/qt_at_cmd_window.py",
-    "*/ui/qt_log_viewer_window.py",
-    "*/ui/qt_monitor_window.py",
-    "*/ui/at_cmd_window.py",
-    "*/ui/log_viewer_window.py",
-    "*/ui/monitor_window.py",
-    "*/__main__.py",
+    "*/__main__.py",          # CLI 入口 shim (4 行 sys.exit(main()))
 ]
 
 [tool.coverage.report]

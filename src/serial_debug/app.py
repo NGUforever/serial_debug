@@ -12,24 +12,28 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
 import sys
 import time
-import queue
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import filedialog, messagebox, ttk
 
-from serial_debug.core.serial_backend import SerialBackend
 from serial_debug.core import log_writer
+from serial_debug.core.serial_backend import SerialBackend
+from serial_debug.infra import config, themes
 from serial_debug.ui.at_cmd_window import AtCmdWindow
 from serial_debug.ui.log_viewer_window import LogViewerWindow
-from serial_debug.ui.monitor_window import (MotorMonitorWindow, BmsMonitorWindow,
-                            ImuMonitorWindow,
-                            MotorMonitorPanel, BmsMonitorPanel,
-                            ImuMonitorPanel, FillCheck)
+from serial_debug.ui.monitor_window import (
+    BmsMonitorPanel,
+    BmsMonitorWindow,
+    FillCheck,
+    ImuMonitorPanel,
+    ImuMonitorWindow,
+    MotorMonitorPanel,
+    MotorMonitorWindow,
+)
 from serial_debug.widgets.auto_combobox import AutoCombobox
-from serial_debug.infra import themes
-from serial_debug.infra import config
 
 
 def resource_path(relative_path: str) -> str:
@@ -1606,8 +1610,8 @@ def main():
     （PyInstaller 打包后 sys.executable -m <module> 不工作，
      改用环境变量区分入口，子进程看到此变量走对应路径）。
     """
-    import sys
     import os
+    import sys
     if os.environ.get('SERIAL_DEBUG_QT_PILOT') == '1':
         # Qt 试点窗口：独立子进程运行，避免与主事件循环冲突
         try:
@@ -1617,7 +1621,7 @@ def main():
             import traceback
             traceback.print_exc()
             try:
-                from PySide6.QtWidgets import QMessageBox, QApplication
+                from PySide6.QtWidgets import QApplication, QMessageBox
                 app = QApplication.instance() or QApplication(sys.argv)
                 QMessageBox.critical(None, '启动失败',
                                      f'Qt 监视窗口启动失败:\n{e}\n\n{traceback.format_exc()}')
@@ -1671,13 +1675,15 @@ def _run_log_viewer_only(files: list[str]):
     由 qt_app._open_log_viewer 子进程注入，PyInstaller 打包后
     sys.executable -m 不识别，改用环境变量区分入口。
     """
-    import sys
     import os
+    import sys
+
     from serial_debug.infra import themes
     pref = themes.load_pref()
     resolved = themes.resolve(pref)
     try:
         from PySide6.QtWidgets import QApplication
+
         from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
     except Exception as e:
         import traceback
@@ -1725,10 +1731,10 @@ def _run_log_viewer_only(files: list[str]):
 
 def _run_log_viewer_only_tk(files: list[str]):
     """tkinter 兜底路径（Qt 不可用时使用）。"""
-    import sys
     import os
-    from serial_debug.infra import config
-    from serial_debug.infra import themes
+    import sys
+
+    from serial_debug.infra import config, themes
     root = tk.Tk()
     root.withdraw()
     pref = themes.load_pref()
