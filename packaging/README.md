@@ -166,17 +166,6 @@ xcode-select --install
 python scripts/check_env.py
 ```
 
-检测项：
-- Python >= 3.9
-- pip 可用（缺失则尝试 ensurepip）
-- Python tkinter（Linux 缺则提示 `sudo apt install python3-tk`）
-- Linux build 系统包（tk-dev / binutils / python3-dev）
-- Linux PySide6/Qt 运行时库（libxcb-* / libGL / libEGL / ...）
-- glibc >= 2.35
-- Mac Xcode CLT
-- Windows VC++ Redistributable 2015-2022 x64
-- PySide6 / pyqtgraph 能否 import
-
 ## 文件清单
 
 | 文件 | 作用 |
@@ -192,3 +181,54 @@ python scripts/check_env.py
 | `packaging/install_win.bat` | Windows 安装到 %LOCALAPPDATA% |
 | `packaging/serial_debug.spec` | PyInstaller 跨平台 spec |
 | `requirements.txt` | Python 依赖列表 |
+
+## v1.0.0 三平台 build 实测状态
+
+> 更新时间：2026-08-15
+
+### Linux — ✅ 已实测
+
+- 实测环境：Ubuntu 7.0.0-29-generic host + uv venv (cpython 3.11.15) + PyInstaller 6.22.0
+- 依赖：PySide6 6.11.1 / pyqtgraph 0.14.0 / numpy / PyOpenGL 3.1.10 / pyserial 3.5
+- 构建：`pyinstaller --clean --noconfirm packaging/serial_debug.spec` 成功
+- 产物：`dist/serial_debug/serial_debug` (6.8MB ELF) + `dist/serial_debug-linux-x86_64.tar.gz` (89MB)
+- 体积：onedir 237MB
+- 启动验证：`QT_QPA_PLATFORM=offscreen SERIAL_DEBUG_QT_MAIN=1 ./dist/serial_debug/serial_debug` 进入 Qt 事件循环（timeout 5s 退出码 124，无 stderr 报错，说明 Qt 主窗口构造完成且 import 链路全通）
+- 已知 host 限制：tkinter fallback 入口需 `LD_LIBRARY_PATH` 含 uv python 的 libtcl9.0.so / libtk9.0.so，量产发行包由 PyInstaller 自动 bundle 这些 .so，最终用户不需要
+
+### Windows — ⚠️ 待用户实测
+
+**理由**：本任务执行环境为 Linux 主机。Wine 下跑 PySide6 + PyInstaller 不可靠（PySide6 Qt 平台插件依赖 Windows 原生 DLL，Wine 模拟常缺 Qt6Core.dll / Qt6Gui.dll / VCRuntime140.dll），且 Inno Setup 的 iscc.exe 也不能在 Wine 下稳定运行。选项 A（Wine 模拟）和选项 B（Docker mingw 交叉编译 PyInstaller）都不稳妥 —— PyInstaller 官方文档明确不支持 cross-compile。
+
+**待用户在真实 Windows 10/11 机器上跑以下 checklist**：
+
+1. 安装 Python 3.11+ （勾选 "Add to PATH"）
+2. 安装 VC++ Redistributable 2015-2022 x64（[下载](https://aka.ms/vs/17/release/vc_redist.x64.exe)）
+3. clone 仓库：`git clone https://gitee.com/ericslzwang/serial_debug.git`
+4. 装依赖：`pip install -r requirements.txt pyinstaller`
+5. 构建：双击 `packaging\build_win.bat`，或 `pyinstaller --clean --noconfirm packaging\serial_debug.spec`
+6. 验证启动：双击 `dist\serial_debug\serial_debug.exe`，确认主窗口、AT 面板、日志查看器、数据监视都能打开
+7. （可选）Inno Setup 打包：装 [Inno Setup 6](https://jrsoftware.org/isdl.php)，右键 `packaging\serial_debug-installer.iss` → Compile，产出 `dist\serial_debug-setup.exe`
+8. 把验证结果（截图 / 错误日志）回传到 issue tracker
+
+### macOS — ⚠️ 待用户实测
+
+**理由**：同 Windows。Linux 上无法生成有效的 `.app` bundle 和 `.dmg`。
+
+**待用户在真实 macOS 13+ (Intel 或 Apple Silicon) 机器上跑以下 checklist**：
+
+1. 装 Xcode Command Line Tools：`xcode-select --install`
+2. 装 Python 3.11+ （推荐用 Homebrew：`brew install python@3.11`）
+3. clone + 装依赖（同 Windows step 3-4）
+4. 构建：`bash packaging/build_mac.sh`
+5. 验证启动：双击 `dist/serial_debug.app`，确认主窗口、AT 面板、日志查看器、数据监视都能打开
+6. Gatekeeper：若提示"来自未知开发者"，跑 `bash packaging/install_mac.sh`，会自动 `xattr -dr com.apple.quarantine`
+7. （可选）打 dmg：`hdiutil create -volname serial_debug -srcfolder dist/serial_debug.app -ov -format UDZO dist/serial_debug-macos.dmg`
+8. Apple Silicon 用户额外验证：PyOpenGL 在 arm64 下偶有问题，若曲线窗口报 OpenGL 错，尝试 `pip install --force-reinstall PyOpenGL`
+9. 把验证结果回传到 issue tracker
+
+### Inno Setup — ⚠️ 待用户在 Windows 上跑
+
+`packaging/serial_debug-installer.iss` 是 Inno Setup 脚本，**不能在 Linux 上交叉编译**（iscc.exe 是 Windows 原生程序，Wine 下不稳定）。选项 B（Docker mingw + iscc 交叉）需要 Windows SDK 和 Inno Setup 全套环境，不划算。
+
+**待用户在 Windows 上装 Inno Setup 6 后**：右键 `serial_debug-installer.iss` → Compile，产出 `dist/serial_debug-setup.exe`。
