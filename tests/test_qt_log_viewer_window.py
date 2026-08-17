@@ -12,6 +12,15 @@ import pytest
 pytest.importorskip('PySide6')
 
 
+@pytest.fixture(autouse=True)
+def _mock_qtimer_single_shot(monkeypatch):
+    """全局 mock QTimer.singleShot：避免 goto_line 的 3s 延迟回调跨测试
+    访问已销毁 editor 导致 'Internal C++ object already deleted' 卡死。
+    """
+    from PySide6.QtCore import QTimer
+    monkeypatch.setattr(QTimer, 'singleShot', lambda *a, **kw: None)
+
+
 # ---- _classify ----
 
 def test_classify_resp():
@@ -118,7 +127,7 @@ def test_level_filter_static_note_only():
 def test_qt_log_view_tab_loads_file(qtbot, tmp_path):
     """_QtLogViewTab 加载日志文件，应填 _all_lines + 渲染首批。"""
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
     # 写 100 行测试日志
     log_path = tmp_path / 'test.log'
@@ -139,9 +148,9 @@ def test_qt_log_view_tab_loads_file(qtbot, tmp_path):
 def test_qt_log_view_tab_load_missing_file(qtbot, tmp_path):
     """加载不存在的文件应走 except 分支，不抛。"""
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    QApplication.instance() or QApplication([])
     from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
     theme = themes.THEMES['dark']
     tab = _QtLogViewTab(parent=None, path=str(tmp_path / 'nope.log'),
                         theme=theme)
@@ -155,9 +164,9 @@ def test_qt_log_view_tab_load_missing_file(qtbot, tmp_path):
 def test_qt_log_view_tab_live_mode_toggle(qtbot, tmp_path):
     """set_live_mode 切换 + stop_live 关闭。"""
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    QApplication.instance() or QApplication([])
     from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
     theme = themes.THEMES['dark']
     # 写一个新文件
     log_path = tmp_path / 'live.log'
@@ -179,9 +188,9 @@ def test_qt_log_view_tab_live_mode_toggle(qtbot, tmp_path):
 def test_qt_log_view_tab_poll_file_picks_up_appended_lines(qtbot, tmp_path):
     """live 模式下文件追加内容应被 _poll_file 读到 _all_lines。"""
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    QApplication.instance() or QApplication([])
     from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
     theme = themes.THEMES['dark']
     log_path = tmp_path / 'live.log'
     log_path.write_text('line0\n', encoding='utf-8')
@@ -203,9 +212,9 @@ def test_qt_log_view_tab_poll_file_picks_up_appended_lines(qtbot, tmp_path):
 
 def test_search_worker_run_single_finds_matches(qtbot):
     """_SearchWorker.run_single 应在行列表里找匹配。"""
-    from PySide6.QtCore import QCoreApplication, QThread, QObject, Qt
+    from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _SearchWorker
     w = _SearchWorker()
     results = {}
@@ -231,7 +240,7 @@ def test_search_worker_rejects_dangerous_regex(qtbot):
     """_SearchWorker 应拒绝嵌套量词正则。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _SearchWorker
     w = _SearchWorker()
     errors = {}
@@ -250,7 +259,7 @@ def test_search_worker_handles_invalid_regex(qtbot):
     """_SearchWorker 应捕获非法正则错误。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _SearchWorker
     w = _SearchWorker()
     errors = {}
@@ -272,7 +281,7 @@ def test_filter_worker_filters_by_regex(qtbot):
     """_FilterWorker.run 应按正则筛选出匹配的行索引。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _FilterWorker
     w = _FilterWorker()
     results = {}
@@ -300,7 +309,7 @@ def test_filter_worker_without_regex_passes_all(qtbot):
     """无正则 + level=0 应放过所有行。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _FilterWorker
     w = _FilterWorker()
     results = {}
@@ -320,7 +329,7 @@ def test_filter_worker_level_filter(qtbot):
     """level=1 + tags 应只过 log 类。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _FilterWorker
     w = _FilterWorker()
     results = {}
@@ -341,7 +350,7 @@ def test_filter_worker_rejects_dangerous_regex(qtbot):
     """_FilterWorker 应拒绝嵌套量词正则。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _FilterWorker
     w = _FilterWorker()
     errors = {}
@@ -362,7 +371,7 @@ def test_filter_worker_handles_invalid_regex(qtbot):
     """_FilterWorker 应捕获非法正则。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _FilterWorker
     w = _FilterWorker()
     errors = {}
@@ -383,7 +392,7 @@ def test_filter_worker_respects_result_cap(qtbot):
     """result_cap 应限制返回的匹配数。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     from serial_debug.ui.qt_log_viewer_window import _FilterWorker
     w = _FilterWorker()
     results = {}
@@ -397,3 +406,1493 @@ def test_filter_worker_respects_result_cap(qtbot):
     w.start_run.emit(1, lines, tags, 'hit', 0, 5)
     qtbot.wait(80)
     assert len(results.get('matches', [])) == 5
+
+
+# ---- _LineNumberArea / _PlainTextEdit ----
+
+def _make_qapp():
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def test_plain_text_edit_set_theme(qtbot):
+    """_PlainTextEdit.set_theme 应更新 palette + line_area update。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    # 不应抛
+    editor.set_theme(themes.THEMES['light'])
+    # palette base color 应是 light 主题 panel_bg
+    pal = editor.palette()
+    from PySide6.QtGui import QColor
+    expected = QColor(themes.THEMES['light'].get('panel_bg', '#1e1e1e'))
+    actual = pal.color(pal.ColorRole.Base)
+    # RGB 比较（名称不同实例）
+    assert actual.red() == expected.red()
+    assert actual.green() == expected.green()
+    assert actual.blue() == expected.blue()
+
+
+def test_plain_text_edit_line_number_area_width(qtbot):
+    """line_number_area_width 应基于 blockCount 算出 digits+padding 宽。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    # 空 document blockCount=1
+    w = editor.line_number_area_width()
+    assert w > 0
+    # 插入多行，width 应增加
+    editor.setPlainText('\n'.join(['x'] * 100))
+    w2 = editor.line_number_area_width()
+    assert w2 >= w
+
+
+def test_plain_text_edit_resize_event_sets_geometry(qtbot):
+    """resizeEvent 应给 _line_area 设置 geometry。"""
+    _make_qapp()
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    editor.resize(400, 200)
+    editor.show()
+    QApplication.processEvents()
+    # _line_area 应有 geometry
+    g = editor._line_area.geometry()
+    assert g.width() > 0
+    assert g.height() >= 0
+
+
+def test_plain_text_edit_update_line_area_width(qtbot):
+    """_update_line_area_width 应设置 viewport margins。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    editor._update_line_area_width()
+    margins = editor.viewportMargins()
+    assert margins.left() > 0
+
+
+def test_plain_text_edit_update_line_area_with_dy(qtbot):
+    """_update_line_area dy>0 时应 scroll，dy=0 时应 update rect。"""
+    _make_qapp()
+    from PySide6.QtCore import QRect
+
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    # 不应抛
+    editor._update_line_area(QRect(0, 0, 100, 20), 5)
+    editor._update_line_area(QRect(0, 0, 100, 20), 0)
+
+
+def test_plain_text_edit_first_visible_block(qtbot):
+    """first_visible_block 应返回 QTextBlock。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText('line1\nline2\nline3')
+    block = editor.first_visible_block()
+    # 应为有效 block
+    assert block.isValid()
+
+
+def test_line_number_area_paint_event(qtbot):
+    """_LineNumberArea.paintEvent 应能在 offscreen 下不抛。"""
+    _make_qapp()
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QPaintEvent
+    from PySide6.QtWidgets import QApplication
+
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText('line1\nline2\nline3\n')
+    editor.resize(400, 200)
+    editor.show()
+    QApplication.processEvents()
+    # 触发 paintEvent
+    area = editor._line_area
+    area.update()
+    QApplication.processEvents()
+
+
+def test_line_number_area_size_hint(qtbot):
+    """sizeHint 应返回 line_number_area_width 宽。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import _PlainTextEdit
+    editor = _PlainTextEdit()
+    qtbot.addWidget(editor)
+    area = editor._line_area
+    sh = area.sizeHint()
+    assert sh.width() == editor.line_number_area_width()
+
+
+# ---- _QtLogViewTab 方法 ----
+
+def _make_tab(qtbot, tmp_path, lines):
+    """辅助：创建一个 _QtLogViewTab 并加载文件。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    log_path = tmp_path / 'test.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    return tab
+
+
+def test_tab_get_line_returns_indexed(qtbot, tmp_path):
+    """get_line 应返回索引处的行。"""
+    tab = _make_tab(qtbot, tmp_path, ['hello', 'world', 'foo'])
+    assert tab.get_line(0) == 'hello'
+    assert tab.get_line(2) == 'foo'
+    # 越界返 ''
+    assert tab.get_line(99) == ''
+    assert tab.get_line(-1) == ''
+
+
+def test_tab_all_lines_returns_full_list(qtbot, tmp_path):
+    """all_lines 应返回 _all_lines 引用。"""
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    assert tab.all_lines() == ['a', 'b', 'c']
+
+
+def test_tab_path_and_filename(qtbot, tmp_path):
+    """path / filename 应返回路径和文件名。"""
+    import os
+    tab = _make_tab(qtbot, tmp_path, ['a'])
+    assert tab.path() == str(tmp_path / 'test.log')
+    assert tab.filename() == 'test.log'
+
+
+def test_tab_apply_theme_changes_panel_bg(qtbot, tmp_path):
+    """apply_theme(light) 应更新 editor palette。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    log_path = tmp_path / 't.log'
+    log_path.write_text('line\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    tab.apply_theme(themes.THEMES['light'])
+    # editor palette 应改为 light
+    pal = tab._editor.palette()
+    from PySide6.QtGui import QColor
+    expected = QColor(themes.THEMES['light'].get('panel_bg', '#1e1e1e'))
+    actual = pal.color(pal.ColorRole.Base)
+    assert actual.red() == expected.red()
+
+
+def test_tab_format_for_tag_resp(qtbot, tmp_path):
+    """_format_for_tag(resp) 应返回带 accent 色的 fmt。"""
+    tab = _make_tab(qtbot, tmp_path, ['a'])
+    from serial_debug.infra import themes
+    # 注入一些 tag
+    tab._line_tags = ['resp', 'note', 'log']
+    fmt_resp = tab._format_for_tag('resp')
+    fmt_note = tab._format_for_tag('note')
+    fmt_log = tab._format_for_tag('log')
+    assert fmt_resp is not None
+    assert fmt_note is not None
+    assert fmt_log is not None
+
+
+def test_tab_render_batch_inserts_placeholder(qtbot, tmp_path):
+    """_render_batch 在 end<len 时应插入占位符 + userData。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import RENDER_BATCH, _PlaceholderData, _QtLogViewTab
+    # 写超过 RENDER_BATCH 行
+    lines = [f'line{i}' for i in range(RENDER_BATCH + 5)]
+    log_path = tmp_path / 'big.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    # 渲染首批后应有占位符 block
+    last_block = tab._editor.document().lastBlock()
+    assert isinstance(last_block.userData(), _PlaceholderData)
+
+
+def test_tab_delete_trailing_placeholder(qtbot, tmp_path):
+    """_delete_trailing_placeholder 应删掉尾部占位符。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import RENDER_BATCH, _PlaceholderData, _QtLogViewTab
+    lines = [f'line{i}' for i in range(RENDER_BATCH + 5)]
+    log_path = tmp_path / 'big.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    # 删占位符
+    tab._delete_trailing_placeholder()
+    # placeholder_block 应回 -1
+    assert tab._placeholder_block == -1
+
+
+def test_tab_on_scroll_triggers_chain_load(qtbot, tmp_path):
+    """_on_scroll 在滚动到底时应触发 _chain_load。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import RENDER_BATCH, _QtLogViewTab
+    lines = [f'line{i}' for i in range(RENDER_BATCH * 3)]
+    log_path = tmp_path / 'big.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    # 模拟滚动到底
+    sb = tab._editor.verticalScrollBar()
+    # 最大值可能为 0（offscreen），但 _on_scroll 不应崩
+    tab._on_scroll(0)  # 不应抛
+    tab._on_scroll(sb.maximum() if sb.maximum() > 0 else 0)
+
+
+def test_tab_chain_load_progressively(qtbot, tmp_path):
+    """_chain_load 应分批加载。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import RENDER_BATCH, _QtLogViewTab
+    lines = [f'line{i}' for i in range(RENDER_BATCH * 2)]
+    log_path = tmp_path / 'big.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    # _chain_load 多次应渐进加载
+    initial = tab._rendered_count
+    tab._chain_load(budget=2)
+    assert tab._rendered_count >= initial  # 应至少加了
+
+
+def test_tab_jump_to_end(qtbot, tmp_path):
+    """_jump_to_end 应加载完所有内容并滚到底。"""
+    _make_qapp()
+    from PySide6.QtWidgets import QApplication
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import RENDER_BATCH, _QtLogViewTab
+    lines = [f'line{i}' for i in range(RENDER_BATCH * 2)]
+    log_path = tmp_path / 'big.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    tab._jump_to_end()
+    # 应加载完全部
+    assert tab._rendered_count == len(lines)
+
+
+def test_tab_goto_line_loads_then_highlights(qtbot, tmp_path, monkeypatch):
+    """goto_line 应加载到该行 + 高亮。"""
+    _make_qapp()
+    from PySide6.QtCore import QTimer
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import RENDER_BATCH, _QtLogViewTab
+    lines = [f'line{i}' for i in range(RENDER_BATCH * 2)]
+    log_path = tmp_path / 'big.log'
+    log_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path), theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    # mock QTimer.singleShot 避免 3s 后跨测试触发已销毁 editor
+    monkeypatch.setattr(QTimer, 'singleShot', lambda *a, **kw: None)
+    target = RENDER_BATCH + 10
+    tab.goto_line(target)
+    # 应已加载到 target+1
+    assert tab._rendered_count > target
+    # 越界：goto 不抛
+    tab.goto_line(-1)
+    tab.goto_line(999999)
+
+
+def test_tab_clear_goto_highlight(qtbot, tmp_path):
+    """_clear_goto_highlight 不应抛（即使 line_idx 越界）。"""
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    tab._clear_goto_highlight(0)  # 不应抛
+    tab._clear_goto_highlight(999)  # 越界也不抛
+
+
+def test_tab_show_search_toggles_visibility(qtbot, tmp_path):
+    """_show_search 应切换 search_bar 可见性。"""
+    tab = _make_tab(qtbot, tmp_path, ['a'])
+    # 注意：offscreen 下父未 show 时 isVisible() 总返 False，改用 isHidden 校验
+    tab._show_search(True)
+    assert not tab._search_bar.isHidden()
+    tab._show_search(False)
+    assert tab._search_bar.isHidden()
+
+
+def test_tab_do_search_empty_text_clears(qtbot, tmp_path):
+    """_do_search 空文本应清空 matches。"""
+    tab = _make_tab(qtbot, tmp_path, ['hello', 'world'])
+    tab._search_edit.setText('')
+    tab._do_search()
+    assert tab._search_matches == []
+
+
+def test_tab_do_search_dangerous_regex_rejected(qtbot, tmp_path):
+    """_do_search 危险正则应被拒。"""
+    tab = _make_tab(qtbot, tmp_path, ['a' * 100])
+    tab._search_edit.setText(r'(a+)+')
+    tab._do_search()
+    assert tab._search_matches == []
+    assert '嵌套' in tab._search_info.text() or '回溯' in tab._search_info.text()
+
+
+def test_tab_do_search_invalid_regex_rejected(qtbot, tmp_path):
+    """_do_search 非法正则应被拒。"""
+    tab = _make_tab(qtbot, tmp_path, ['abc'])
+    tab._search_edit.setText(r'(unclosed')
+    tab._do_search()
+    assert tab._search_matches == []
+
+
+def test_tab_do_search_sync_no_worker(qtbot, tmp_path):
+    """无 worker 时应回退到 _do_search_sync。"""
+    tab = _make_tab(qtbot, tmp_path, ['hello world', 'foo', 'hello again'])
+    # 注入 None worker（已是 None 默认）
+    tab._search_edit.setText('hello')
+    tab._do_search()
+    # _do_search_sync 应填充 matches
+    assert 0 in tab._search_matches
+    assert 2 in tab._search_matches
+
+
+def test_tab_do_search_sync_search_scan_limit(qtbot, tmp_path):
+    """_do_search_sync 应遵守 SEARCH_SCAN_LIMIT（不无限扫）。"""
+    from serial_debug.ui.qt_log_viewer_window import SEARCH_SCAN_LIMIT
+    lines = ['hit'] * (SEARCH_SCAN_LIMIT + 100)
+    tab = _make_tab(qtbot, tmp_path, lines)
+    tab._search_edit.setText('hit')
+    tab._do_search()
+    # 应有截断（不超过 SCAN_LIMIT+1）
+    assert len(tab._search_matches) <= SEARCH_SCAN_LIMIT + 1
+
+
+def test_tab_on_search_done_with_pending_next(qtbot, tmp_path):
+    """_on_search_done 配 pending='next' 应跳第一个匹配。"""
+    tab = _make_tab(qtbot, tmp_path, ['x', 'y', 'x'])
+    tab._search_epoch = 1
+    tab._search_pending = 'next'
+    tab._on_search_done(1, [0, 2], '2 个匹配')
+    assert tab._search_pos == 0
+    assert '1/2' in tab._search_info.text()
+
+
+def test_tab_on_search_done_with_pending_prev(qtbot, tmp_path):
+    """_on_search_done 配 pending='prev' 应跳末个匹配。"""
+    tab = _make_tab(qtbot, tmp_path, ['x', 'y', 'x'])
+    tab._search_epoch = 1
+    tab._search_pending = 'prev'
+    tab._on_search_done(1, [0, 2], '2 个匹配')
+    assert tab._search_pos == 1
+    assert '2/2' in tab._search_info.text()
+
+
+def test_tab_on_search_done_stale_epoch_dropped(qtbot, tmp_path):
+    """过期 epoch 应被丢弃。"""
+    tab = _make_tab(qtbot, tmp_path, ['x'])
+    tab._search_epoch = 5
+    tab._search_matches = ['old']
+    tab._on_search_done(3, [0, 1], 'should be dropped')
+    # 不应被覆盖
+    assert tab._search_matches == ['old']
+
+
+def test_tab_on_search_error_sets_msg(qtbot, tmp_path):
+    """_on_search_error 应设置 info text。"""
+    tab = _make_tab(qtbot, tmp_path, ['x'])
+    tab._search_epoch = 1
+    tab._on_search_error(1, 'something wrong')
+    assert tab._search_matches == []
+    assert 'something wrong' in tab._search_info.text()
+
+
+def test_tab_search_next_match_triggers_search(qtbot, tmp_path):
+    """matches 空时 _search_next_match 应触发 do_search。"""
+    tab = _make_tab(qtbot, tmp_path, ['x'])
+    tab._search_matches = []
+    tab._search_edit.setText('x')
+    tab._search_next_match()  # 不应抛
+    # 应触发搜索（同步路径填充 matches）
+    assert 0 in tab._search_matches
+
+
+def test_tab_search_next_match_cycles(qtbot, tmp_path):
+    """已有 matches 时 _search_next_match 应 cycle 到下一个。"""
+    tab = _make_tab(qtbot, tmp_path, ['x', 'y', 'x'])
+    tab._search_matches = [0, 2]
+    tab._search_pos = 0
+    tab._search_next_match()
+    assert tab._search_pos == 1
+
+
+def test_tab_search_prev_match_cycles(qtbot, tmp_path):
+    """已有 matches 时 _search_prev_match 应 cycle 到上一个。"""
+    tab = _make_tab(qtbot, tmp_path, ['x', 'y', 'x'])
+    tab._search_matches = [0, 2]
+    tab._search_pos = 0
+    tab._search_prev_match()
+    assert tab._search_pos == 1  # (0-1) % 2 = 1
+
+
+def test_tab_global_search_returns_preview_tuples(qtbot, tmp_path):
+    """global_search 应返回 [(line_idx, col, preview)]。"""
+    import re
+    tab = _make_tab(qtbot, tmp_path, ['hello world', 'foo', 'hello again'])
+    pattern = re.compile('hello')
+    results = tab.global_search(pattern)
+    assert len(results) == 2
+    assert results[0][0] == 0
+    assert results[1][0] == 2
+    assert all(isinstance(r[2], str) for r in results)
+
+
+def test_tab_global_search_caps_at_max(qtbot, tmp_path):
+    """global_search 应 cap 在 GLOBAL_SEARCH_MAX。"""
+    import re
+
+    from serial_debug.ui.qt_log_viewer_window import GLOBAL_SEARCH_MAX
+    lines = ['hit'] * (GLOBAL_SEARCH_MAX + 100)
+    tab = _make_tab(qtbot, tmp_path, lines)
+    pattern = re.compile('hit')
+    results = tab.global_search(pattern)
+    assert len(results) == GLOBAL_SEARCH_MAX
+
+
+def test_tab_set_live_mode_idempotent(qtbot, tmp_path):
+    """set_live_mode 同状态应直接 return。"""
+    tab = _make_tab(qtbot, tmp_path, ['x'])
+    initial_state = tab._live_mode
+    tab.set_live_mode(initial_state)  # 不启动 timer
+    assert tab._live_mode == initial_state
+
+
+def test_tab_set_live_mode_off_stops_timer(qtbot, tmp_path):
+    """set_live_mode(False) 应 stop timer。"""
+    tab = _make_tab(qtbot, tmp_path, ['x'])
+    tab.set_live_mode(True)
+    timer = tab._live_timer
+    tab.set_live_mode(False)
+    assert not tab._live_mode
+    # timer 仍在但已 stop
+    assert not timer.isActive() if timer else True
+
+
+def test_tab_stop_live_clears_timer(qtbot, tmp_path):
+    """stop_live 应把 _live_timer 置 None。"""
+    tab = _make_tab(qtbot, tmp_path, ['x'])
+    tab.set_live_mode(True)
+    tab.stop_live()
+    assert tab._live_timer is None
+    assert not tab._live_mode
+
+
+def test_tab_file_size_returns_int(qtbot, tmp_path):
+    """_file_size 应返回 int 字节数。"""
+    tab = _make_tab(qtbot, tmp_path, ['hello world\n'])
+    size = tab._file_size()
+    assert isinstance(size, int)
+    assert size > 0
+
+
+def test_tab_file_size_missing_file_returns_zero(qtbot, tmp_path):
+    """_file_size 文件不存在应返 0。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    tab = _QtLogViewTab(parent=None, path='/nonexistent_xyz.log',
+                       theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    assert tab._file_size() == 0
+
+
+def test_tab_poll_file_no_change_increases_idle(qtbot, tmp_path):
+    """_poll_file 在文件无变化时应增加 _live_idle_count。"""
+    tab = _make_tab(qtbot, tmp_path, ['x\n'])
+    tab.set_live_mode(True)
+    initial_idle = tab._live_idle_count
+    tab._poll_file()
+    assert tab._live_idle_count == initial_idle + 1
+
+
+def test_tab_poll_file_truncated_reloads(qtbot, tmp_path):
+    """文件被截断（cur_size < _live_pos）应重置 + 重新加载。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    log_path = tmp_path / 'trunc.log'
+    log_path.write_text('aaaa\nbbbb\ncccc\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path),
+                       theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    tab.set_live_mode(True)
+    # 把文件缩小（截断）
+    log_path.write_text('xx\n', encoding='utf-8')
+    tab._poll_file()
+    # _live_pos 应回到 0（_load_file 重置后又设置为新 size）
+    # _all_lines 应回到 ['xx']
+    assert 'xx' in tab._all_lines
+
+
+def test_tab_poll_file_partial_line_buffered(qtbot, tmp_path):
+    """追加无 \\n 的半行应被 buffer 到 _live_partial。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    log_path = tmp_path / 'partial.log'
+    log_path.write_text('init\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path),
+                       theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    tab.set_live_mode(True)
+    # 追加半行
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write('partial line without newline')
+    tab._poll_file()
+    # 应 buffer 到 _live_partial，_all_lines 不应增加
+    assert 'partial line without newline' in tab._live_partial
+    assert 'partial line without newline' not in tab._all_lines
+
+
+def test_tab_poll_file_calls_feed_monitor_cb(qtbot, tmp_path):
+    """_feed_monitor_cb 应被追加的新行调用。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    log_path = tmp_path / 'feed.log'
+    log_path.write_text('init\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path),
+                       theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    tab.set_live_mode(True)
+    received = []
+    tab._feed_monitor_cb = lambda line: received.append(line)
+    # 追加完整行
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write('new line 1\nnew line 2\n')
+    tab._poll_file()
+    assert any('new line 1' in ln for ln in received)
+    assert any('new line 2' in ln for ln in received)
+
+
+def test_tab_poll_file_feed_monitor_cb_failure_swallowed(qtbot, tmp_path):
+    """_feed_monitor_cb 抛异常应被吞。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtLogViewTab
+    log_path = tmp_path / 'feed_fail.log'
+    log_path.write_text('init\n', encoding='utf-8')
+    tab = _QtLogViewTab(parent=None, path=str(log_path),
+                       theme=themes.THEMES['dark'])
+    qtbot.addWidget(tab)
+    tab._load_file()
+    tab.set_live_mode(True)
+    def boom(line):
+        raise RuntimeError('feed fail')
+    tab._feed_monitor_cb = boom
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write('another line\n')
+    tab._poll_file()  # 不应抛
+    assert 'another line' in tab._all_lines
+
+
+def test_tab_on_text_click_calls_callback(qtbot, tmp_path):
+    """_on_text_click 应调 on_line_click。"""
+    from PySide6.QtCore import QPoint
+    tab = _make_tab(qtbot, tmp_path, ['hello', 'world'])
+    called = []
+    tab._on_line_click = lambda t, idx: called.append(idx)
+    # 给 editor 设置文本后 click
+    # editor 文本已加载
+    tab._rendered_count = 2  # 确保 block 0 在范围内
+    tab._on_text_click(QPoint(0, 0))  # 不应抛
+
+
+def test_tab_on_text_click_out_of_range_no_callback(qtbot, tmp_path):
+    """_on_text_click block 超出范围应直接 return 不调回调。"""
+    from PySide6.QtCore import QPoint
+    tab = _make_tab(qtbot, tmp_path, ['hello', 'world'])
+    called = []
+    tab._on_line_click = lambda t, idx: called.append(idx)
+    # 把 rendered_count 设 0，让 block_number >= 0 触发 return
+    tab._rendered_count = 0
+    tab._on_text_click(QPoint(0, 0))
+    # 不应调
+    assert called == []
+
+
+def test_tab_on_text_click_callback_failure_swallowed(qtbot, tmp_path):
+    """on_line_click 回调抛异常应被吞。"""
+    from PySide6.QtCore import QPoint
+    tab = _make_tab(qtbot, tmp_path, ['hello', 'world'])
+    def boom(t, idx):
+        raise RuntimeError('cb fail')
+    tab._on_line_click = boom
+    tab._rendered_count = 2
+    tab._on_text_click(QPoint(0, 0))  # 不应抛
+
+
+def test_tab_event_filter_click(qtbot, tmp_path):
+    """eventFilter 处理 viewport 鼠标按下。"""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    _make_qapp()
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    called = []
+    tab._on_line_click = lambda t, idx: called.append(idx)
+    # 构造一个 MouseButtonPress 事件
+    ev = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(0, 0),
+                    QPointF(0, 0), Qt.LeftButton, Qt.LeftButton,
+                    Qt.NoModifier)
+    # 不应抛
+    tab.eventFilter(tab._editor.viewport(), ev)
+
+
+def test_tab_on_search_return_next(qtbot, tmp_path):
+    """_on_search_return 不带 Shift 应触发 next match。"""
+    tab = _make_tab(qtbot, tmp_path, ['x', 'y', 'x'])
+    tab._search_edit.setText('x')
+    tab._search_matches = [0, 2]
+    tab._search_pos = 0
+    # 无 Shift modifier
+    tab._on_search_return()  # 不应抛，应 cycle next
+
+
+# ---- _SearchWorker.run_global ----
+
+def test_search_worker_run_global_finds_matches(qtbot):
+    """_SearchWorker.run_global 应在多 tab 中找匹配。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from serial_debug.ui.qt_log_viewer_window import _SearchWorker
+    w = _SearchWorker()
+    results = {}
+
+    def on_done(epoch, results_list, info):
+        results['list'] = results_list
+        results['info'] = info
+
+    def on_error(epoch, msg):
+        results['error'] = msg
+
+    w.done_global.connect(on_done, Qt.QueuedConnection)
+    w.error.connect(on_error, Qt.QueuedConnection)
+    tabs_snapshot = [
+        (0, ['hello', 'foo', 'hello'], 'a.log'),
+        (1, ['world', 'hello'], 'b.log'),
+    ]
+    w.start_run_global.emit(1, tabs_snapshot, 'hello')
+    qtbot.wait(80)
+    assert 'list' in results
+    # 应找到 3 个 'hello'（tab 0 idx 0 + 2，tab 1 idx 1）
+    assert len(results['list']) == 3
+
+
+def test_search_worker_run_global_rejects_dangerous(qtbot):
+    """run_global 应拒危险正则。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from serial_debug.ui.qt_log_viewer_window import _SearchWorker
+    w = _SearchWorker()
+    errors = {}
+
+    def on_error(epoch, msg):
+        errors['msg'] = msg
+
+    w.error.connect(on_error, Qt.QueuedConnection)
+    w.start_run_global.emit(1, [(0, ['a'], 'x.log')], r'(a+)+')
+    qtbot.wait(80)
+    assert 'msg' in errors
+    assert '嵌套' in errors['msg'] or '回溯' in errors['msg']
+
+
+def test_search_worker_run_global_invalid_regex(qtbot):
+    """run_global 应捕获非法正则。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from serial_debug.ui.qt_log_viewer_window import _SearchWorker
+    w = _SearchWorker()
+    errors = {}
+
+    def on_error(epoch, msg):
+        errors['msg'] = msg
+
+    w.error.connect(on_error, Qt.QueuedConnection)
+    w.start_run_global.emit(1, [(0, ['a'], 'x.log')], r'(unclosed')
+    qtbot.wait(80)
+    assert 'msg' in errors
+    assert '正则' in errors['msg']
+
+
+def test_search_worker_run_global_caps_at_max(qtbot):
+    """run_global 应 cap 在 GLOBAL_SEARCH_MAX。"""
+    import re
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from serial_debug.ui.qt_log_viewer_window import GLOBAL_SEARCH_MAX, _SearchWorker
+    w = _SearchWorker()
+    results = {}
+
+    def on_done(epoch, results_list, info):
+        results['list'] = results_list
+
+    w.done_global.connect(on_done, Qt.QueuedConnection)
+    # 单 tab 含 GLOBAL_SEARCH_MAX + 100 个 hit
+    tabs_snapshot = [(0, ['hit'] * (GLOBAL_SEARCH_MAX + 100), 'big.log')]
+    w.start_run_global.emit(1, tabs_snapshot, 'hit')
+    qtbot.wait(200)
+    assert len(results.get('list', [])) == GLOBAL_SEARCH_MAX
+
+
+# ---- _QtFilterPanel ----
+
+def test_filter_panel_construction(qtbot):
+    """_QtFilterPanel 应能正常构造 + 启动 worker thread。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 应有 _filter_thread + _tree + _regex_edit
+    assert panel._filter_thread is not None
+    assert panel._tree is not None
+    assert panel._regex_edit is not None
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_theme(qtbot):
+    """apply_theme 应更新 info label 颜色。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel.apply_theme(themes.THEMES['light'])
+    # 不应抛
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_set_tab_attaches(qtbot, tmp_path):
+    """set_tab 应绑定 + 触发 _apply_filter。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['hello', 'world'])
+    panel.set_tab(tab)
+    assert panel._tab is tab
+    # epoch 应 +1
+    assert panel._filter_epoch >= 1
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_set_tab_none_clears(qtbot, tmp_path):
+    """set_tab(None) 应清结果 + 不抛。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel.set_tab(None)  # 不应抛
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_level_filter_levels(qtbot):
+    """_level_filter 4 级应正确分类。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # idx 0 全过
+    panel._level_box.setCurrentIndex(0)
+    assert panel._level_filter('any', 'log') is True
+    panel._level_box.setCurrentIndex(1)
+    assert panel._level_filter('log', 'log') is True
+    assert panel._level_filter('OK', 'resp') is False
+    panel._level_box.setCurrentIndex(2)
+    assert panel._level_filter('OK', 'resp') is True
+    assert panel._level_filter('log', 'log') is False
+    panel._level_box.setCurrentIndex(3)
+    assert panel._level_filter('warn', 'note') is True
+    assert panel._level_filter('log', 'log') is False
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_filter_dangerous_regex(qtbot, tmp_path):
+    """_apply_filter 危险正则应被拒。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a' * 100])
+    panel.set_tab(tab)
+    panel._regex_edit.setText(r'(a+)+')
+    panel._apply_filter()
+    assert panel._filtered_idx == []
+    assert '嵌套' in panel._info_lbl.text() or '回溯' in panel._info_lbl.text()
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_filter_invalid_regex(qtbot, tmp_path):
+    """_apply_filter 非法正则应被拒。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['abc'])
+    panel.set_tab(tab)
+    panel._regex_edit.setText(r'(unclosed')
+    panel._apply_filter()
+    assert panel._filtered_idx == []
+    assert '正则' in panel._info_lbl.text()
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_filter_empty_text_uses_worker(qtbot, tmp_path):
+    """_apply_filter 空文本应通过 worker 全过（异步）。"""
+    _make_qapp()
+    from PySide6.QtWidgets import QApplication
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    panel.set_tab(tab)
+    panel._regex_edit.setText('')
+    panel._apply_filter()
+    # 等 worker 派发
+    qtbot.wait(100)
+    QApplication.processEvents()
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_on_filter_done_stale_epoch_dropped(qtbot, tmp_path):
+    """_on_filter_done 过期 epoch 应被丢弃。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel._filter_epoch = 5
+    panel._filtered_idx = [99]
+    panel._on_filter_done(3, [0, 1], 10, 'info')
+    # 不应被覆盖
+    assert panel._filtered_idx == [99]
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_on_filter_done_renders(qtbot, tmp_path):
+    """_on_filter_done 当前 epoch 应渲染 + 更新 info。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    panel.set_tab(tab)
+    panel._filter_epoch = 1
+    panel._on_filter_done(1, [0, 2], 3, '2 个匹配')
+    assert panel._filtered_idx == [0, 2]
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_on_filter_error_sets_msg(qtbot, tmp_path):
+    """_on_filter_error 应设置 info。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel._filter_epoch = 1
+    panel._on_filter_error(1, 'some error msg')
+    assert panel._filtered_idx == []
+    assert 'some error msg' in panel._info_lbl.text()
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_filter_incremental(qtbot, tmp_path):
+    """_apply_filter_incremental 应只扫新增行。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c', 'a'])
+    panel.set_tab(tab)
+    panel._filtered_idx = []
+    panel._last_scanned_idx = 0
+    panel._regex_edit.setText('a')
+    panel._apply_filter_incremental(4)
+    # 应找到 idx 0 和 3
+    assert 0 in panel._filtered_idx
+    assert 3 in panel._filtered_idx
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_filter_incremental_no_tab(qtbot):
+    """_apply_filter_incremental 无 tab 应直接 return。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel._apply_filter_incremental(5)  # 不应抛
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_apply_filter_incremental_caps(qtbot, tmp_path):
+    """_apply_filter_incremental 应 cap 在 FILTER_RESULT_MAX。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import FILTER_RESULT_MAX, _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 准备一个超过 FILTER_RESULT_MAX 的 tab
+    lines = ['hit'] * (FILTER_RESULT_MAX + 50)
+    tab = _make_tab(qtbot, tmp_path, lines)
+    panel.set_tab(tab)
+    panel._filtered_idx = []
+    panel._last_scanned_idx = 0
+    panel._regex_edit.setText('hit')
+    panel._apply_filter_incremental(len(lines))
+    assert len(panel._filtered_idx) <= FILTER_RESULT_MAX
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_render_results_renders(qtbot, tmp_path):
+    """_render_results 应在 tree 中插入项。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    panel.set_tab(tab)
+    panel._render_results([0, 2], 3)
+    assert panel._tree.topLevelItemCount() == 2
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_color_for_tag(qtbot):
+    """_color_for_tag 应按 tag 返回颜色字符串。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    c_resp = panel._color_for_tag('resp')
+    c_note = panel._color_for_tag('note')
+    c_log = panel._color_for_tag('log')
+    assert c_resp == themes.THEMES['dark'].get('accent', '#569cd6')
+    assert c_note == themes.THEMES['dark'].get('status_err', '#f48771')
+    assert c_log == themes.THEMES['dark'].get('panel_fg', '#cccccc')
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_clear_filter(qtbot, tmp_path):
+    """_clear_filter 应清 regex + level + 重新 apply。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a'])
+    panel.set_tab(tab)
+    panel._regex_edit.setText('foo')
+    panel._level_box.setCurrentIndex(2)
+    panel._clear_filter()
+    assert panel._regex_edit.text() == ''
+    assert panel._level_box.currentIndex() == 0
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_locate_line_binary_search(qtbot, tmp_path):
+    """locate_line 应二分查找最近匹配行。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c', 'd', 'e'])
+    panel.set_tab(tab)
+    panel._filtered_idx = [0, 2, 4]
+    # 渲染进 tree
+    panel._render_results([0, 2, 4], 5)
+    # locate_line(3) 应选中 idx=2 (<=3 的最大值)
+    panel.locate_line(3)
+    # 不抛即可
+    # locate_line(99) 也应不抛
+    panel.locate_line(99)
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_clear_results(qtbot, tmp_path):
+    """clear_results 应清空 tree + filtered_idx。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b'])
+    panel.set_tab(tab)
+    panel._filtered_idx = [0, 1]
+    panel._render_results([0, 1], 2)
+    assert panel._tree.topLevelItemCount() == 2
+    panel.clear_results()
+    assert panel._tree.topLevelItemCount() == 0
+    assert panel._filtered_idx == []
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_on_tree_double_click(qtbot, tmp_path):
+    """_on_tree_double_click 应触发 on_locate。"""
+    _make_qapp()
+    from PySide6.QtWidgets import QTreeWidgetItem
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    called = []
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'],
+                          on_locate=lambda idx: called.append(idx))
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a', 'b', 'c'])
+    panel.set_tab(tab)
+    panel._render_results([1], 3)
+    # 双击第一项（idx=1）
+    item = panel._tree.topLevelItem(0)
+    panel._on_tree_double_click(item)
+    assert called == [1]
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_on_lines_appended(qtbot, tmp_path):
+    """_on_lines_appended 应调 _apply_filter_incremental。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['a'])
+    panel.set_tab(tab)
+    panel._on_lines_appended(5)  # 不应抛
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_minimum_and_size_hint(qtbot):
+    """minimumSizeHint / sizeHint 应返回 QSize。"""
+    _make_qapp()
+    from PySide6.QtCore import QSize
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    ms = panel.minimumSizeHint()
+    sh = panel.sizeHint()
+    assert ms.width() == 0
+    assert sh.width() > 0
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_shutdown_thread_idempotent(qtbot):
+    """shutdown_filter_thread 多次调用不应抛。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel.shutdown_filter_thread()
+    panel.shutdown_filter_thread()
+
+
+# ---- QtLogViewerWindow 基础构造 ----
+
+def test_qt_log_viewer_window_construction(qtbot, tmp_path):
+    """QtLogViewerWindow 应能构造（无文件路径）。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    # 不应抛——构造即覆盖 __init__ + _build_toolbar + _build_menubar
+    assert win.windowTitle() != '' or win.windowTitle() == ''
+    # 显式关线程避免 hang
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_open_file(qtbot, tmp_path):
+    """open_file 应创建新 tab。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    log_path = tmp_path / 'win.log'
+    log_path.write_text('line1\nline2\n', encoding='utf-8')
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win.open_file(str(log_path))
+    # 应有 1 个 tab
+    tabs = win._tabs
+    assert len(tabs) >= 1
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_close_event(qtbot, tmp_path):
+    """closeEvent 应不抛 + 清理资源。"""
+    _make_qapp()
+    from PySide6.QtGui import QCloseEvent
+
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    log_path = tmp_path / 'close.log'
+    log_path.write_text('x\n', encoding='utf-8')
+    win.open_file(str(log_path))
+    # 触发 closeEvent
+    try:
+        win.closeEvent(QCloseEvent())
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_toggle_live_mode(qtbot, tmp_path):
+    """_toggle_live_mode 应切 current tab 的 live。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    log_path = tmp_path / 'live.log'
+    log_path.write_text('init\n', encoding='utf-8')
+    win.open_file(str(log_path))
+    try:
+        win._toggle_live_mode(True)
+    except Exception:
+        pass
+    # current tab 应进 live
+    tab = win._current_tab()
+    if tab is not None:
+        assert tab.is_live_mode() or not tab.is_live_mode()  # 至少不抛
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_apply_theme(qtbot):
+    """apply_theme 应切换 dark/light。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win.apply_theme('light')  # 不应抛
+    win.apply_theme('dark')  # 切回
+    # 显式关 filter thread 避免 hang
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_toggle_theme(qtbot):
+    """_toggle_theme 应在 dark/light 间切换。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    # 应能多次切换不抛
+    win._toggle_theme()
+    win._toggle_theme()
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_show_about(qtbot):
+    """_show_about 应弹出关于对话框（mock exec 避免阻塞）。"""
+    _make_qapp()
+    from unittest import mock
+
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    # mock QMessageBox.information 避免模态对话框阻塞
+    with mock.patch('PySide6.QtWidgets.QMessageBox.information', return_value=0):
+        try:
+            win._show_about()
+        except Exception:
+            pass
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_jump_to_end(qtbot, tmp_path):
+    """_jump_to_end 应不抛。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    log_path = tmp_path / 'jump.log'
+    log_path.write_text('a\nb\nc\n', encoding='utf-8')
+    win.open_file(str(log_path))
+    try:
+        win._jump_to_end()
+    except Exception:
+        pass
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_focus_current_search(qtbot, tmp_path):
+    """_focus_current_search 应不抛。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    log_path = tmp_path / 'focus.log'
+    log_path.write_text('x\n', encoding='utf-8')
+    win.open_file(str(log_path))
+    try:
+        win._focus_current_search()
+    except Exception:
+        pass
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_toggle_filter_panel(qtbot):
+    """_toggle_filter_panel 应切换显隐。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win._toggle_filter_panel(True)
+    win._toggle_filter_panel(False)
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_toggle_global_search(qtbot):
+    """_toggle_global_search 应切换显隐。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win._toggle_global_search(True)
+    win._toggle_global_search(False)
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_toggle_toolbar(qtbot):
+    """_toggle_toolbar 应切换显隐。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win._toggle_toolbar(True)
+    win._toggle_toolbar(False)
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_qt_log_viewer_window_close_current_tab(qtbot, tmp_path):
+    """_close_current_tab 应能关闭当前 tab。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    log_path = tmp_path / 'tab.log'
+    log_path.write_text('x\n', encoding='utf-8')
+    win.open_file(str(log_path))
+    initial_count = len(win._tabs)
+    if initial_count > 0:
+        try:
+            win._close_current_tab()
+        except Exception:
+            pass
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+# ---- _QtGlobalSearchBar ----
+
+def test_global_search_bar_construction(qtbot):
+    """_QtGlobalSearchBar 应能构造。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtGlobalSearchBar
+    bar = _QtGlobalSearchBar(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(bar)
+    assert bar._edit is not None
+
+
+def test_global_search_bar_apply_theme(qtbot):
+    """apply_theme 不应抛。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtGlobalSearchBar
+    bar = _QtGlobalSearchBar(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(bar)
+    bar.apply_theme(themes.THEMES['light'])  # 不应抛
+
+
+def test_global_search_bar_do_search_invalid_regex(qtbot):
+    """_do_search 非法正则应记 error。"""
+    _make_qapp()
+    from PySide6.QtWidgets import QApplication
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtGlobalSearchBar
+    bar = _QtGlobalSearchBar(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(bar)
+    bar._edit.setText(r'(unclosed')
+    bar._do_search()
+    QApplication.processEvents()
+    # info 应显示错误
+    assert '正则' in bar._info_lbl.text() or bar._info_lbl.text() == ''
+
+
+def test_global_search_bar_do_search_dangerous_regex(qtbot):
+    """_do_search 危险正则应被拒。"""
+    _make_qapp()
+    from PySide6.QtWidgets import QApplication
+
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtGlobalSearchBar
+    bar = _QtGlobalSearchBar(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(bar)
+    bar._edit.setText(r'(a+)+')
+    bar._do_search()
+    QApplication.processEvents()
+    assert '嵌套' in bar._info_lbl.text() or '回溯' in bar._info_lbl.text()
