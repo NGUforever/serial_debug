@@ -206,8 +206,9 @@ class _FakeSerial:
 
 def test_open_with_mock_serial_starts_threads(monkeypatch):
     """open() 用 mock serial 应启动 reader + writer 线程。"""
-    from serial_debug.core import serial_backend as mod
     import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
     # patch serial.Serial 构造
     monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
     monkeypatch.setattr(mod, 'HAS_FCNTL', False)  # 跳过 fcntl.ioctl 路径
@@ -238,8 +239,9 @@ def test_open_with_mock_serial_starts_threads(monkeypatch):
 
 def test_close_with_mock_serial_joins_threads(monkeypatch):
     """close() 应 join reader/writer + 清 self.ser。"""
-    from serial_debug.core import serial_backend as mod
     import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
     monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
     monkeypatch.setattr(mod, 'HAS_FCNTL', False)
     b = mod.SerialBackend()
@@ -253,8 +255,9 @@ def test_close_with_mock_serial_joins_threads(monkeypatch):
 
 def test_send_with_mock_serial_routes_to_write_thread(monkeypatch):
     """send() 应通过 writer 线程异步写入 mock serial。"""
-    from serial_debug.core import serial_backend as mod
     import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
     monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
     monkeypatch.setattr(mod, 'HAS_FCNTL', False)
     b = mod.SerialBackend()
@@ -271,8 +274,9 @@ def test_send_with_mock_serial_routes_to_write_thread(monkeypatch):
 
 def test_send_with_crlf_appends_newlines(monkeypatch):
     """send(append_crlf=True) 应在数据末尾加 \r\n。"""
-    from serial_debug.core import serial_backend as mod
     import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
     monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
     monkeypatch.setattr(mod, 'HAS_FCNTL', False)
     b = mod.SerialBackend()
@@ -293,8 +297,9 @@ def test_close_idempotent_when_already_closed(backend):
 
 def test_open_failure_returns_false(monkeypatch):
     """serial.Serial 构造抛异常时 open 应返 False 并 emit error status。"""
-    from serial_debug.core import serial_backend as mod
     import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
 
     class _BadSerial:
         def __init__(self, *a, **kw):
@@ -317,8 +322,9 @@ def test_open_failure_returns_false(monkeypatch):
 
 def test_read_loop_emits_closed_on_exit():
     """reader 线程退出时应 emit ('closed', None)。"""
-    from serial_debug.core import serial_backend as mod
     import threading
+
+    from serial_debug.core import serial_backend as mod
     b = mod.SerialBackend()
 
     class _EmptySer:
@@ -349,8 +355,9 @@ def test_read_loop_emits_closed_on_exit():
 
 def test_open_drains_residual_queue(monkeypatch):
     """open 应先清空 rx_queue 拋留项。"""
-    from serial_debug.core import serial_backend as mod
     import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
     monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
     monkeypatch.setattr(mod, 'HAS_FCNTL', False)
     b = mod.SerialBackend()
@@ -384,3 +391,597 @@ def test_status_queue_carries_callback_status():
             break
     assert any(k == 'status' for k, _ in items)
     assert ('info', 'test ok') in calls
+
+
+# ---- 22-23: fcntl ImportError 路径 ----
+
+def test_fcntl_importerror_branch(monkeypatch):
+    """模拟 fcntl 不存在（Windows）：HAS_FCNTL=False。"""
+    import importlib
+    saved = sys.modules.pop('serial_debug.core.serial_backend', None)
+    # 把 fcntl 模块设为 None 让 import 失败
+    monkeypatch.setitem(sys.modules, 'fcntl', None)
+    try:
+        mod = importlib.import_module('serial_debug.core.serial_backend')
+        assert mod.HAS_FCNTL is False
+    finally:
+        # 还原原模块
+        if saved is not None:
+            sys.modules['serial_debug.core.serial_backend'] = saved
+
+
+# ---- DEBUG_CHUNK _dbg 路径 ----
+
+def test_dbg_prints_when_debug_chunk_enabled(capsys, monkeypatch):
+    """DEBUG_CHUNK=True 时 _dbg 应 print 到 stderr。"""
+    from serial_debug.core import serial_backend as mod
+    monkeypatch.setattr(mod, 'DEBUG_CHUNK', True)
+    mod._dbg('test message')
+    captured = capsys.readouterr()
+    assert 'test message' in captured.err
+
+
+def test_dbg_silent_when_debug_disabled(capsys, monkeypatch):
+    """DEBUG_CHUNK=False 时 _dbg 不应输出。"""
+    from serial_debug.core import serial_backend as mod
+    monkeypatch.setattr(mod, 'DEBUG_CHUNK', False)
+    mod._dbg('should not print')
+    captured = capsys.readouterr()
+    assert captured.err == ''
+
+
+# ---- open() reopen 已有 ser 的 close 路径 (line 69) ----
+
+def test_open_reopen_closes_existing_ser(monkeypatch):
+    """open() 时已有 ser 应先 close。"""
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+    monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    old_ser = b.ser
+    close_called = []
+    orig_close = old_ser.close
+    old_ser.close = lambda: close_called.append(1) or orig_close()
+    # 再次 open 应触发 close
+    b.open(port='/dev/null')
+    assert close_called == [1]
+    b.close()
+
+
+# ---- reset_input_buffer exception 路径 (line 87-89) ----
+
+def test_open_reset_input_buffer_failure_swallowed(monkeypatch):
+    """reset_input_buffer 抛异常应被吞，open 继续启动 reader。"""
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    class _ResetFailsSerial(_FakeSerial):
+        def reset_input_buffer(self):
+            raise OSError('not supported on this driver')
+
+    monkeypatch.setattr(pyserial, 'Serial', _ResetFailsSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    ok = b.open(port='/dev/null')
+    assert ok is True
+    b.close()
+
+
+# ---- drain queue exception 路径 (line 96-100) ----
+
+def test_open_drain_queue_get_nowait_failure_swallowed(monkeypatch):
+    """open 清 queue 时 get_nowait 抛非 queue.Empty 异常应被吞。"""
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+    monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+
+    class _BadQueue:
+        def __init__(self):
+            self.items = []
+        def empty(self):
+            return False
+        def get_nowait(self):
+            raise RuntimeError('queue corruption')
+        def put(self, item):
+            self.items.append(item)
+
+    b.rx_queue = _BadQueue()
+    # 不应抛
+    ok = b.open(port='/dev/null')
+    assert ok is True
+    b.close()
+
+
+# ---- close(): ser.close exception 路径 (line 120-121) ----
+
+def test_close_swallows_ser_close_exception(monkeypatch):
+    """ser.close() 抛异常应被吞。"""
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    class _CloseFailsSerial(_FakeSerial):
+        def close(self):
+            raise OSError('close failed')
+
+    monkeypatch.setattr(pyserial, 'Serial', _CloseFailsSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    # 不应抛
+    b.close()
+    assert b.ser is None
+
+
+# ---- close(): reader thread 未退出 warning (line 125) ----
+
+def test_close_warns_when_reader_thread_does_not_exit(monkeypatch):
+    """reader 线程 join timeout 后仍存活应记日志，不抛。"""
+    import threading
+    import time
+
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    class _BlockingSerial(_FakeSerial):
+        """read(1) 永远阻塞——模拟 reader 卡死。"""
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._ev = threading.Event()
+        def read(self, n=1):
+            # 真正卡住 5s（远超 close 的 2s join timeout）
+            self._ev.wait(timeout=5)
+            return b''
+        def close(self):
+            self._ev.set()
+            self.is_open = False
+
+    monkeypatch.setattr(pyserial, 'Serial', _BlockingSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    # close 应在 ~3s 内返回（2s join timeout + 一些清理）
+    t0 = time.monotonic()
+    b.close()
+    elapsed = time.monotonic() - t0
+    assert elapsed < 5.0  # 应在 5s 内退出
+
+
+# ---- _read_loop read exception 路径 (line 148-152) ----
+
+def test_read_loop_emits_error_on_read_exception():
+    """_read_loop 在 read 抛异常应 emit ('error', msg) 入队。"""
+    import threading
+
+    from serial_debug.core import serial_backend as mod
+
+    class _BadSer:
+        is_open = True
+        in_waiting = 0
+        def read(self, n=1):
+            raise OSError('device disconnected')
+        def close(self):
+            self.is_open = False
+
+    b = mod.SerialBackend()
+    b.ser = _BadSer()
+    b._stop_evt.clear()
+    t = threading.Thread(target=b._read_loop, daemon=True)
+    t.start()
+    t.join(timeout=2.0)
+    assert not t.is_alive()
+    items = []
+    while True:
+        try:
+            items.append(b.rx_queue.get_nowait())
+        except Exception:
+            break
+    assert any(k == 'error' for k, _ in items)
+    assert ('closed', None) in items
+
+
+# ---- _read_loop in_waiting exception 路径 (line 165-167) ----
+
+def test_read_loop_swallows_in_waiting_exception():
+    """in_waiting 抛异常应被吞，仍 emit line。"""
+    import threading
+
+    from serial_debug.core import serial_backend as mod
+
+    class _WaitingFailsSer:
+        is_open = True
+        def __init__(self):
+            self._read_data = b'hello\n'
+            self._idx = 0
+            self.in_waiting = 0
+        def read(self, n=1):
+            if self._idx >= len(self._read_data):
+                return b''
+            chunk = self._read_data[self._idx:self._idx + n]
+            self._idx += len(chunk)
+            return chunk
+        def close(self):
+            self.is_open = False
+
+    # 用 property 让 in_waiting 访问抛
+    ser = _WaitingFailsSer()
+    type(ser).in_waiting = property(lambda self: (_ for _ in ()).throw(OSError('io')))
+    b = mod.SerialBackend()
+    b.ser = ser
+    b._stop_evt.clear()
+    t = threading.Thread(target=b._read_loop, daemon=True)
+    t.start()
+    # 等 reader 读 first byte + 触发 in_waiting 异常
+    import time
+    time.sleep(0.1)
+    b._stop_evt.set()
+    t.join(timeout=2.0)
+    items = []
+    while True:
+        try:
+            items.append(b.rx_queue.get_nowait())
+        except Exception:
+            break
+    # 应有 'hello' line 入队（in_waiting 异常被吞，rest=b''，但 first+''=hello）
+    lines = [v for k, v in items if k == 'line']
+    assert 'hello' in lines
+
+
+# ---- _read_loop decode exception + empty line (line 182, 185-187) ----
+
+def test_read_loop_decodes_non_utf8_bytes_with_replace():
+    """非 UTF-8 字节应走 errors='replace' 路径。"""
+    import threading
+
+    from serial_debug.core import serial_backend as mod
+
+    class _BadUtf8Ser:
+        is_open = True
+        def __init__(self):
+            self._data = b'\xff\xfe\n'
+            self._idx = 0
+            self.in_waiting = 0
+        def read(self, n=1):
+            if self._idx >= len(self._data):
+                return b''
+            chunk = self._data[self._idx:self._idx + n]
+            self._idx += len(chunk)
+            return chunk
+        def close(self):
+            self.is_open = False
+
+    b = mod.SerialBackend()
+    b.ser = _BadUtf8Ser()
+    b._stop_evt.clear()
+    t = threading.Thread(target=b._read_loop, daemon=True)
+    t.start()
+    import time
+    time.sleep(0.1)
+    b._stop_evt.set()
+    t.join(timeout=2.0)
+    items = []
+    while True:
+        try:
+            items.append(b.rx_queue.get_nowait())
+        except Exception:
+            break
+    lines = [v for k, v in items if k == 'line']
+    # 非空字节应通过 replace 解码出（\ufffd 替换字符）
+    assert any('\ufffd' in ln for ln in lines)
+
+
+def test_read_loop_skips_empty_lines():
+    """纯空行（只有 \r\n）应被跳过不 emit。"""
+    import threading
+
+    from serial_debug.core import serial_backend as mod
+
+    class _EmptyLineSer:
+        is_open = True
+        def __init__(self):
+            self._data = b'\r\nreal\n'
+            self._idx = 0
+            self.in_waiting = 0
+        def read(self, n=1):
+            if self._idx >= len(self._data):
+                return b''
+            chunk = self._data[self._idx:self._idx + n]
+            self._idx += len(chunk)
+            return chunk
+        def close(self):
+            self.is_open = False
+
+    b = mod.SerialBackend()
+    b.ser = _EmptyLineSer()
+    b._stop_evt.clear()
+    t = threading.Thread(target=b._read_loop, daemon=True)
+    t.start()
+    import time
+    time.sleep(0.1)
+    b._stop_evt.set()
+    t.join(timeout=2.0)
+    items = []
+    while True:
+        try:
+            items.append(b.rx_queue.get_nowait())
+        except Exception:
+            break
+    lines = [v for k, v in items if k == 'line']
+    # 应只 emit 'real'，空行跳过
+    assert lines == ['real']
+
+
+# ---- flush_input: ser closed branch (line 204-207) ----
+
+def test_flush_input_skips_when_ser_closed(backend):
+    """ser 未开时 flush_input 不应崩。"""
+    # ser is None，flush_input 走 if 分支的 False 侧
+    backend.flush_input()  # 不应抛
+
+
+def test_flush_input_resets_buf_under_lock(backend):
+    """flush_input 应清空 reader _buf。"""
+    # 直接 put 一些半行到 _buf
+    backend._buf.extend(b'partial half line')
+    backend.flush_input()
+    assert len(backend._buf) == 0
+
+
+def test_flush_input_swallows_reset_input_buffer_exception(monkeypatch):
+    """ser.open=True 但 reset_input_buffer 抛异常应被吞。"""
+    from serial_debug.core import serial_backend as mod
+
+    class _BadSer:
+        is_open = True
+        in_waiting = 0
+        def reset_input_buffer(self):
+            raise OSError('not supported')
+
+    b = mod.SerialBackend()
+    b.ser = _BadSer()
+    # 不应抛
+    b.flush_input()
+
+
+# ---- flush_input: queue drain 异常分支 (line 220-222) ----
+
+def test_flush_input_swallows_queue_get_failure(backend):
+    """queue.get_nowait 抛非 Empty 异常应被吞。"""
+    class _BadQueue:
+        def __init__(self):
+            self.items = []
+        def empty(self):
+            return False
+        def get_nowait(self):
+            raise RuntimeError('corrupt')
+        def put(self, item):
+            self.items.append(item)
+
+    backend.rx_queue = _BadQueue()
+    # 不应抛
+    backend.flush_input()
+
+
+# ---- _write_loop: ser closed + write exception + flush exception (line 252-273) ----
+
+def test_write_loop_swallows_write_exception(monkeypatch):
+    """ser.write 抛异常应 emit error status 入队。"""
+    import threading
+    import time
+
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    class _WriteFailsSerial(_FakeSerial):
+        def write(self, data):
+            raise OSError('device write failed')
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(pyserial, 'Serial', _WriteFailsSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    b.send('AT')
+    time.sleep(0.15)  # 等 writer 处理
+    items = []
+    while True:
+        try:
+            items.append(b.rx_queue.get_nowait())
+        except Exception:
+            break
+    # 应有 status error
+    assert any(k == 'status' and v[0] == 'error' for k, v in items)
+    b.close()
+
+
+def test_write_loop_swallows_flush_exception(monkeypatch):
+    """ser.flush 抛异常应被吞，writer 继续工作。"""
+    import time
+
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    class _FlushFailsSerial(_FakeSerial):
+        def write(self, data):
+            return len(data)
+        def flush(self):
+            raise OSError('flush fail')
+
+    monkeypatch.setattr(pyserial, 'Serial', _FlushFailsSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    b.send('hello')
+    time.sleep(0.15)
+    # 应有 '已发送' status 入队（write 成功 + flush 失败被吞）
+    items = []
+    while True:
+        try:
+            items.append(b.rx_queue.get_nowait())
+        except Exception:
+            break
+    assert any(k == 'status' and '已发送' in v[1] for k, v in items)
+    b.close()
+
+
+def test_write_loop_skips_when_ser_closed_during_write(monkeypatch):
+    """writer 取到 data 后 ser 已 close，应 continue 不抛。"""
+    import threading
+    import time
+
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    # 主动把 ser.is_open 置 False 模拟中途断开
+    b.ser.is_open = False
+    b.send('data1')
+    time.sleep(0.15)
+    # 数据应被 writer 跳过（ser None or not is_open continue）
+    assert b.ser.written == b''  # 没写入
+    b.ser.is_open = True
+    b.close()
+
+
+# ---- _try_set_low_latency: ser=None branch (line 288) + exception (line 303-304) ----
+
+def test_try_set_low_latency_no_ser(monkeypatch):
+    """ser=None 时 _try_set_low_latency 直接 return。"""
+    from serial_debug.core import serial_backend as mod
+    monkeypatch.setattr(mod, 'HAS_FCNTL', True)
+    monkeypatch.setattr(mod, 'fcntl', mock.MagicMock(), raising=False)
+    b = mod.SerialBackend()
+    assert b.ser is None
+    b._try_set_low_latency()  # 不应抛
+
+
+def test_try_set_low_latency_swallows_ioctl_exception(monkeypatch):
+    """fcntl.ioctl 抛异常应被吞。"""
+    from serial_debug.core import serial_backend as mod
+
+    class _FakeSer:
+        def fileno(self):
+            return 3
+
+    def boom(*a, **kw):
+        raise OSError('ioctl not supported')
+
+    fake_fcntl = mock.MagicMock()
+    fake_fcntl.ioctl = boom
+    monkeypatch.setattr(mod, 'HAS_FCNTL', True)
+    monkeypatch.setattr(mod, 'fcntl', fake_fcntl, raising=False)
+    b = mod.SerialBackend()
+    b.ser = _FakeSer()
+    # 不应抛
+    b._try_set_low_latency()
+
+
+def test_try_set_low_latency_fileno_exception(monkeypatch):
+    """ser.fileno() 抛异常应被吞（pyserial 已关）。"""
+    from serial_debug.core import serial_backend as mod
+
+    class _BadSer:
+        def fileno(self):
+            raise OSError('not open')
+
+    monkeypatch.setattr(mod, 'HAS_FCNTL', True)
+    monkeypatch.setattr(mod, 'fcntl', mock.MagicMock(), raising=False)
+    b = mod.SerialBackend()
+    b.ser = _BadSer()
+    b._try_set_low_latency()  # 不应抛
+
+
+# ---- _write_loop queue.get timeout (line 252 continue) ----
+
+def test_write_loop_handles_queue_get_timeout(monkeypatch):
+    """writer 在 queue.get(timeout) 超时应 continue，不抛。"""
+    import threading
+    import time
+
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    # 不 send 任何东西，等 0.3s 让 writer 跑几轮 timeout
+    time.sleep(0.3)
+    # writer 应仍存活
+    assert b._writer is not None
+    assert b._writer.is_alive()
+    b.close()
+
+
+# ---- send: append_crlf vs not ----
+
+def test_send_without_crlf(monkeypatch):
+    """send 不加 CRLF 应只 send 原文。"""
+    import time
+
+    import serial as pyserial
+
+    from serial_debug.core import serial_backend as mod
+
+    monkeypatch.setattr(pyserial, 'Serial', _FakeSerial)
+    monkeypatch.setattr(mod, 'HAS_FCNTL', False)
+    b = mod.SerialBackend()
+    b.open(port='/dev/null')
+    b.send('AT?')
+    time.sleep(0.1)
+    assert b.ser.written == b'AT?'
+    b.close()
+
+
+# ---- _dbg 通过 _read_loop 路径 ----
+
+def test_read_loop_dbg_prints_when_enabled(monkeypatch, capsys):
+    """DEBUG_CHUNK=True 时 _read_loop 应输出 chunk debug。"""
+    import threading
+    import time
+
+    from serial_debug.core import serial_backend as mod
+
+    monkeypatch.setattr(mod, 'DEBUG_CHUNK', True)
+
+    class _HelloSer:
+        is_open = True
+        in_waiting = 0
+        def __init__(self):
+            self._data = b'hi\n'
+            self._idx = 0
+        def read(self, n=1):
+            if self._idx >= len(self._data):
+                return b''
+            chunk = self._data[self._idx:self._idx + n]
+            self._idx += len(chunk)
+            return chunk
+        def close(self):
+            self.is_open = False
+
+    b = mod.SerialBackend()
+    b.ser = _HelloSer()
+    b._stop_evt.clear()
+    t = threading.Thread(target=b._read_loop, daemon=True)
+    t.start()
+    time.sleep(0.1)
+    b._stop_evt.set()
+    t.join(timeout=2.0)
+    captured = capsys.readouterr()
+    assert 'reader chunk' in captured.err or 'reader emit' in captured.err

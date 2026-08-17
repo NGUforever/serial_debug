@@ -154,3 +154,393 @@ def test_config_dir_is_absolute_path(themes_mod):
     # CONFIG_DIR 在 import 时已固定，验证它是字符串绝对路径
     assert isinstance(themes_mod.CONFIG_DIR, str)
     assert os.path.isabs(themes_mod.CONFIG_DIR) or themes_mod.CONFIG_DIR.startswith('~')
+
+
+# ---- _config_dir 平台分支 ----
+
+def _reload_themes_with_platform(monkeypatch, platform):
+    """用 monkeypatch sys.platform 后重载 themes 模块。"""
+    import importlib
+    monkeypatch.setattr('sys.platform', platform)
+    # 必须清除已缓存模块强制重新执行 platform 分支
+    import sys
+    saved = sys.modules.pop('serial_debug.infra.themes', None)
+    try:
+        mod = importlib.import_module('serial_debug.infra.themes')
+        return mod
+    finally:
+        # 不还原：测试间依赖也走同一份；下面 monkeypatch 会自动复原 sys.platform
+        if saved is not None:
+            sys.modules['serial_debug.infra.themes'] = saved
+
+
+def test_config_dir_win32(monkeypatch):
+    """win32 平台应取 LOCALAPPDATA/serial_debug。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'win32')
+    monkeypatch.setenv('LOCALAPPDATA', '/tmp/locapp')
+    expected = os.path.join('/tmp/locapp', 'serial_debug')
+    # 重新调用 _config_dir 因为 CONFIG_DIR 在 import 时已固定
+    # 但 _config_dir 是模块级函数，可重新调
+    actual = themes_mod._config_dir()
+    assert actual == expected
+
+
+def test_config_dir_darwin(monkeypatch):
+    """darwin 平台应取 ~/Library/Application Support/serial_debug。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'darwin')
+    home = os.path.expanduser('~')
+    expected = os.path.join(home, 'Library', 'Application Support', 'serial_debug')
+    assert themes_mod._config_dir() == expected
+
+
+def test_config_dir_linux(monkeypatch):
+    """linux 平台应取 $XDG_CONFIG_HOME/serial_debug。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+    monkeypatch.setenv('XDG_CONFIG_HOME', '/tmp/xdgcfg')
+    assert themes_mod._config_dir() == os.path.join('/tmp/xdgcfg', 'serial_debug')
+
+
+def test_config_dir_linux_default_xdg(monkeypatch):
+    """linux 无 XDG_CONFIG_HOME 时回退 ~/.config/serial_debug。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+    monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
+    home = os.path.expanduser('~')
+    assert themes_mod._config_dir() == os.path.join(home, '.config', 'serial_debug')
+
+
+# ---- detect_system_theme 平台分支 ----
+
+def test_detect_system_theme_darwin_dark(monkeypatch):
+    """darwin: defaults 返 'Dark' 应判 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'darwin')
+
+    class _R:
+        stdout = 'Dark\n'
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+def test_detect_system_theme_darwin_light(monkeypatch):
+    """darwin: defaults 返非 'Dark' 应判 light。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'darwin')
+
+    class _R:
+        stdout = 'Light\n'  # 'Light' 不含 'Dark' 大小写敏感
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'light'
+
+
+def test_detect_system_theme_win32_dark(monkeypatch):
+    """win32: reg query 返 '0x0' 应判 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'win32')
+
+    class _R:
+        stdout = '    AppsUseLightTheme    REG_DWORD    0x0\n'
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+def test_detect_system_theme_win32_light(monkeypatch):
+    """win32: reg query 返 '0x1' 应判 light。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'win32')
+
+    class _R:
+        stdout = '    AppsUseLightTheme    REG_DWORD    0x1\n'
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'light'
+
+
+def test_detect_system_theme_darwin_subprocess_failure(monkeypatch):
+    """darwin: subprocess 失败应回 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'darwin')
+    monkeypatch.setattr(themes_mod.subprocess, 'run',
+                        lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+def test_detect_system_theme_win32_subprocess_failure(monkeypatch):
+    """win32: subprocess 失败应回 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'win32')
+    monkeypatch.setattr(themes_mod.subprocess, 'run',
+                        lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+def test_detect_system_theme_linux_dark(monkeypatch):
+    """linux: gsettings 返 'prefer-dark' 应判 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+
+    class _R:
+        stdout = "'prefer-dark'\n"
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+def test_detect_system_theme_linux_light(monkeypatch):
+    """linux: gsettings 返 'prefer-light' 应判 light。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+
+    class _R:
+        stdout = "'prefer-light'\n"
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'light'
+
+
+def test_detect_system_theme_linux_no_gsettings(monkeypatch):
+    """linux: gsettings 不存在应回 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+    monkeypatch.setattr(themes_mod.subprocess, 'run',
+                        lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+# ---- load_pref / save_pref with mocked config ----
+
+def test_load_pref_returns_stored_value(themes_mod, monkeypatch):
+    """config 模块可用时应读 theme_pref。"""
+    import types
+    fake_config = types.ModuleType('config')
+    fake_config.load = lambda: {'theme_pref': 'dark'}
+    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    assert themes_mod.load_pref() == 'dark'
+
+
+def test_load_pref_default_auto_when_missing(themes_mod, monkeypatch):
+    """config.load 没设 theme_pref 时回 'auto'。"""
+    import types
+    fake_config = types.ModuleType('config')
+    fake_config.load = lambda: {}
+    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    assert themes_mod.load_pref() == 'auto'
+
+
+def test_load_pref_swallows_exception(themes_mod, monkeypatch):
+    """config.load 抛异常应回 'auto'。"""
+    import types
+    fake_config = types.ModuleType('config')
+
+    def boom():
+        raise RuntimeError('config read fail')
+
+    fake_config.load = boom
+    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    assert themes_mod.load_pref() == 'auto'
+
+
+def test_save_pref_writes_to_config(themes_mod, monkeypatch):
+    """save_pref 应合并 theme_pref 写回 config.save。"""
+    import types
+    saved = {}
+
+    fake_config = types.ModuleType('config')
+    fake_config.load = lambda: {'other_key': 1}
+    fake_config.save = lambda cfg: saved.update(cfg)
+    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    themes_mod.save_pref('light')
+    assert saved.get('theme_pref') == 'light'
+    assert saved.get('other_key') == 1
+
+
+def test_save_pref_swallows_save_failure(themes_mod, monkeypatch):
+    """config.save 抛异常不应让 save_pref 抛。"""
+    import types
+    fake_config = types.ModuleType('config')
+    fake_config.load = lambda: {}
+
+    def boom(cfg):
+        raise RuntimeError('disk full')
+
+    fake_config.save = boom
+    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    # 不应抛
+    themes_mod.save_pref('dark')
+
+
+# ---- apply_theme ----
+
+def test_apply_theme_calls_style_and_root(themes_mod, monkeypatch):
+    """apply_theme 应调 ttk.Style + root.configure。"""
+    fake_style = mock.MagicMock()
+    monkeypatch.setattr(themes_mod.ttk, 'Style', lambda root: fake_style)
+    root = mock.MagicMock()
+    t = themes_mod.apply_theme(root, 'dark')
+    # theme_use('clam') 应被调用
+    fake_style.theme_use.assert_called_with('clam')
+    # style.configure 应多次调用（TFrame/TLabel/...）
+    assert fake_style.configure.call_count >= 10
+    # root.configure(bg=...) 应被调
+    bg_kw = root.configure.call_args
+    assert 'bg' in bg_kw.kwargs or 'bg' in (bg_kw.args or ())
+    # 返回的应是 THEMES['dark'] dict 加上 _menu_colors
+    assert t['bg'] == themes_mod.THEMES['dark']['bg']
+    assert '_menu_colors' in t
+
+
+def test_apply_theme_theme_use_failure_swallowed(themes_mod, monkeypatch):
+    """theme_use 抛异常应被吞，apply_theme 继续执行。"""
+    fake_style = mock.MagicMock()
+    fake_style.theme_use.side_effect = RuntimeError('no clam theme')
+    monkeypatch.setattr(themes_mod.ttk, 'Style', lambda root: fake_style)
+    root = mock.MagicMock()
+    t = themes_mod.apply_theme(root, 'dark')
+    # 仍应正常返回
+    assert t['bg'] == themes_mod.THEMES['dark']['bg']
+
+
+def test_apply_theme_light_uses_light_palette(themes_mod, monkeypatch):
+    """light 主题应使用 light 配色（bg 不等于 dark）。"""
+    fake_style = mock.MagicMock()
+    monkeypatch.setattr(themes_mod.ttk, 'Style', lambda root: fake_style)
+    root = mock.MagicMock()
+    t = themes_mod.apply_theme(root, 'light')
+    assert t['bg'] == themes_mod.THEMES['light']['bg']
+    assert t['bg'] != themes_mod.THEMES['dark']['bg']
+    # root.configure(bg=light bg)
+    root.configure.assert_called_with(bg=t['bg'])
+
+
+def test_apply_theme_menu_colors_complete(themes_mod, monkeypatch):
+    """apply_theme 返回的 _menu_colors 应含全部必要 key。"""
+    fake_style = mock.MagicMock()
+    monkeypatch.setattr(themes_mod.ttk, 'Style', lambda root: fake_style)
+    root = mock.MagicMock()
+    t = themes_mod.apply_theme(root, 'dark')
+    mc = t['_menu_colors']
+    for k in ('bg', 'fg', 'active_bg', 'active_fg', 'border', 'disabled'):
+        assert k in mc
+
+
+# ---- apply_menu_theme ----
+
+def test_apply_menu_theme_none_is_noop(themes_mod):
+    """menubar=None 应直接返回不抛。"""
+    themes_mod.apply_menu_theme(None, themes_mod.THEMES['dark'])
+
+
+def test_apply_menu_theme_styles_menubar(themes_mod):
+    """apply_menu_theme 应给 menubar 调 configure。"""
+    menu = mock.MagicMock()
+    # 让 menu.index('end') 返 2（两个 item）
+    menu.index.return_value = 2
+    # menu.type(i) 返 'command'；entrycget 返普通 label
+    menu.type.side_effect = ['command', 'separator', 'command']
+    menu.entrycget.side_effect = ['Open', 'Quit']
+    menu.entryconfigure.return_value = None
+    menu.nametowidget.return_value = None  # 无子菜单
+    themes_mod.apply_menu_theme(menu, themes_mod.THEMES['dark'])
+    # 应调用 menu.configure（至少一次）
+    assert menu.configure.call_count >= 1
+    # 顶层（is_menubar=True）不应调 _pad_labels（所以 entryconfigure 不应被调用——但子菜单也不存在）
+    # 实际上 _style_menu 第一次 is_menubar=True 不 pad，子菜单 nametowidget 返 None 跳过
+    # entryconfigure 应未被调用
+    menu.entryconfigure.assert_not_called()
+
+
+def test_apply_menu_theme_pads_submenu_labels(themes_mod):
+    """非 menubar 菜单应给 entry 加 2 空格前缀。
+
+    _pad_labels 只在 is_menubar=False 时被调用——通过递归子菜单触发。
+    """
+    top = mock.MagicMock()
+    top.index.return_value = 0
+    top.type.return_value = 'cascade'
+    top.entrycget.return_value = 'Submenu'  # 顶层 cascade 不会被 pad（is_menubar=True）
+    top.entryconfigure.return_value = None
+    sub = mock.MagicMock()
+    sub.index.return_value = 0
+    sub.type.return_value = 'command'
+    sub.entrycget.return_value = 'Open'  # 子菜单项会被 pad
+    sub.entryconfigure.return_value = None
+    sub.nametowidget.return_value = None
+    top.nametowidget.return_value = sub
+    themes_mod.apply_menu_theme(top, themes_mod.THEMES['dark'])
+    # 子菜单的 entryconfigure 应被调用一次，label='  Open'
+    sub.entryconfigure.assert_called_once()
+    args, kwargs = sub.entryconfigure.call_args
+    assert kwargs.get('label') == '  Open'
+
+
+def test_apply_menu_theme_skips_already_padded_label(themes_mod):
+    """已加 2 空格的 label 不应被重复 pad。"""
+    top = mock.MagicMock()
+    top.index.return_value = 0
+    top.type.return_value = 'cascade'
+    top.entrycget.return_value = 'Submenu'
+    top.entryconfigure.return_value = None
+    sub = mock.MagicMock()
+    sub.index.return_value = 0
+    sub.type.return_value = 'command'
+    sub.entrycget.return_value = '  Open'  # 已有 2 空格
+    sub.entryconfigure.return_value = None
+    sub.nametowidget.return_value = None
+    top.nametowidget.return_value = sub
+    themes_mod.apply_menu_theme(top, themes_mod.THEMES['dark'])
+    # 子菜单的 entryconfigure 不应被调用（已 pad）
+    sub.entryconfigure.assert_not_called()
+
+
+def test_apply_menu_theme_uses_fallback_colors(themes_mod):
+    """theme 无 _menu_colors 时应走 fallback dict 分支。"""
+    theme_no_menu = dict(themes_mod.THEMES['dark'])
+    theme_no_menu.pop('_menu_colors', None)
+    menu = mock.MagicMock()
+    menu.index.return_value = None  # 让 _pad_labels 提前返回
+    menu.nametowidget.return_value = None
+    themes_mod.apply_menu_theme(menu, theme_no_menu)
+    # menu.configure 应被调用（fallback 也走相同路径）
+    assert menu.configure.call_count >= 1
+
+
+def test_apply_menu_theme_configure_failure_falls_back_per_key(themes_mod):
+    """menu.configure 一次性抛异常应走 per-key fallback 分支。"""
+    menu = mock.MagicMock()
+    menu.index.return_value = None
+    menu.nametowidget.return_value = None
+    # configure 一次性抛，per-key 调用也应不抛
+    menu.configure.side_effect = RuntimeError('unsupported kwargs')
+    # 不应抛
+    themes_mod.apply_menu_theme(menu, themes_mod.THEMES['dark'])
+    # 多次 fallback 调用：每个 key 一次 configure
+    assert menu.configure.call_count >= 10
+
+
+def test_apply_menu_theme_skips_separator_entries(themes_mod):
+    """separator 类型的 entry 不应被 pad。"""
+    top = mock.MagicMock()
+    top.index.return_value = 0
+    top.type.return_value = 'cascade'
+    top.entrycget.return_value = 'Submenu'
+    top.entryconfigure.return_value = None
+    sub = mock.MagicMock()
+    sub.index.return_value = 1
+    # 0: separator, 1: command
+    sub.type.side_effect = ['separator', 'command']
+    sub.entrycget.return_value = 'Quit'
+    sub.entryconfigure.return_value = None
+    sub.nametowidget.return_value = None
+    top.nametowidget.return_value = sub
+    themes_mod.apply_menu_theme(top, themes_mod.THEMES['dark'])
+    # 只应 pad 一次（command），separator 跳过
+    assert sub.entryconfigure.call_count == 1
+
+
+def test_apply_menu_theme_recurses_into_submenus(themes_mod):
+    """nametowidget 返回子 menu 时应递归 style。"""
+    menu = mock.MagicMock()
+    menu.index.return_value = 0
+    menu.type.return_value = 'cascade'
+    menu.entrycget.return_value = 'Submenu'
+    menu.entryconfigure.return_value = None
+    sub = mock.MagicMock()
+    sub.index.return_value = None  # 子 menu 无 item
+    sub.nametowidget.return_value = None
+    menu.nametowidget.return_value = sub
+    themes_mod.apply_menu_theme(menu, themes_mod.THEMES['dark'])
+    # sub 也应被 configure
+    assert sub.configure.call_count >= 1
