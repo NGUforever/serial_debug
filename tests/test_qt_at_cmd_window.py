@@ -121,6 +121,7 @@ def test_add_row_extends_commands(qtbot):
 def test_delete_selected_removes_rows(qtbot):
     """删除选中行应让 self.commands 减对应行数。"""
     from PySide6.QtWidgets import QTableWidgetSelectionRange
+
     from serial_debug.ui.qt_at_cmd_window import AtCmdPanelQt
     p = AtCmdPanelQt(send_callback=lambda c: None, initial_cmds=[
         {'cmd': 'AT+A', 'desc': '', 'seq': 1, 'period_ms': 0},
@@ -140,8 +141,9 @@ def test_delete_selected_removes_rows(qtbot):
 
 def test_sync_from_table_commits_edits(qtbot):
     """_sync_from_table 应把表格内编辑后的内容同步回 commands。"""
-    from serial_debug.ui.qt_at_cmd_window import AtCmdPanelQt
     from PySide6.QtWidgets import QTableWidgetItem
+
+    from serial_debug.ui.qt_at_cmd_window import AtCmdPanelQt
     p = AtCmdPanelQt(send_callback=lambda c: None, initial_cmds=[
         {'cmd': 'AT+OLD', 'desc': '', 'seq': 1, 'period_ms': 0},
     ])

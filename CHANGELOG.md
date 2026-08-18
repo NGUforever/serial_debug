@@ -2,6 +2,22 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] — 2026-08-18
+
+### 变更
+
+- **移除 tkinter 兼容路径**：v1.0.x 双轨 `SERIAL_DEBUG_TK=1` 回退在 v1.1.0 全量废弃，仅保留 Qt (PySide6) 入口。删除 tkinter 主程序 / 数据监视窗口 / AT 命令面板 / 日志查看器 / AutoCombobox 共 4 个文件 ~6700 行；`app.py` 从 1769 行收缩到 137 行纯入口路由；`infra/themes.py` 剥离 `apply_theme` / `apply_menu_theme` 等 tkinter-only 函数；移除 `SERIAL_DEBUG_TK` 环境变量与所有 `import tkinter` / `from tkinter` 引用。
+- **解析器模块抽出**：原 tkinter `ui/monitor_window.py` 的 motor / BMS / IMU Panel 解析器（`_parse_tagged_line` + `DEFAULT_VARS` + `_extract_log_ts`）抽到 `core/panel_vars.py` (470 行) + `core/log_parser.py` (37 行)，无 GUI 依赖，Qt 路径与新测试共用。`qt_monitor_window.py` 改从新模块 import，调用面零改动。
+- **pyproject.toml**：version `1.0.0` → `1.1.0`；keywords 删除 `tkinter`、新增 `PySide6`。
+- **README / docs/README**：删除 `tkinter` 依赖提及，更新为 PySide6 / pyqtgraph / numpy / PyOpenGL。
+
+### 测试与覆盖率
+
+- 测试用例：519 → 603（+84，新增 `test_app.py` 入口路由 7 + `test_qt_app.py` 路由/timestamp/drain/append_log 55 + `test_panel_vars.py` 解析器 34；删除 tkinter 旧测试 12）
+- 整体覆盖率：35% → 65%（达 65-70% 目标区间下界）
+- 目标文件覆盖率：`core/panel_vars.py` 97% / `core/log_parser.py` 90% / `infra/themes.py` 100% / `app.py` 51% / `qt_app.py` 0%→38%
+- 静态分析：ruff P0 (E9/F) 清零，P2 (B007/E741) 7 项沿用 v1.0.1 延后策略
+
 ## [1.0.0] — 2026-08-15
 
 首个稳定版本发布。经过 33 个 commit 的商业化收尾（feature/at-command-window-theme 分支），核心串口调试 + 日志查看 + 数据监视 + AT 命令 + Qt 迁移全部落地，三平台打包脚本就绪。

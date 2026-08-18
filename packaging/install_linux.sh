@@ -166,8 +166,9 @@ echo "==> 注册到应用菜单..."
 mkdir -p "$APP_DIR"
 
 # 3.1 串口调试助手
-# StartupNotify=false：tkinter 不实现 _NET_STARTUP_ID，true 会让 GNOME
-# 超时判定启动失败。StartupWMClass=serial_debug 与 app.setApplicationName
+# StartupNotify=false：历史 tkinter 不实现 _NET_STARTUP_ID，true 会让 GNOME
+# 超时判定启动失败。v1.1.0 已移除 tkinter，但保留 false 避免回归。
+# StartupWMClass=serial_debug 与 app.setApplicationName
 # 对齐，让 GNOME dock 正确匹配本 desktop file。
 cat > "$APP_DIR/serial_debug.desktop" << EOF
 [Desktop Entry]

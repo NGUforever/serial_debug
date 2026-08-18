@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serial_debug"
-version = "1.0.0"
+version = "1.1.0"
 description = "串口调试助手 + 日志查看器：CH343 实时收发 / AT 命令管理 / 日志存储与查看 / 实时数据监视"
 readme = "docs/README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "ericslzwang" }]
-keywords = ["serial", "uart", "AT", "debug", "ch343", "tkinter", "log-viewer"]
+keywords = ["serial", "uart", "AT", "debug", "ch343", "PySide6", "log-viewer"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: X11 Applications",
@@ -57,7 +57,6 @@ branch = true
 omit = [
     "*/__main__.py",          # CLI 入口 shim (4 行 sys.exit(main()))
 ]
-
 [tool.coverage.report]
 show_missing = true
 skip_covered = false

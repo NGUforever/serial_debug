@@ -1,6 +1,6 @@
 """Qt 主程序 - 串口调试助手。
 
-迁移自 tkinter 版 app.py。功能：
+迁移自原 tkinter 版 app.py。功能：
   - 串口连接 / 断开（端口 + 波特率 + 数据位/校验/停止位/流控）
   - 单一日志窗口（发送 / 响应 / 周期日志，按时间顺序，颜色区分）
   - 命令输入 + 发送 + 追加 CRLF / 自动滚动 / 清空
@@ -10,10 +10,9 @@
   - 菜单栏：工具（数据监视窗口 / AT 命令面板 / 日志查看器 / 刷新端口）
   - 筛选：正则表达式 + 启用开关，仅对周期日志行生效
   - 日志落盘：独立线程写入，不影响收发显示
-  - 日志查看器：子进程启动 tkinter LogViewerWindow
+  - 日志查看器：子进程启动 QtLogViewerWindow
 
-入口：默认即 Qt 主程序
-      SERIAL_DEBUG_TK=1 回退到 tkinter 版
+入口：默认即 Qt 主程序（v1.1.0 起 tkinter 兼容路径已移除）
 """
 from __future__ import annotations
 
@@ -1156,7 +1155,7 @@ class QtSerialDebugApp:
             '  - 主题切换（VSCode Dark+ / 浅色）\n'
             '  - 工具菜单：数据监视窗口 / AT 命令面板 / 日志查看器\n'
             '  - 筛选（正则）+ 日志落盘（独立线程）\n'
-            '  - 默认入口即 Qt（SERIAL_DEBUG_TK=1 回退 tkinter）')
+            '  - 默认入口即 Qt（v1.1.0 起无 tkinter 兼容路径）')
 
     # ---- 配置持久化 ---------------------------------------------------
     def _save_cfg_debounced(self):

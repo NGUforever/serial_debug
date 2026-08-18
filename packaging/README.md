@@ -194,7 +194,7 @@ python scripts/check_env.py
 - 产物：`dist/serial_debug/serial_debug` (6.8MB ELF) + `dist/serial_debug-linux-x86_64.tar.gz` (89MB)
 - 体积：onedir 237MB
 - 启动验证：`QT_QPA_PLATFORM=offscreen SERIAL_DEBUG_QT_MAIN=1 ./dist/serial_debug/serial_debug` 进入 Qt 事件循环（timeout 5s 退出码 124，无 stderr 报错，说明 Qt 主窗口构造完成且 import 链路全通）
-- 已知 host 限制：tkinter fallback 入口需 `LD_LIBRARY_PATH` 含 uv python 的 libtcl9.0.so / libtk9.0.so，量产发行包由 PyInstaller 自动 bundle 这些 .so，最终用户不需要
+- v1.1.0 起：tkinter 兼容路径已全量移除，`LD_LIBRARY_PATH` 不再需要 libtcl/libtk；PyInstaller 不再 bundle tcl/tk 运行时，发行包体积预期小幅下降。
 
 ### Windows — ⚠️ 待用户实测
 

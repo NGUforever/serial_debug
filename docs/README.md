@@ -17,7 +17,7 @@
 ```
 serial_debug/
 ├── src/serial_debug/         # Python 包（src layout）
-│   ├── app.py                # 主入口（tkinter GUI + CLI: --view <file...>）
+│   ├── app.py                # 主入口（Qt GUI + CLI: --view <file...>）
 │   ├── core/                 # 串口 I/O 与日志写入
 │   ├── ui/                   # 主窗口、AT 命令、日志查看、监视窗口
 │   ├── widgets/              # 通用 UI 组件（AutoCombobox 等）
@@ -69,7 +69,10 @@ bash packaging/install_mac.sh
 
 - Python 3.9+
 - pyserial >= 3.5
-- tkinter（系统自带）
+- PySide6 >= 6.5（Qt GUI）
+- pyqtgraph >= 0.14（实时曲线）
+- numpy（LTTB 降采样）
+- PyOpenGL（可选，开启 OpenGL 加速曲线渲染）
 - Linux 桌面集成可选：`update-desktop-database` / `update-mime-database`
 
 ## License

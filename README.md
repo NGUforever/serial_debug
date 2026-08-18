@@ -3,7 +3,7 @@
 > 商用级串口调试助手 + 日志查看器 + 实时数据监视 — Linux / Windows / macOS 三平台桌面应用。
 > 由 Ninebot 嵌入式团队维护。
 
-[![Release](https://img.shields.io/badge/release-v1.0.0-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v1.1.0-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)](#系统要求)

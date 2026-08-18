@@ -22,17 +22,18 @@ import os
 import sys
 import threading
 
-from serial_debug.infra.error_log import log_exc
-
 # 延迟导入 PySide6/pyqtgraph：仅 Qt 窗口实际启动时才加载
-# 让 tkinter 主程序不强制依赖 Qt（即便没装 Qt 也能跑 tkinter 路径）
-# 复用 tkinter 监视窗口的日志解析器（时间戳提取 + motor/BMS/IMU 三类 Panel）
-from serial_debug.ui.monitor_window import (
+# 让旧 tkinter 主程序不强制依赖 Qt（即便没装 Qt 也能跑 tkinter 路径）
+# 复用日志解析器（时间戳提取 + motor/BMS/IMU 三类 Parser）。
+# 这些纯逻辑从原 tkinter `ui/monitor_window.py` 抽出到 `core/` 下，
+# 不依赖 tkinter / PySide6，便于在无 GUI 环境运行。
+from serial_debug.core.log_parser import extract_log_ts as _extract_log_ts
+from serial_debug.core.panel_vars import (
     BmsMonitorPanel,
     ImuMonitorPanel,
     MotorMonitorPanel,
-    _extract_log_ts,
 )
+from serial_debug.infra.error_log import log_exc
 
 
 # ---- 静态变量注册表（从 Panel.DEFAULT_VARS 派生，加前缀避免冲突）---------

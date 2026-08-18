@@ -74,7 +74,7 @@ def test_save_filters_unknown_keys(cfg_module):
     cfg['__secret__'] = 'should-not-persist'
     cfg_module.save(cfg)
 
-    with open(cfg_module.CONFIG_FILE, 'r', encoding='utf-8') as f:
+    with open(cfg_module.CONFIG_FILE, encoding='utf-8') as f:
         raw = json.load(f)
     assert '__secret__' not in raw
     assert 'baudrate' in raw
@@ -120,6 +120,7 @@ def test_config_dir_windows(tmp_path, monkeypatch):
     monkeypatch.setenv('LOCALAPPDATA', str(local))
     monkeypatch.setattr('sys.platform', 'win32')
     import importlib
+
     from serial_debug.infra import config as config_mod
     importlib.reload(config_mod)
     expected = str(local / 'serial_debug')
@@ -131,6 +132,7 @@ def test_config_dir_darwin(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setattr('sys.platform', 'darwin')
     import importlib
+
     from serial_debug.infra import config as config_mod
     importlib.reload(config_mod)
     expected = str(tmp_path / 'Library' / 'Application Support' / 'serial_debug')
@@ -152,6 +154,7 @@ def test_config_dir_windows_falls_back_to_appdata_local(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setattr('sys.platform', 'win32')
     import importlib
+
     from serial_debug.infra import config as config_mod
     importlib.reload(config_mod)
     expected = str(tmp_path / 'AppData' / 'Local' / 'serial_debug')

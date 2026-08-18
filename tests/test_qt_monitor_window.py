@@ -21,6 +21,7 @@ def monitor(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
     # 重新 import 让 config 模块拿到新 env
     import importlib
+
     from serial_debug.infra import config
     importlib.reload(config)
     importlib.reload(mod)
@@ -478,9 +479,10 @@ def test_validation_bridge_emit_calls_callback(monitor, qtbot):
 
 def test_validation_bridge_emit_cross_thread_delivered(monitor, qtbot):
     """emit 应通过 signal 触发主线程回调（处理事件循环后）。"""
-    from PySide6.QtCore import QObject
     import threading
     import time
+
+    from PySide6.QtCore import QObject
     calls = []
     parent = QObject()
     bridge = mod._ValidationBridge(lambda lines, label: calls.append((lines, label)))
@@ -1152,8 +1154,9 @@ def test_last_dir_nonexistent_record_returns_default(monitor, monkeypatch):
 
 def test_last_dir_config_failure_returns_default(monitor, monkeypatch):
     """config.load 抛异常应返 ~。"""
-    from serial_debug.infra import config
     import os
+
+    from serial_debug.infra import config
     def boom():
         raise RuntimeError('fail')
     monkeypatch.setattr(config, 'load', boom)
@@ -2904,6 +2907,7 @@ def test_build_menubar_no_optional_callbacks(monitor, qtbot):
 def test_make_plot_widget_returns_container(monitor, qtbot):
     """_make_plot_widget 应返 (container, pw, header) 三元组。"""
     import pyqtgraph as pg
+
     from serial_debug.ui import qt_theme
     t = qt_theme.palette(monitor.theme_name)
     p = {'title': 'A', 'vars': [], 'show_max': False, 'show_min': False,
@@ -2939,7 +2943,8 @@ def test_do_rebuild_plots_with_one_plot(monitor, qtbot):
     """有 1 个 plot 时应建出 1 个 PlotWidget。"""
     import pyqtgraph as pg
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QSizePolicy, QSplitter, QWidget, QVBoxLayout
+    from PySide6.QtWidgets import QSizePolicy, QSplitter, QVBoxLayout, QWidget
+
     from serial_debug.ui import qt_theme
     t = qt_theme.palette(monitor.theme_name)
     container = QWidget()
@@ -2956,7 +2961,8 @@ def test_do_rebuild_plots_multiple(monitor, qtbot):
     """多 plot 时应建出对应数量的 PlotWidget。"""
     import pyqtgraph as pg
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QSizePolicy, QSplitter, QWidget, QVBoxLayout
+    from PySide6.QtWidgets import QSizePolicy, QSplitter, QVBoxLayout, QWidget
+
     from serial_debug.ui import qt_theme
     t = qt_theme.palette(monitor.theme_name)
     container = QWidget()
