@@ -2375,6 +2375,7 @@ class QtMonitorWindow:
 
         v.addWidget(tree, 1)
         self._sidebar = tree
+        self._sidebar_container = container
         return container
 
     def _refresh_sidebar(self):

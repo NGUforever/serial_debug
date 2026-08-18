@@ -93,3 +93,66 @@ def test_load_tolerates_corrupt_file(cfg_module):
         f.write('{not valid json')
     cfg = cfg_module.load()
     assert cfg['baudrate'] == 115200  # 退回 DEFAULTS
+
+
+def test_load_skips_non_dict_payload(cfg_module):
+    """读到的 JSON 不是 dict（如 list/str/int）时整体退回 DEFAULTS。"""
+    os.makedirs(cfg_module.CONFIG_DIR, exist_ok=True)
+    with open(cfg_module.CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(['not', 'a', 'dict'], f)
+    cfg = cfg_module.load()
+    assert cfg['baudrate'] == 115200
+
+
+def test_load_skips_unknown_keys(cfg_module):
+    """读到 dict 但含 DEFAULTS 未登记字段时，未知字段被丢弃，已知字段保留。"""
+    os.makedirs(cfg_module.CONFIG_DIR, exist_ok=True)
+    with open(cfg_module.CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump({'baudrate': 19200, '__unknown__': 'x'}, f)
+    cfg = cfg_module.load()
+    assert cfg['baudrate'] == 19200
+    assert '__unknown__' not in cfg
+
+
+def test_config_dir_windows(tmp_path, monkeypatch):
+    """Windows 平台应走 %LOCALAPPDATA%/serial_debug。"""
+    local = tmp_path / 'Local'
+    monkeypatch.setenv('LOCALAPPDATA', str(local))
+    monkeypatch.setattr('sys.platform', 'win32')
+    import importlib
+    from serial_debug.infra import config as config_mod
+    importlib.reload(config_mod)
+    expected = str(local / 'serial_debug')
+    assert config_mod.CONFIG_DIR == expected
+
+
+def test_config_dir_darwin(tmp_path, monkeypatch):
+    """macOS 平台应走 ~/Library/Application Support/serial_debug。"""
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setattr('sys.platform', 'darwin')
+    import importlib
+    from serial_debug.infra import config as config_mod
+    importlib.reload(config_mod)
+    expected = str(tmp_path / 'Library' / 'Application Support' / 'serial_debug')
+    assert config_mod.CONFIG_DIR == expected
+
+
+def test_save_silently_ignores_failure(cfg_module, monkeypatch):
+    """save() 内部异常（如 makedirs 权限拒）应被吞掉，不抛给调用方。"""
+    def _raise(*a, **k):
+        raise OSError('mocked permission denied')
+    monkeypatch.setattr('os.makedirs', _raise)
+    # 不应抛
+    cfg_module.save({'baudrate': 115200})
+
+
+def test_config_dir_windows_falls_back_to_appdata_local(tmp_path, monkeypatch):
+    """Windows 无 LOCALAPPDATA 时回退到 ~/AppData/Local。"""
+    monkeypatch.delenv('LOCALAPPDATA', raising=False)
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setattr('sys.platform', 'win32')
+    import importlib
+    from serial_debug.infra import config as config_mod
+    importlib.reload(config_mod)
+    expected = str(tmp_path / 'AppData' / 'Local' / 'serial_debug')
+    assert config_mod.CONFIG_DIR == expected
