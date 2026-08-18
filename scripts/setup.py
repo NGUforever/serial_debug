@@ -192,13 +192,18 @@ def cmd_verify() -> int:
     """docker offscreen smoke test 验证源码改动，不触碰稳定版。
 
     流程：
-    1. docker ubuntu:22.04 装 PySide6 + pyqtgraph + numpy + PyOpenGL
+    1. uv 镜像（ghcr.io/astral-sh/uv:python3.11-bookworm-slim，自带 uv + python3.11）
+       内 apt 补 Qt xcb 运行时库 + uv venv + uv pip install 依赖
     2. QT_QPA_PLATFORM=offscreen 跑 scripts/smoke_test.py
     3. 验证主窗口 + AT 面板 + 日志查看器 + 数据监视窗口能构建、
        关键功能链路 OK
 
     通过 returncode=0，失败 returncode=1。不修改 ~/.local/share/serial_debug/，
     用户点桌面图标还能用旧版。
+
+    镜像选 uv 官方镜像而非 ubuntu:22.04：uv 镜像自带 uv + python3.11，
+    装包走 uv pip install（不触发 PEP 668 --break-system-packages 阻塞），
+    符合团队规则"Python 虚拟环境统一用 uv"。
     """
     plat = _platform_name()
     print(f'==> 平台：{plat}')
@@ -215,18 +220,25 @@ def cmd_verify() -> int:
     smoke_test = os.path.join(_SCRIPTS_DIR, 'smoke_test.py')
     # docker 内挂载到 /work，用相对路径（绝对路径在容器内不存在）
     smoke_test_in_docker = 'scripts/smoke_test.py'
-    # v1.1.0 移除 tkinter 兼容路径后，不再需要 python3-tk / tk-dev
-    cmd = (
-        'apt-get update -qq > /dev/null 2>&1 && '
-        'apt-get install -y -qq python3 python3-pip binutils '
+    # Qt xcb 运行时库（bookworm 基础镜像需补；python/python3-pip/uv 不需要
+    # 装——uv 镜像自带）
+    apt_pkgs = (
         'libglib2.0-0 libfreetype6 libxkbcommon0 libxkbcommon-x11-0 '
         'libxcb-xinerama0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 '
         'libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 '
-        'libxcb-xkb1 libgl1 libegl1 libdbus-1-3 fontconfig > /dev/null 2>&1 && '
-        'pip3 install --quiet --break-system-packages '
-        'pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 || '
-        'pip3 install --quiet pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate > /dev/null 2>&1 && '
-        f'cd /work && QT_QPA_PLATFORM=offscreen PYTHONPATH=src python3 {smoke_test_in_docker}'
+        'libxcb-xkb1 libgl1 libegl1 libdbus-1-3 fontconfig'
+    )
+    py_deps = 'pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate'
+    # uv venv 建在 /work/.venv-verify，挂载到宿主 _PROJECT_DIR/.venv-verify
+    # （.gitignore 已忽略 .venv*，不会污染仓库）
+    cmd = (
+        'apt-get update -qq > /dev/null 2>&1 && '
+        f'apt-get install -y -qq {apt_pkgs} > /dev/null 2>&1 && '
+        'uv venv /work/.venv-verify > /dev/null 2>&1 && '
+        f'uv pip install --python /work/.venv-verify/bin/python '
+        f'{py_deps} > /dev/null 2>&1 && '
+        f'cd /work && QT_QPA_PLATFORM=offscreen PYTHONPATH=src '
+        f'/work/.venv-verify/bin/python {smoke_test_in_docker}'
     )
     print('==> docker 跑 offscreen smoke test...')
     try:
@@ -234,9 +246,11 @@ def cmd_verify() -> int:
             'docker', 'run', '--rm',
             '-e', 'DEBIAN_FRONTEND=noninteractive',
             '-e', 'TZ=Asia/Shanghai',
+            '--entrypoint', 'bash',
             '-v', f'{_PROJECT_DIR}:/work', '-w', '/work',
-            '--network=host', 'ubuntu:22.04',
-            'bash', '-c', cmd,
+            '--network=host',
+            'ghcr.io/astral-sh/uv:python3.11-bookworm-slim',
+            '-c', cmd,
         ])
     except FileNotFoundError:
         print('    docker 未安装，本机直接跑 smoke test')
