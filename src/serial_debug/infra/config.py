@@ -97,6 +97,10 @@ DEFAULTS = {
     # Qt 主程序
     'qt_main_geometry': '',            # 窗口几何（hex）
     'qt_at_geometry': '',              # AT 面板独立窗口几何（hex）
+    # 原始数据显示模式（开机 printf 日志等无 LOG_TS 的纯文本）
+    # True：串口收到的行原样追加到日志区，不解析 LOG_TS、不识别响应、不过滤
+    # False：正常解析模式（_route_line 走时间戳前缀/响应分类/正则筛选）
+    'raw_display_enabled': False,
 }
 
 

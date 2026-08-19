@@ -110,6 +110,11 @@ class QtSerialDebugApp:
         self._scroll_suppress: bool = False
         self.append_crlf: bool = bool(self.cfg.get('append_crlf', False))
         self.ts_convert: bool = bool(self.cfg.get('ts_convert_enabled', False))
+        # 原始数据显示模式：串口收到的行原样追加，不解析 LOG_TS / 不识别响应 / 不过滤
+        # 场景：开机阶段固件用 printf 打印纯文本日志，无 13 位 ms 时间戳，
+        # 解析模式会把这种行误判成普通 log 但无时间戳前缀，可读性差。
+        # 开启 raw 模式后 _drain 把 rx_queue 的 ('line', text) 直接 _append_log。
+        self.raw_display: bool = bool(self.cfg.get('raw_display_enabled', False))
         # 串口参数
         try:
             self._bytesize = int(self.cfg.get('bytesize', 8))
@@ -358,7 +363,7 @@ class QtSerialDebugApp:
 
         bl.addWidget(self._make_divider())
 
-        # 组 2：选项（CRLF / 自动滚动 / 时间戳）三个 checkbox 一起
+        # 组 2：选项（CRLF / 自动滚动 / 时间戳 / 原始模式）四个 checkbox 一起
         g2 = QWidget()
         g2l = QHBoxLayout(g2)
         g2l.setContentsMargins(0, 0, 0, 0)
@@ -375,6 +380,15 @@ class QtSerialDebugApp:
         cb_ts.setChecked(self.ts_convert)
         cb_ts.stateChanged.connect(self._on_ts_convert_toggled)
         g2l.addWidget(cb_ts)
+        # 原始数据显示模式：开机 printf 日志等无 LOG_TS 的纯文本，
+        # 串口收到什么就显示什么，不解析时间戳/不识别响应/不过滤。
+        self._cb_raw = QCheckBox('原始模式')
+        self._cb_raw.setChecked(self.raw_display)
+        self._cb_raw.setToolTip(
+            '原始模式：串口收到的行原样显示，不解析时间戳/不识别响应/不过滤。\n'
+            '适用场景：开机阶段固件 printf 打印的纯文本日志，无 13 位 ms 时间戳。')
+        self._cb_raw.stateChanged.connect(self._on_raw_display_toggled)
+        g2l.addWidget(self._cb_raw)
         bl.addWidget(g2)
 
         bl.addWidget(self._make_divider())
@@ -787,6 +801,30 @@ class QtSerialDebugApp:
         self.ts_convert = bool(state)
         self._save_cfg_debounced()
 
+    def _on_raw_display_toggled(self, state):
+        """切换原始数据显示模式。
+
+        开启：_drain 把 rx_queue 的 ('line', text) 直接 _append_log(text, 'log')，
+        不走 _route_line（不解析 LOG_TS、不识别响应、不过滤）。
+        关闭：恢复解析模式，所有行重走 _route_line。
+        落盘 log_writer 在两种模式下都正常工作。
+        """
+        prev = self.raw_display
+        self.raw_display = bool(state)
+        self._save_cfg_debounced()
+        # 给用户一条提示，避免误以为没生效
+        if prev != self.raw_display and self._log_edit is not None:
+            tag = 'note'
+            msg = ('[原始模式开启] 串口收到的行原样显示，不解析时间戳/不识别响应\n'
+                   if self.raw_display
+                   else '[原始模式关闭] 恢复解析模式（时间戳转换 + 响应识别 + 筛选）\n')
+            try:
+                self._append_log(msg, tag=tag)
+            except Exception:
+                # 提示失败不影响功能，记一下
+                from serial_debug.infra.error_log import log_exc
+                log_exc('debug', f'{__file__}:_on_raw_display_toggled append tip failed', None)
+
     def _on_scroll(self, val):
         """用户上滚时关闭自动滚动（参照 tkinter 版 _check_scroll）。
 
@@ -805,17 +843,24 @@ class QtSerialDebugApp:
     # ---- drain（QTimer 替代 root.after）------------------------------
     def _drain(self):
         batch: list[tuple[str, str]] = []
+        raw_batch: list[str] = []  # 原始模式：纯文本，不走 _route_line
         status_update = None
         error_msg = None
         closed = False
         had_pending = self.pending_cmd is not None
+        raw_mode = self.raw_display
         try:
             while True:
                 kind, payload = self.backend.rx_queue.get_nowait()
                 if kind == 'line':
-                    r = self._route_line(payload)
-                    if r is not None:
-                        batch.append(r)
+                    if raw_mode:
+                        # 原始模式：串口收到的行原样追加，不解析 / 不识别响应 / 不过滤
+                        # 仍走 log_writer 落盘，确保开机日志可追溯
+                        raw_batch.append(payload)
+                    else:
+                        r = self._route_line(payload)
+                        if r is not None:
+                            batch.append(r)
                 elif kind == 'status':
                     status_update = payload
                 elif kind == 'error':
@@ -824,11 +869,15 @@ class QtSerialDebugApp:
                     closed = True
         except queue.Empty:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            # 教训 5：裸 except Exception: pass 会吞 NameError 等故障现场
+            from serial_debug.infra.error_log import log_exc
+            log_exc('warning', f'{__file__}:_drain loop failed', e)
 
         if batch:
             self._append_batch(batch)
+        if raw_batch:
+            self._append_raw_batch(raw_batch)
 
         if error_msg is not None:
             self._status_lbl.setText(error_msg)
@@ -906,6 +955,25 @@ class QtSerialDebugApp:
     def _append_batch(self, batch: list[tuple[str, str]]):
         for text, tag in batch:
             self._append_log(text, tag)
+
+    def _append_raw_batch(self, raw_batch: list[str]) -> None:
+        """原始模式：把串口收到的行原样追加到日志区。
+
+        - 不走 _route_line：无时间戳前缀、无响应分类、无筛选
+        - 仍走 log_writer 落盘（_append_log 内部已处理）
+        - 用 core.raw_renderer.format_raw_line 归一化行尾与控制字符
+        - tag 一律 'log'：原始模式下响应/日志同色，保持"收到什么显示什么"
+        """
+        from serial_debug.core.raw_renderer import format_raw_line
+        for line in raw_batch:
+            try:
+                text = format_raw_line(line)
+            except Exception as e:
+                # format_raw_line 不会主动抛，但调用方传非 str 时防御
+                from serial_debug.infra.error_log import log_exc
+                log_exc('debug', f'{__file__}:_append_raw_batch format failed line={line!r}', e)
+                text = (line if isinstance(line, str) else str(line)) + '\n'
+            self._append_log(text, tag='log')
 
     def _append_log(self, text: str, tag: str = 'log'):
         """追加一段日志，按 tag 着色。
@@ -1150,7 +1218,8 @@ class QtSerialDebugApp:
             '  - 串口连接 / 断开（端口/波特率/数据位/校验/停止位/流控）\n'
             '  - 单一日志窗口（发送/响应/日志，按时间顺序，颜色区分）\n'
             '  - 命令输入 + 发送（Enter 或按钮）\n'
-            '  - 追加 CRLF / 自动滚动 / 时间戳转换 / 清空\n'
+            '  - 追加 CRLF / 自动滚动 / 时间戳转换 / 原始模式 / 清空\n'
+            '  - 原始模式：串口收到的行原样显示（开机 printf 日志无 LOG_TS）\n'
             '  - 响应检测 + 超时提示 + pending 配对\n'
             '  - 主题切换（VSCode Dark+ / 浅色）\n'
             '  - 工具菜单：数据监视窗口 / AT 命令面板 / 日志查看器\n'
@@ -1178,6 +1247,7 @@ class QtSerialDebugApp:
                     pass
             cfg['append_crlf'] = self.append_crlf
             cfg['ts_convert_enabled'] = self.ts_convert
+            cfg['raw_display_enabled'] = self.raw_display
             cfg['theme_pref'] = self.theme_name
             cfg['bytesize'] = self._bytesize
             cfg['parity'] = self._parity

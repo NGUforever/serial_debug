@@ -583,3 +583,171 @@ def test_update_status_sets_dot_state(app, qtbot):
     assert dot._state == 'ok'
 
 
+# ---- 原始数据显示模式（raw_display）----
+def test_raw_display_default_false(app):
+    """新 App 默认 raw_display=False（解析模式）。"""
+    assert app.raw_display is False
+
+
+def test_raw_display_toggled_on(app):
+    """_on_raw_display_toggled(True) 应置 raw_display=True。"""
+    app._on_raw_display_toggled(2)  # Qt CheckState 2 = Checked
+    assert app.raw_display is True
+
+
+def test_raw_display_toggled_off(app):
+    """_on_raw_display_toggled(False) 应置 raw_display=False。"""
+    app.raw_display = True
+    app._on_raw_display_toggled(0)  # Qt CheckState 0 = Unchecked
+    assert app.raw_display is False
+
+
+def test_raw_display_toggle_appends_tip(app, qtbot):
+    """切换应追加一条提示到日志区。"""
+    from PySide6.QtWidgets import QPlainTextEdit
+    edit = QPlainTextEdit()
+    app._log_edit = edit
+    app._on_raw_display_toggled(2)
+    text = edit.toPlainText()
+    assert '原始模式开启' in text
+
+
+def test_raw_display_toggle_off_appends_tip(app, qtbot):
+    """关闭应追加一条提示到日志区。"""
+    from PySide6.QtWidgets import QPlainTextEdit
+    edit = QPlainTextEdit()
+    app._log_edit = edit
+    app.raw_display = True
+    app._on_raw_display_toggled(0)
+    text = edit.toPlainText()
+    assert '原始模式关闭' in text
+
+
+def test_drain_raw_mode_bypasses_route_line(app):
+    """raw_display=True 时，line 不走 _route_line，直接走 _append_raw_batch。"""
+    app.raw_display = True
+    raw_appended = []
+    route_called = []
+    app.backend = type('B', (), {
+        'is_open': True,
+        'rx_queue': _make_fake_queue([
+            ('line', 'OK,0%'),  # 正常会被识别为响应
+            ('line', 'boot: hello'),
+            ('line', '1783996615491 I model 3wd1t_1 0 0 0'),
+        ]),
+    })()
+    app._status_lbl = type('L', (), {'setText': lambda self_, t: None})()
+    app._connect_btn = None
+    app._update_status = lambda: None
+    app._append_batch = lambda batch: route_called.extend(batch)
+    app._append_raw_batch = lambda raw_batch: raw_appended.extend(raw_batch)
+    app._drain()
+    # 走 raw 旁路，不走 _route_line
+    assert route_called == []
+    assert raw_appended == ['OK,0%', 'boot: hello', '1783996615491 I model 3wd1t_1 0 0 0']
+    # pending_cmd 不应被清空（raw 模式不识别响应）
+    app.pending_cmd = 'AT+TEST'
+    assert app.pending_cmd == 'AT+TEST'
+
+
+def test_drain_raw_mode_preserves_plain_text(app):
+    """raw 模式纯文本应原样进 raw_batch（不丢失，不变形）。"""
+    app.raw_display = True
+    raw_appended = []
+    app.backend = type('B', (), {
+        'is_open': True,
+        'rx_queue': _make_fake_queue([
+            ('line', 'boot phase 1'),
+            ('line', 'no timestamp here'),
+            ('line', '中文开机日志'),
+        ]),
+    })()
+    app._status_lbl = type('L', (), {'setText': lambda self_, t: None})()
+    app._connect_btn = None
+    app._update_status = lambda: None
+    app._append_batch = lambda batch: None
+    app._append_raw_batch = lambda raw_batch: raw_appended.extend(raw_batch)
+    app._drain()
+    assert raw_appended == ['boot phase 1', 'no timestamp here', '中文开机日志']
+
+
+def test_drain_parse_mode_still_works(app):
+    """raw_display=False 时，正常走 _route_line（不影响解析模式）。"""
+    appended = []
+    app.raw_display = False
+    app.backend = type('B', (), {
+        'is_open': True,
+        'rx_queue': _make_fake_queue([('line', 'OK,0%')]),
+    })()
+    app._status_lbl = type('L', (), {'setText': lambda self_, t: None})()
+    app._connect_btn = None
+    app._update_status = lambda: None
+    app._append_batch = lambda batch: appended.extend(batch)
+    app._append_raw_batch = lambda raw_batch: pytest.fail('should not call raw path')
+    app._drain()
+    assert appended  # 走解析路径
+    assert appended[0][1] == 'resp'
+
+
+# ---- _append_raw_batch ----
+def test_append_raw_batch_format_lines(app):
+    """_append_raw_batch 应把每行 format 后追加（带 \n，控制字符归一化）。"""
+    written = []
+    app._append_log = lambda text, tag='log': written.append((text, tag))
+    app._append_raw_batch(['boot: hello', 'next line'])
+    assert written == [('boot: hello\n', 'log'), ('next line\n', 'log')]
+
+
+def test_append_raw_batch_strips_trailing_cr(app):
+    """\r\n 残留的 \r 应被 format_raw_line 去掉。"""
+    written = []
+    app._append_log = lambda text, tag='log': written.append(text)
+    app._append_raw_batch(['hello\r'])
+    assert written == ['hello\n']
+
+
+def test_append_raw_batch_replaces_control_chars(app):
+    """\x00/\x1b 控制字符应被 \ufffd 替换，避免破坏 QPlainTextEdit 渲染。"""
+    written = []
+    app._append_log = lambda text, tag='log': written.append(text)
+    app._append_raw_batch(['a\x00b\x1bc'])
+    assert written == ['a\ufffdb\ufffdc\n']
+
+
+def test_append_raw_batch_chinese_preserved(app):
+    """中文 utf-8 文本应原样保留。"""
+    written = []
+    app._append_log = lambda text, tag='log': written.append(text)
+    app._append_raw_batch(['开机日志: hello'])
+    assert written == ['开机日志: hello\n']
+
+
+def test_append_raw_batch_empty_list_noop(app):
+    """空列表 _append_raw_batch 不应崩也不应调 _append_log。"""
+    called = []
+    app._append_log = lambda text, tag='log': called.append(text)
+    app._append_raw_batch([])
+    assert called == []
+
+
+def test_append_raw_batch_writes_to_qplaintextedit(app, qtbot):
+    """端到端：_append_raw_batch 应把行写入 QPlainTextEdit。"""
+    from PySide6.QtWidgets import QPlainTextEdit
+    edit = QPlainTextEdit()
+    app._log_edit = edit
+    app.log_writer = None
+    app._append_raw_batch(['boot phase 1', 'boot phase 2'])
+    text = edit.toPlainText()
+    assert 'boot phase 1' in text
+    assert 'boot phase 2' in text
+
+
+def test_append_raw_batch_preserves_long_text(app):
+    """长行不应被截断（与解析模式一致，原始模式尤其需要完整保留）。"""
+    long_line = 'x' * 5000
+    written = []
+    app._append_log = lambda text, tag='log': written.append(text)
+    app._append_raw_batch([long_line])
+    assert written == [long_line + '\n']
+
+

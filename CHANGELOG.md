@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **原始数据显示模式**：主程序底栏新增「原始模式」checkbox，开启后串口收到的行原样追加到日志区，不解析 LOG_TS、不识别响应、不过滤。专为开机阶段固件 printf 打印的纯文本日志设计——此时 RTOS 还未启动 ringbuffer+DMA 异步传输，日志无 13 位 ms 时间戳和类型前缀，解析模式会丢失可读性。新增 `core/raw_renderer.py`（`RawBuffer` 有界缓冲 + `format_raw_line` 行尾归一化 + `decode_chunk` utf-8 兜底解码），配置 schema 新增 `raw_display_enabled`。落盘 log_writer 在两种模式下都正常工作，开机日志可追溯。
+
 ## [1.1.0] — 2026-08-18
 
 ### 变更
@@ -64,7 +70,7 @@
 
 v1.0.0 起，仓库采用 **核心开源（MIT）+ 商业增强版闭源** 双轨策略，闭源部分位于 `commercial/` 目录（v1.0.0 仅占位骨架）。详见 [commercial/COMMERCIAL.md](commercial/COMMERCIAL.md)。
 
-## [Unreleased]
+## Roadmap
 
 - 信号线状态显示 (RTS/CTS/DCD/DTR/RI)
 - 端口热插拔检测
