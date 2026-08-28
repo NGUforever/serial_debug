@@ -1401,21 +1401,28 @@ def test_filter_panel_apply_filter_incremental_no_tab(qtbot):
 
 
 def test_filter_panel_apply_filter_incremental_caps(qtbot, tmp_path):
-    """_apply_filter_incremental 应 cap 在 FILTER_RESULT_MAX。"""
+    """_apply_filter_incremental 应 cap 在 _get_filter_max()（可配置）。
+
+    用一个小上限（100）造 150 行，验证 cap 到 100，独立于 config 默认值。
+    """
     _make_qapp()
     from serial_debug.infra import themes
-    from serial_debug.ui.qt_log_viewer_window import FILTER_RESULT_MAX, _QtFilterPanel
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
     panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
     qtbot.addWidget(panel)
-    # 准备一个超过 FILTER_RESULT_MAX 的 tab
-    lines = ['hit'] * (FILTER_RESULT_MAX + 50)
+    # 设一个小上限（在 spinbox 范围 1000~2000000 内），验证 cap 行为不依赖默认值
+    panel._max_rows_box.setValue(1500)
+    cap = panel._get_filter_max()
+    assert cap == 1500
+    # 准备超过 cap 的 tab
+    lines = ['hit'] * (cap + 50)
     tab = _make_tab(qtbot, tmp_path, lines)
     panel.set_tab(tab)
     panel._filtered_idx = []
     panel._last_scanned_idx = 0
     panel._regex_edit.setText('hit')
     panel._apply_filter_incremental(len(lines))
-    assert len(panel._filtered_idx) <= FILTER_RESULT_MAX
+    assert len(panel._filtered_idx) <= cap
     panel.shutdown_filter_thread()
 
 
@@ -1562,6 +1569,92 @@ def test_filter_panel_shutdown_thread_idempotent(qtbot):
     panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
     qtbot.addWidget(panel)
     panel.shutdown_filter_thread()
+    panel.shutdown_filter_thread()
+
+
+# ---- 任务4：筛选上限可配置 ----
+
+def test_filter_panel_max_rows_box_range_and_default(qtbot, monkeypatch, tmp_path):
+    """spinbox 应有正确范围 + 默认值来自 config（重定向到 tmp 避免污染）。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    box = panel._max_rows_box
+    # 范围 1000 ~ 2000000，步长 10000
+    assert box.minimum() == 1000
+    assert box.maximum() == 2_000_000
+    assert box.singleStep() == 10000
+    # 默认值 = config.DEFAULTS['log_view_filter_result_max'] = 500000
+    assert box.value() == 500000
+    # _get_filter_max 应与 spinbox 一致
+    assert panel._get_filter_max() == 500000
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_get_filter_max_clamps_to_range(qtbot):
+    """_get_filter_max 返回 spinbox 值，超出范围被 Qt 自动 clamp。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 试图设 100（低于最小值 1000）→ Qt clamp 到 1000
+    panel._max_rows_box.setValue(100)
+    assert panel._get_filter_max() == 1000
+    # 试图设 99999999（高于最大值）→ clamp 到 2000000
+    panel._max_rows_box.setValue(99_999_999)
+    assert panel._get_filter_max() == 2_000_000
+    # 设中间值正常
+    panel._max_rows_box.setValue(750_000)
+    assert panel._get_filter_max() == 750_000
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_save_filter_max_persists(qtbot, monkeypatch, tmp_path):
+    """_save_filter_max 应写入 config（重定向到 tmp），重开面板读到新值。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 改为 750000 并保存
+    panel._save_filter_max(750_000)
+    panel.shutdown_filter_thread()
+    # 重读 config 文件，确认持久化
+    cfg = config.load()
+    assert cfg['log_view_filter_result_max'] == 750_000
+
+
+def test_filter_panel_loads_custom_config_on_init(qtbot, monkeypatch, tmp_path):
+    """config 已有自定义上限时，新面板构造应读到该值。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    # 预写 config
+    cfg = config.load()
+    cfg['log_view_filter_result_max'] = 1_500_000
+    config.save(cfg)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    assert panel._max_rows_box.value() == 1_500_000
+    assert panel._get_filter_max() == 1_500_000
     panel.shutdown_filter_thread()
 
 

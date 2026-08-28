@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QStatusBar,
     QStyle,
     QTabWidget,
@@ -66,7 +67,9 @@ SEARCH_SCAN_LIMIT = 2_000_000
 GLOBAL_SEARCH_MAX = 500
 SEARCH_SCAN_TIMEOUT_MS = 5000   # 单次搜索墙钟超时
 SEARCH_MAX_LINE_LEN = 8000      # 单行搜索截断上限：避免超长行 + 灾难性正则回溯
-FILTER_RESULT_MAX = 50000
+FILTER_RESULT_MAX = 50000       # 旧默认值，保留作为兜底常量；运行时实际
+                                # 上限读 config['log_view_filter_result_max']
+                                # （默认 500000），见 _QtFilterPanel._get_filter_max
 FILTER_INSERT_BATCH = 5000
 FILTER_MAX_LINE_LEN = 8000  # 单行搜索时截断上限：避免超长行 + 灾难性正则回溯
 FILTER_SCAN_TIMEOUT_MS = 800  # 单次筛选扫描超时（墙钟）：超过就中断 + 报警
@@ -1744,7 +1747,7 @@ class _QtFilterPanel(QDockWidget):
     级别 Combobox + 正则 Entry + 结果 QTreeWidget。
     双击 Tree → on_locate(line_idx) → tab.goto_line。
     Text 点击 → locate_line 选中最近匹配。
-    增量筛选：_on_lines_appended(new_count) 只扫新增行，cap FILTER_RESULT_MAX。
+    增量筛选：_on_lines_appended(new_count) 只扫新增行，cap = _get_filter_max()（可配置）。
     """
 
     def __init__(self, parent, theme, on_locate=None):
@@ -1805,8 +1808,36 @@ class _QtFilterPanel(QDockWidget):
                 return QSize(80, 24)
         self._title_bar = _SlimTitleBar(self)
         self.setTitleBarWidget(self._title_bar)
+        # 筛选结果行数上限：从 config 读（默认 500000），spinbox 可改
+        cfg = config.load()
+        self._filter_max_value = int(
+            cfg.get('log_view_filter_result_max',
+                    config.DEFAULTS['log_view_filter_result_max']))
         self._build_widgets()
         self.apply_theme(theme)
+
+    def _get_filter_max(self) -> int:
+        """当前筛选结果行数上限（来自 spinbox 值，兜底常量）。"""
+        try:
+            if hasattr(self, '_max_rows_box') and self._max_rows_box is not None:
+                return int(self._max_rows_box.value())
+        except Exception:
+            pass
+        try:
+            return int(self._filter_max_value)
+        except (TypeError, ValueError):
+            return FILTER_RESULT_MAX
+
+    def _save_filter_max(self, value: int):
+        """spinbox 值变化：存内存 + 持久化到 config，并触发重筛。"""
+        self._filter_max_value = int(value)
+        try:
+            cfg = config.load()
+            cfg['log_view_filter_result_max'] = int(value)
+            config.save(cfg)
+        except Exception:
+            pass
+        self._apply_filter()
 
     def _build_widgets(self):
         # 自定义 container：覆盖 minimumSizeHint 让 DockWidget 能拖到任意窄
@@ -1854,6 +1885,30 @@ class _QtFilterPanel(QDockWidget):
         bl.addWidget(self._apply_btn)
         bl.addWidget(self._clear_btn)
         v.addWidget(btn_row)
+        # 筛选结果行数上限 spinbox（可配置，持久化到 config）
+        self._max_rows_box = QSpinBox()
+        self._max_rows_box.setRange(1000, 2_000_000)
+        self._max_rows_box.setSingleStep(10000)
+        self._max_rows_box.setValue(int(self._filter_max_value))
+        self._max_rows_box.setGroupSeparatorShown(True)
+        self._max_rows_box.setToolTip(
+            '筛选结果最大行数（超过截断）。修改后自动重新筛选并保存设置')
+        # 编辑延迟提交：避免输入途中反复触发重筛
+        from PySide6.QtCore import QTimer
+        self._max_rows_edit_timer = QTimer(self)
+        self._max_rows_edit_timer.setSingleShot(True)
+        self._max_rows_edit_timer.setInterval(400)
+        self._max_rows_edit_timer.timeout.connect(
+            lambda: self._save_filter_max(self._max_rows_box.value()))
+        self._max_rows_box.valueChanged.connect(
+            lambda _v: self._max_rows_edit_timer.start())
+        max_row = QWidget()
+        ml = QHBoxLayout(max_row)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(6)
+        ml.addWidget(QLabel('上限'))
+        ml.addWidget(self._max_rows_box, 1)
+        v.addWidget(max_row)
         # 结果 Tree
         self._tree = QTreeWidget()
         self._tree.setColumnCount(2)
@@ -1874,7 +1929,7 @@ class _QtFilterPanel(QDockWidget):
         # 内部控件不卡最小宽度，允许 DockWidget 拖到任意窄
         for w in (self._level_box, self._regex_edit, self._tree,
                   self._apply_btn, self._clear_btn, self._info_lbl,
-                  btn_row, container, level_row, regex_row):
+                  self._max_rows_box, btn_row, container, level_row, regex_row):
             try:
                 w.setMinimumWidth(0)
                 w.setMinimumSize(0, 0)
@@ -1971,7 +2026,7 @@ class _QtFilterPanel(QDockWidget):
         self._info_lbl.setText('筛选中…')
         # Signal 自动跨线程派发到 worker 所在线程的事件循环
         self._filter_worker.start_run.emit(
-            ep, lines, tags, text, level_idx, FILTER_RESULT_MAX)
+            ep, lines, tags, text, level_idx, self._get_filter_max())
 
     @Slot(int, list, int, str)
     def _on_filter_done(self, epoch: int, filtered: list, total: int, info: str):
@@ -1992,7 +2047,7 @@ class _QtFilterPanel(QDockWidget):
         self._info_lbl.setText(msg)
 
     def _apply_filter_incremental(self, new_count: int):
-        """增量筛选：扫 [last, last+new_count)，cap = FILTER_RESULT_MAX - len(already)。"""
+        """增量筛选：扫 [last, last+new_count)，cap = _get_filter_max() - len(already)。"""
         if self._tab is None:
             return
         lines = self._tab.all_lines()
@@ -2002,14 +2057,15 @@ class _QtFilterPanel(QDockWidget):
             regex = re.compile(text) if text else None
         except re.error:
             return
-        if len(self._filtered_idx) >= FILTER_RESULT_MAX:
+        result_cap = self._get_filter_max()
+        if len(self._filtered_idx) >= result_cap:
             self._last_scanned_idx = len(lines)
             return
         start = self._last_scanned_idx
         end = min(len(lines), start + new_count)
         new_filtered: list[int] = []
         for i in range(start, end):
-            if len(self._filtered_idx) + len(new_filtered) >= FILTER_RESULT_MAX:
+            if len(self._filtered_idx) + len(new_filtered) >= result_cap:
                 break
             ln = lines[i]
             tag = tags[i] if i < len(tags) else 'log'
