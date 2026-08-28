@@ -49,13 +49,45 @@ def test_classify_log():
 # ---- _convert_ts ----
 
 def test_convert_ts_with_13_digit_timestamp():
-    """13 位 ms 时间戳应转换为 [HH:MM:SS.mmm] 前缀。"""
+    """13 位 ms 时间戳应转换为 [MM-DD HH:MM:SS.mmm] 前缀（含日期，无年份）。"""
     from serial_debug.ui.qt_log_viewer_window import _convert_ts
     # 1750000000000 = 2025-06-15 16:53:20 UTC (本地时区差异)
     result = _convert_ts('1750000000000 some log')
     assert result.startswith('[')
     assert '.' in result
     assert '] ' in result
+
+
+def test_convert_ts_format_includes_date_without_year():
+    """时间戳格式应为 [MM-DD HH:MM:SS.mmm]，含月日，无年份，毫秒 3 位。"""
+    import re
+
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    result = _convert_ts('1750000000000 some log')
+    # 精确匹配：[MM-DD HH:MM:SS.mmm] 后跟一个空格
+    m = re.match(r'^\[(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})\] $', result)
+    assert m is not None, f'格式不符：{result!r}'
+    mm, dd, hh, mi, ss, ms = m.groups()
+    assert 1 <= int(mm) <= 12
+    assert 1 <= int(dd) <= 31
+    assert 0 <= int(hh) <= 23
+    assert 0 <= int(mi) <= 59
+    assert 0 <= int(ss) <= 59
+    assert 0 <= int(ms) <= 999
+
+
+def test_convert_ts_millisecond_padding():
+    """毫秒位应补零到 3 位（如 5 → 005）。"""
+    from datetime import datetime
+
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    # 用 datetime 反推：本地 2026-01-01 00:00:00.005
+    dt = datetime(2026, 1, 1, 0, 0, 0, 5000)  # 5000 us = 5 ms
+    ms13 = int(dt.timestamp() * 1000)
+    result = _convert_ts(f'{ms13} hello')
+    assert '.005] ' in result, f'毫秒补零失败：{result!r}'
 
 
 def test_convert_ts_without_timestamp_returns_empty():

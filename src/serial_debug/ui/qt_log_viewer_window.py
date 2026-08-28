@@ -88,7 +88,11 @@ def _classify(line: str) -> str:
 
 
 def _convert_ts(line: str) -> str:
-    """13 位 ms 时间戳 → [HH:MM:SS.mmm] 前缀。失败返回空串。"""
+    """13 位 ms 时间戳 → [MM-DD HH:MM:SS.mmm] 前缀（不含年份）。失败返回空串。
+
+    格式：月-日 时:分:秒.毫秒。毫秒仍手拼以避免 strftime 的 %f 位数不可控
+    和 Windows 上 strftime 对 %f 支持不一致的问题。
+    """
     m = TS_RE.match(line)
     if not m:
         return ''
@@ -97,7 +101,7 @@ def _convert_ts(line: str) -> str:
     except ValueError:
         return ''
     dt = datetime.fromtimestamp(ms / 1000.0)
-    return dt.strftime('[%H:%M:%S.') + f'{ms % 1000:03d}] '
+    return dt.strftime('[%m-%d %H:%M:%S.') + f'{ms % 1000:03d}] '
 
 
 # ---- 行号区 ----------------------------------------------------------
@@ -420,8 +424,9 @@ class _QtLogViewTab(QWidget):
         for i, ln in enumerate(lines_to_insert):
             tag = tags_to_insert[i]
             fmt = self._format_for_tag(tag)
-            # 时间戳前缀转换：原始行替换行首 13 位 ts → [HH:MM:SS.mmm]
-            display = _convert_ts(ln) + ln if _convert_ts(ln) else ln
+            # 时间戳前缀转换：原始行替换行首 13 位 ts → [MM-DD HH:MM:SS.mmm]
+            ts_prefix = _convert_ts(ln)
+            display = ts_prefix + ln if ts_prefix else ln
             cursor.insertText(display + '\n', fmt)
         # 末尾占位符（如果还有未加载）
         if end < len(self._all_lines):
@@ -816,7 +821,8 @@ class _QtLogViewTab(QWidget):
             ln = self._all_lines[i]
             tag = self._line_tags[i]
             fmt = self._format_for_tag(tag)
-            display = _convert_ts(ln) + ln if _convert_ts(ln) else ln
+            ts_prefix = _convert_ts(ln)
+            display = ts_prefix + ln if ts_prefix else ln
             cursor.insertText(display + '\n', fmt)
         if end < len(self._all_lines):
             placeholder_text = f'--- 还有 {len(self._all_lines) - end} 行未加载，滚到底部自动加载 ---'
