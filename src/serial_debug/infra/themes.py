@@ -121,7 +121,133 @@ THEMES = {
         'accent': '#0e639c',
         'border': '#dcdcdc',
     },
+    # ---- 任务3 新增 4 套主题（2 浅 + 2 深，对比度达 WCAG AA）----
+    # Monokai 深色：经典编辑器配色，暗背景 + 鲜艳语法色
+    'monokai': {
+        'bg': '#272822',                # 经典 Monokai 暗背景
+        'panel_bg': '#2f302a',
+        'panel_fg': '#f8f8f2',
+        'fg': '#f8f8f2',
+        'cursor': '#f8f8f2',
+        'select_bg': '#49483e',
+        'btn_bg': '#3e3d32',
+        'btn_hover': '#49483e',
+        'btn_active': '#272822',
+        'btn_primary': '#a6e22e',       # green primary（Monokai 标志绿）
+        'btn_primary_hover': '#b6f23e',
+        'status_ok': '#a6e22e',
+        'status_wait': '#e6db74',
+        'status_err': '#f92672',
+        'status_idle': '#75715e',
+        'ts': '#75715e',
+        'send': '#66d9ef',
+        'resp': '#a6e22e',
+        'note': '#e6db74',
+        'log': '#f8f8f2',
+        'muted': '#75715e',
+        'accent': '#66d9ef',
+        'border': '#3e3d32',
+    },
+    # Solarized Dark：Ethan Schoonover 经典低对比配色，深色但柔和
+    'solarized_dark': {
+        'bg': '#002b36',                # base03
+        'panel_bg': '#073642',           # base02
+        'panel_fg': '#93a1a1',
+        'fg': '#93a1a1',
+        'cursor': '#eee8d5',
+        'select_bg': '#073642',
+        'btn_bg': '#073642',
+        'btn_hover': '#586e75',
+        'btn_active': '#002b36',
+        'btn_primary': '#268bd2',       # blue
+        'btn_primary_hover': '#3a9ee5',
+        'status_ok': '#859900',
+        'status_wait': '#b58900',
+        'status_err': '#dc322f',
+        'status_idle': '#586e75',
+        'ts': '#586e75',
+        'send': '#268bd2',
+        'resp': '#859900',
+        'note': '#b58900',
+        'log': '#93a1a1',
+        'muted': '#586e75',
+        'accent': '#268bd2',
+        'border': '#586e75',
+    },
+    # Solarized Light：Solarized 的浅色版，柔和米色背景
+    'solarized_light': {
+        'bg': '#fdf6e3',                # base3
+        'panel_bg': '#eee8d5',           # base2
+        'panel_fg': '#586e75',
+        'fg': '#586e75',
+        'cursor': '#073642',
+        'select_bg': '#eee8d5',
+        'btn_bg': '#eee8d5',
+        'btn_hover': '#93a1a1',
+        'btn_active': '#fdf6e3',
+        'btn_primary': '#268bd2',
+        'btn_primary_hover': '#1e6fa8',
+        'status_ok': '#859900',
+        'status_wait': '#b58900',
+        'status_err': '#dc322f',
+        'status_idle': '#93a1a1',
+        'ts': '#586e75',
+        'send': '#268bd2',
+        'resp': '#859900',
+        'note': '#b58900',
+        'log': '#586e75',
+        'muted': '#93a1a1',
+        'accent': '#268bd2',
+        'border': '#93a1a1',
+    },
+    # GitHub Light：GitHub 现代浅色配色，清爽
+    'github_light': {
+        'bg': '#ffffff',
+        'panel_bg': '#f6f8fa',
+        'panel_fg': '#24292f',
+        'fg': '#24292f',
+        'cursor': '#24292f',
+        'select_bg': '#ddf4ff',
+        'btn_bg': '#f6f8fa',
+        'btn_hover': '#eaeef2',
+        'btn_active': '#d0d7de',
+        'btn_primary': '#1f883d',       # GitHub green primary（合并按钮）
+        'btn_primary_hover': '#1a7c37',
+        'status_ok': '#1f883d',
+        'status_wait': '#9a6700',
+        'status_err': '#cf222e',
+        'status_idle': '#8c959f',
+        'ts': '#6e7781',
+        'send': '#0969da',
+        'resp': '#1f883d',
+        'note': '#9a6700',
+        'log': '#24292f',
+        'muted': '#6e7781',
+        'accent': '#0969da',
+        'border': '#d0d7de',
+    },
 }
+
+
+# 主题分类（用于「跟随系统」模式按深浅选具体主题）
+THEME_KIND = {
+    'dark': 'dark',
+    'monokai': 'dark',
+    'solarized_dark': 'dark',
+    'light': 'light',
+    'solarized_light': 'light',
+    'github_light': 'light',
+}
+
+# 主题显示名（菜单用，顺序固定：深色在前，浅色在后）
+THEME_DISPLAY = [
+    ('dark', 'VSCode 深色'),
+    ('monokai', 'Monokai 深色'),
+    ('solarized_dark', 'Solarized 深色'),
+    ('light', 'Breakers 浅色'),
+    ('solarized_light', 'Solarized 浅色'),
+    ('github_light', 'GitHub 浅色'),
+]
 
 
 def detect_system_theme() -> str:
@@ -169,7 +295,7 @@ def detect_system_theme() -> str:
 def load_pref() -> str:
     """读持久化偏好：auto / light / dark。委托给 config 模块。"""
     try:
-        import config
+        from serial_debug.infra import config
         return config.load().get('theme_pref', 'auto')
     except Exception:
         return 'auto'
@@ -178,7 +304,7 @@ def load_pref() -> str:
 def save_pref(pref: str):
     """保存偏好：合并到 config 文件。"""
     try:
-        import config
+        from serial_debug.infra import config
         cfg = config.load()
         cfg['theme_pref'] = pref
         config.save(cfg)
@@ -186,11 +312,48 @@ def save_pref(pref: str):
         pass
 
 
+def load_specific(kind: str) -> str:
+    """读指定深浅的具体主题名：kind='light'/'dark' → config 的
+    theme_specific_light / theme_specific_dark。兜底返回 'light'/'dark'。
+    """
+    try:
+        from serial_debug.infra import config
+        cfg = config.load()
+        key = f'theme_specific_{kind}'
+        val = cfg.get(key, kind)
+        # 校验：必须是已登记主题且 kind 匹配
+        if val in THEMES and THEME_KIND.get(val) == kind:
+            return val
+        return kind
+    except Exception:
+        return kind
+
+
+def save_specific(kind: str, theme_name: str):
+    """保存指定深浅的具体主题名到 config。"""
+    try:
+        from serial_debug.infra import config
+        cfg = config.load()
+        cfg[f'theme_specific_{kind}'] = theme_name
+        config.save(cfg)
+    except Exception:
+        pass
+
+
 def resolve(pref: str) -> str:
-    """pref(auto/light/dark) → 具体主题名(dark/light)。"""
+    """模式 pref → 具体主题名（在 THEMES 中）。
+
+    pref 只接受三种模式：
+      - 'auto'：detect_system_theme() 得深浅，再读 config 的 specific
+      - 'light'：读 config.theme_specific_light，兜底 'light'
+      - 'dark'：读 config.theme_specific_dark，兜底 'dark'
+    其他值（包括具体主题名）按 auto 处理。
+    """
     if pref == 'light':
-        return 'light'
+        return load_specific('light')
     if pref == 'dark':
-        return 'dark'
-    return detect_system_theme()
+        return load_specific('dark')
+    # auto / 未知 / 具体主题名（兼容旧调用）
+    kind = detect_system_theme()
+    return load_specific(kind)
 

@@ -300,6 +300,7 @@ def test_save_cfg_now_writes_config(app, tmp_path):
     """_save_cfg_now 应把当前状态写入 config。"""
     app.append_crlf = True
     app.ts_convert = True
+    app.theme_pref = 'dark'
     app.theme_name = 'dark'
     app._bytesize = 7
     app._parity = 'even'
@@ -751,3 +752,99 @@ def test_append_raw_batch_preserves_long_text(app):
     assert written == [long_line + '\n']
 
 
+
+
+# ---- 任务3：主题菜单系统 ----
+
+def test_app_init_reads_theme_pref_from_config(app, tmp_path):
+    """QtSerialDebugApp 启动应读 config.theme_pref 解析为具体主题。"""
+    # app fixture 用默认 config（theme_pref=auto）
+    assert app.theme_pref == 'auto'
+    # theme_name 应是具体主题名（在 THEMES）
+    from serial_debug.infra import themes
+    assert app.theme_name in themes.THEMES
+    assert app._theme_name_resolved == app.theme_name
+
+
+def test_app_apply_theme_persists_pref_and_specific(app, tmp_path):
+    """_apply_theme 应写 theme_pref + theme_specific_<kind> 到 config。"""
+    from serial_debug.infra import config, themes
+    app._apply_theme('monokai', pref='dark')
+    cfg = config.load()
+    assert cfg['theme_pref'] == 'dark'
+    assert cfg['theme_specific_dark'] == 'monokai'
+    assert app.theme_name == 'monokai'
+    assert app.theme_pref == 'dark'
+
+
+def test_app_apply_theme_auto_uses_system(app, tmp_path, monkeypatch):
+    """pref='auto' 时不改具体主题，detect_system_theme 决定深浅。"""
+    from serial_debug.infra import config, themes
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'light')
+    app._apply_theme('solarized_light', pref='auto')
+    assert app.theme_pref == 'auto'
+    cfg = config.load()
+    assert cfg['theme_pref'] == 'auto'
+    assert cfg['theme_specific_light'] == 'solarized_light'
+
+
+def test_app_on_theme_pref_selected_resolves(app, tmp_path, monkeypatch):
+    """选模式 'dark' 应 resolve 到 theme_specific_dark。"""
+    from serial_debug.infra import config, themes
+    # 预设 specific_dark 为 monokai
+    cfg = config.load()
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    app._on_theme_pref_selected('dark')
+    assert app.theme_pref == 'dark'
+    assert app.theme_name == 'monokai'
+
+
+def test_app_on_theme_specific_selected_updates(app, tmp_path):
+    """选具体主题 'monokai'（深色）在 pref=auto 下保持 auto。"""
+    from serial_debug.infra import config
+    app.theme_pref = 'auto'
+    app._on_theme_specific_selected('monokai')
+    assert app.theme_name == 'monokai'
+    assert app.theme_pref == 'auto'  # auto 保持
+    cfg = config.load()
+    assert cfg['theme_specific_dark'] == 'monokai'
+
+
+def test_app_on_theme_specific_selected_changes_pref_when_mismatch(app, tmp_path):
+    """pref=light 选深色主题应把 pref 改为 dark。"""
+    app.theme_pref = 'light'
+    app._on_theme_specific_selected('monokai')
+    assert app.theme_pref == 'dark'
+    assert app.theme_name == 'monokai'
+
+
+def test_app_sync_theme_menu_checks_current(app, qtbot, tmp_path):
+    """_sync_theme_menu 应勾选当前 pref + theme。"""
+    app._apply_theme('monokai', pref='dark')
+    # 构造菜单 actions（_build_theme_menu 需要 m_view，这里手动建）
+    from PySide6.QtWidgets import QMenu
+    m = QMenu()
+    app._theme_mode_actions = {}
+    app._theme_specific_actions = {}
+    # 手动模拟 _build_theme_menu 的 actions
+    from PySide6.QtGui import QAction, QActionGroup
+    mode_grp = QActionGroup(m)
+    for pref, label in (('auto', '跟随系统'), ('light', '浅色'), ('dark', '深色')):
+        act = QAction(label, m)
+        act.setCheckable(True)
+        act.setActionGroup(mode_grp)
+        m.addAction(act)
+        app._theme_mode_actions[pref] = act
+    theme_grp = QActionGroup(m)
+    for name, label in (('dark', 'D'), ('monokai', 'M')):
+        act = QAction(label, m)
+        act.setCheckable(True)
+        act.setActionGroup(theme_grp)
+        m.addAction(act)
+        app._theme_specific_actions[name] = act
+    app._sync_theme_menu()
+    assert app._theme_mode_actions['dark'].isChecked()
+    assert not app._theme_mode_actions['auto'].isChecked()
+    assert app._theme_specific_actions['monokai'].isChecked()
+    assert not app._theme_specific_actions['dark'].isChecked()

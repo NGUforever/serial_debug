@@ -2878,6 +2878,115 @@ def test_build_menubar_creates_menus(monitor, qtbot):
     win.deleteLater()
 
 
+# ---- 任务3：主题菜单系统（monitor）----
+
+def test_monitor_build_menubar_creates_theme_menu(monitor, qtbot):
+    """_build_menubar 应建出主题子菜单 + mode/specific actions。"""
+    from PySide6.QtWidgets import QMainWindow
+    win = QMainWindow()
+    monitor._build_menubar(
+        win,
+        _add_plot=lambda: None,
+        _edit_plot=lambda: None,
+        _del_plot=lambda: None,
+        _open_log=lambda: None,
+        _mock_10w=lambda: None,
+        _mock_100w=lambda: None,
+        _clear=lambda: None,
+        _toggle_theme=lambda: None,
+        _toggle_sidebar=lambda: None,
+        _show_stats=lambda: None,
+        _export_csv=lambda: None,
+        _connect_serial=lambda: None,
+        _disconnect_serial=lambda: None,
+        _perf_test=lambda: None,
+        _import_plots_cfg=lambda: None,
+        _export_plots_cfg=lambda: None,
+    )
+    # 主题菜单 actions 应被建出
+    assert hasattr(monitor, '_theme_mode_actions')
+    assert hasattr(monitor, '_theme_specific_actions')
+    assert set(monitor._theme_mode_actions) == {'auto', 'light', 'dark'}
+    assert len(monitor._theme_specific_actions) == 6
+    win.deleteLater()
+
+
+def test_monitor_apply_theme_to_window_updates_theme_name(monitor, qtbot, monkeypatch, tmp_path):
+    """_apply_theme_to_window 应更新 theme_name + 不抛（pyqtgraph 可能无 GUI）。"""
+    # 构造 _plot_widgets 为空，避免真 pyqtgraph 渲染
+    monitor._plot_widgets = []
+    monitor._visible_plots = []
+    monitor._curves = []
+    monitor._app = None  # apply_qss 会吞 None
+    monitor._apply_theme_to_window('monokai')
+    assert monitor.theme_name == 'monokai'
+
+
+def test_monitor_apply_theme_with_pref_persists(monitor, qtbot, monkeypatch, tmp_path):
+    """_apply_theme_with_pref 应持久化 pref + specific。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    monitor._plot_widgets = []
+    monitor._visible_plots = []
+    monitor._curves = []
+    monitor._app = None
+    monitor._apply_theme_with_pref('solarized_light', pref='light')
+    from serial_debug.infra import config
+    cfg = config.load()
+    assert cfg['theme_pref'] == 'light'
+    assert cfg['theme_specific_light'] == 'solarized_light'
+    assert monitor.theme_name == 'solarized_light'
+
+
+def test_monitor_on_theme_pref_selected_auto(monitor, qtbot, monkeypatch, tmp_path):
+    """选 'auto' 应 resolve 到系统深浅 + specific。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config, themes
+    importlib.reload(config)
+    monitor._plot_widgets = []
+    monitor._visible_plots = []
+    monitor._curves = []
+    monitor._app = None
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'light')
+    cfg = config.load()
+    cfg['theme_specific_light'] = 'github_light'
+    config.save(cfg)
+    monitor._on_theme_pref_selected('auto')
+    assert monitor.theme_pref == 'auto'
+    assert monitor.theme_name == 'github_light'
+
+
+def test_monitor_sync_theme_menu_checks_current(monitor, qtbot):
+    """_sync_theme_menu 应勾选当前 pref + theme。"""
+    from PySide6.QtGui import QAction, QActionGroup
+    from PySide6.QtWidgets import QMainWindow
+    win = QMainWindow()
+    m = win.menuBar().addMenu('视图')
+    monitor.theme_pref = 'dark'
+    monitor.theme_name = 'monokai'
+    monitor._theme_mode_actions = {}
+    monitor._theme_specific_actions = {}
+    mode_grp = QActionGroup(m)
+    for pref, label in (('auto', '跟随系统'), ('light', '浅色'), ('dark', '深色')):
+        act = QAction(label, m)
+        act.setCheckable(True)
+        act.setActionGroup(mode_grp)
+        m.addAction(act)
+        monitor._theme_mode_actions[pref] = act
+    theme_grp = QActionGroup(m)
+    for name, label in (('dark', 'D'), ('monokai', 'M')):
+        act = QAction(label, m)
+        act.setCheckable(True)
+        act.setActionGroup(theme_grp)
+        m.addAction(act)
+        monitor._theme_specific_actions[name] = act
+    monitor._sync_theme_menu()
+    assert monitor._theme_mode_actions['dark'].isChecked()
+    assert monitor._theme_specific_actions['monokai'].isChecked()
+    win.deleteLater()
+
+
 def test_build_menubar_no_optional_callbacks(monitor, qtbot):
     """无 _import_plots_cfg / _export_plots_cfg 时不应抛。"""
     from PySide6.QtWidgets import QMainWindow

@@ -29,13 +29,19 @@ def _qss_color(c: str) -> str:
 def build_qss(theme_name: str) -> str:
     """根据主题名生成全局 QSS 样式表。
 
-    :param theme_name: 'dark' / 'light'
+    :param theme_name: 具体主题名（dark/light/monokai/solarized_dark/
+        solarized_light/github_light）。若传入模式名（auto/light/dark），
+        会经 themes.resolve 解析为具体主题。
     :return: QSS 字符串，用 QApplication.setStyleSheet() 应用
     """
-    try:
-        t = themes.THEMES[themes.resolve(theme_name)]
-    except Exception:
-        t = themes.THEMES['dark']
+    t = themes.THEMES.get(theme_name)
+    if t is None:
+        # 兼容旧调用：传入 auto/light/dark 模式名 → 解析为具体主题
+        try:
+            resolved = themes.resolve(theme_name)
+            t = themes.THEMES[resolved]
+        except Exception:
+            t = themes.THEMES['dark']
 
     bg = _qss_color(t['bg'])
     panel_bg = _qss_color(t['panel_bg'])
@@ -393,16 +399,21 @@ def apply_qss(app, theme_name: str) -> None:
     """给 QApplication 应用 QSS 样式表。
 
     :param app: PySide6.QtWidgets.QApplication 实例
-    :param theme_name: 'dark' / 'light' / 'auto'
+    :param theme_name: 具体主题名或模式名（auto/light/dark）。
+        具体主题名直接用；模式名经 resolve 解析。
     """
     try:
         from PySide6.QtGui import QFont
     except Exception:
         return
-    try:
-        resolved = themes.resolve(theme_name)
-    except Exception:
-        resolved = 'dark'
+    # 具体主题名直接用，否则 resolve 模式
+    if theme_name in themes.THEMES:
+        resolved = theme_name
+    else:
+        try:
+            resolved = themes.resolve(theme_name)
+        except Exception:
+            resolved = 'dark'
     try:
         qss = build_qss(resolved)
         app.setStyleSheet(qss)
@@ -417,9 +428,13 @@ def palette(theme_name: str) -> dict:
     """返回 Qt 用的色板字典（与 tkinter 共用）。
 
     用于在 pyqtgraph / 自绘控件里直接取颜色（QColor 构造）。
+    theme_name 可以是具体主题名或模式名。
     """
-    try:
-        t = themes.THEMES[themes.resolve(theme_name)]
-    except Exception:
-        t = themes.THEMES['dark']
+    t = themes.THEMES.get(theme_name)
+    if t is None:
+        try:
+            resolved = themes.resolve(theme_name)
+            t = themes.THEMES[resolved]
+        except Exception:
+            t = themes.THEMES['dark']
     return dict(t)

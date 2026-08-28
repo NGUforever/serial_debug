@@ -33,6 +33,7 @@ from serial_debug.core.panel_vars import (
     ImuMonitorPanel,
     MotorMonitorPanel,
 )
+from serial_debug.infra import themes
 from serial_debug.infra.error_log import log_exc
 
 
@@ -1059,7 +1060,13 @@ class QtMonitorWindow:
     def __init__(self, log_path: str | None = None,
                  theme_name: str = 'auto'):
         self.log_path = log_path
-        self.theme_name = theme_name
+        # theme_name 可以是模式（auto/light/dark）或具体主题名
+        self.theme_pref = (theme_name if theme_name in ('auto', 'light', 'dark')
+                          else themes.load_pref())
+        if theme_name in themes.THEMES:
+            self.theme_name = theme_name
+        else:
+            self.theme_name = themes.resolve(self.theme_pref)
         self._app = None
         self._win = None
         # 变量数据：{var_name: list[(ts, val)]}——始终是 list，实时 feed 依赖 append
@@ -1863,31 +1870,11 @@ class QtMonitorWindow:
             win.statusBar().showMessage('已清空')
 
         def _toggle_theme():
-            cur = qt_theme.palette(self.theme_name).get('bg', '#1e1e1e')
-            if cur == '#1e1e1e':
-                self.theme_name = 'light'
-            else:
-                self.theme_name = 'dark'
-            qt_theme.apply_qss(self._app, self.theme_name)
-            t = qt_theme.palette(self.theme_name)
-            try:
-                pg.setConfigOption('background',
-                                   t.get('panel_bg', t.get('bg', '#1e1e1e')))
-                pg.setConfigOption('foreground', t.get('fg', '#cccccc'))
-            except Exception:
-                pass
-            for pw in self._plot_widgets:
-                try:
-                    pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
-                    for axis_name in ('left', 'bottom'):
-                        axis = pw.getAxis(axis_name)
-                        if axis is not None:
-                            axis.setPen(t.get('muted', '#cccccc'))
-                            axis.setTextPen(t.get('fg', '#cccccc'))
-                except Exception:
-                    pass
-            self._curves = [{} for _ in self._visible_plots]
-            self._refresh_plot()
+            # 工具栏按钮：在当前深浅的两个默认主题间切换
+            cur_kind = themes.THEME_KIND.get(self.theme_name, 'dark')
+            new_kind = 'light' if cur_kind == 'dark' else 'dark'
+            new_theme = themes.load_specific(new_kind)
+            self._apply_theme_with_pref(new_theme, pref=new_kind)
 
         def _toggle_sidebar():
             self._toggle_sidebar()
@@ -2087,7 +2074,36 @@ class QtMonitorWindow:
         self._refresh_sidebar_visibility()
         # 恢复持久化的窗口几何
         self._restore_geometry()
+        # 任务3：运行中主题联动——轮询 config 主题变化（主程序切主题时子进程跟随）
+        self._start_theme_watch()
         return win
+
+    def _start_theme_watch(self):
+        """启动 5 秒轮询：检查 config 主题是否与本进程不一致，是则应用。
+
+        跨进程联动：主程序切主题写 config，子进程此处发现变化并跟随。
+        低频（5s）不影响性能，关闭窗口时 timer 随 win 释放。
+        """
+        from PySide6.QtCore import QTimer
+        self._theme_watch_timer = QTimer(self._win)
+        self._theme_watch_timer.setInterval(5000)
+        self._theme_watch_timer.timeout.connect(self._check_theme_changed)
+        self._theme_watch_timer.start()
+
+    def _check_theme_changed(self):
+        """检查 config 主题与本进程是否一致，不一致则应用。"""
+        try:
+            from serial_debug.infra import config
+            cfg = config.load()
+            pref = cfg.get('theme_pref', 'auto')
+            # 按当前 pref 解析应有主题
+            expected = themes.resolve(pref)
+            if expected != self.theme_name:
+                self.theme_pref = pref
+                self._apply_theme_to_window(expected)
+        except Exception:
+            pass
+
 
     def _loaded_var_meta(self) -> list[dict]:
         """返回当前已加载变量的元数据 + 静态注册表 + 自定义解析器发现的变量。"""
@@ -2174,6 +2190,9 @@ class QtMonitorWindow:
         act_theme.setShortcut('Ctrl+T')
         act_theme.triggered.connect(_toggle_theme)
         m_view.addAction(act_theme)
+        m_view.addSeparator()
+        # 主题子菜单（任务3：模式组 + 主题组）
+        self._build_theme_menu(m_view, win)
 
         # 工具菜单
         m_tools = mb.addMenu('工具')
@@ -3424,6 +3443,97 @@ class QtMonitorWindow:
         self._serial = None
         self._serial_thread = None
         self._serial_stop = None
+
+    # ---- 主题（任务3）------------------------------------------------
+    def _apply_theme_to_window(self, theme_name: str):
+        """应用具体主题到监视窗口（QSS + pyqtgraph 背景/坐标轴）。"""
+        self.theme_name = theme_name
+        from serial_debug.ui import qt_theme
+        qt_theme.apply_qss(self._app, theme_name)
+        t = qt_theme.palette(theme_name)
+        try:
+            import pyqtgraph as pg
+            pg.setConfigOption('background',
+                               t.get('panel_bg', t.get('bg', '#1e1e1e')))
+            pg.setConfigOption('foreground', t.get('fg', '#cccccc'))
+        except Exception:
+            pass
+        for pw in self._plot_widgets:
+            try:
+                pw.setBackground(t.get('panel_bg', t.get('bg', '#1e1e1e')))
+                for axis_name in ('left', 'bottom'):
+                    axis = pw.getAxis(axis_name)
+                    if axis is not None:
+                        axis.setPen(t.get('muted', '#cccccc'))
+                        axis.setTextPen(t.get('fg', '#cccccc'))
+            except Exception:
+                pass
+        self._curves = [{} for _ in self._visible_plots]
+        self._refresh_plot()
+        self._sync_theme_menu()
+
+    def _apply_theme_with_pref(self, theme_name: str, pref: str | None = None):
+        """应用主题 + 更新模式 + 持久化（任务3）。"""
+        if pref is not None:
+            self.theme_pref = pref
+        try:
+            themes.save_pref(self.theme_pref)
+            kind = themes.THEME_KIND.get(theme_name)
+            if kind:
+                themes.save_specific(kind, theme_name)
+        except Exception:
+            pass
+        self._apply_theme_to_window(theme_name)
+
+    def _on_theme_pref_selected(self, pref: str):
+        specific = themes.resolve(pref)
+        self._apply_theme_with_pref(specific, pref=pref)
+
+    def _on_theme_specific_selected(self, theme_name: str):
+        kind = themes.THEME_KIND.get(theme_name)
+        if kind is None:
+            return
+        new_pref = self.theme_pref
+        if self.theme_pref != 'auto' and self.theme_pref != kind:
+            new_pref = kind
+        self._apply_theme_with_pref(theme_name, pref=new_pref)
+
+    def _build_theme_menu(self, parent_menu, parent_widget):
+        from PySide6.QtGui import QActionGroup
+        m_theme = parent_menu.addMenu('主题')
+        mode_grp = QActionGroup(m_theme)
+        mode_grp.setExclusive(True)
+        self._theme_mode_actions = {}
+        for pref, label in (('auto', '跟随系统'),
+                            ('light', '浅色'),
+                            ('dark', '深色')):
+            act = m_theme.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(mode_grp)
+            act.triggered.connect(lambda _c=False, p=pref:
+                                   self._on_theme_pref_selected(p))
+            self._theme_mode_actions[pref] = act
+        m_theme.addSeparator()
+        theme_grp = QActionGroup(m_theme)
+        theme_grp.setExclusive(True)
+        self._theme_specific_actions = {}
+        for name, label in themes.THEME_DISPLAY:
+            act = m_theme.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(theme_grp)
+            act.triggered.connect(lambda _c=False, n=name:
+                                   self._on_theme_specific_selected(n))
+            self._theme_specific_actions[name] = act
+        self._sync_theme_menu()
+        return m_theme
+
+    def _sync_theme_menu(self):
+        pref = getattr(self, 'theme_pref', 'auto')
+        name = getattr(self, 'theme_name', 'dark')
+        for p, act in getattr(self, '_theme_mode_actions', {}).items():
+            act.setChecked(p == pref)
+        for n, act in getattr(self, '_theme_specific_actions', {}).items():
+            act.setChecked(n == name)
 
     # ---- 绘制 -------------------------------------------------------
     def _refresh_plot(self):

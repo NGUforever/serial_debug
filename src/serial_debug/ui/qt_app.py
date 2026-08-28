@@ -95,12 +95,20 @@ class QtSerialDebugApp:
     """Qt 主程序（包装类，UI 在 _create() 延迟构建）。"""
 
     def __init__(self, theme_name: str = 'auto'):
-        self.theme_name = theme_name
+        # theme_name 参数可以是模式（auto/light/dark）或具体主题名。
+        # 启动时读 config 的 theme_pref，解析为具体主题名存 self.theme_name。
+        self.theme_pref = (theme_name if theme_name in ('auto', 'light', 'dark')
+                           else themes.load_pref())
+        if theme_name in themes.THEMES:
+            # 传入具体主题名（如命令行指定）直接用
+            self.theme_name = theme_name
+        else:
+            self.theme_name = themes.resolve(self.theme_pref)
         self._app = None
         self._win = None
         # 配置
         self.cfg = config.load()
-        self._theme_name_resolved = themes.resolve(self.theme_name)
+        self._theme_name_resolved = self.theme_name
         # 串口后端
         self.backend = SerialBackend(on_status=self._on_backend_status)
         # 状态
@@ -299,14 +307,13 @@ class QtSerialDebugApp:
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
 
-        # 组3：主题切换
+        # 组3：主题切换（工具栏按钮：在当前深浅的两个默认主题间切换；
+        # 完整选择见视图菜单「主题」子菜单）
         def _toggle_theme():
-            cur = themes.resolve(self.theme_name)
-            self.theme_name = 'light' if cur == 'dark' else 'dark'
-            qt_theme.apply_qss(self._app, self.theme_name)
-            self._theme_name_resolved = themes.resolve(self.theme_name)
-            self._apply_theme_to_log()
-            self._save_cfg_debounced()
+            cur_kind = themes.THEME_KIND.get(self.theme_name, 'dark')
+            new_kind = 'light' if cur_kind == 'dark' else 'dark'
+            new_theme = themes.load_specific(new_kind)
+            self._apply_theme(new_theme, pref=new_kind)
         btn_theme = QPushButton('切换主题')
         try:
             from PySide6.QtWidgets import QStyle
@@ -578,6 +585,9 @@ class QtSerialDebugApp:
         self._act_statusbar.setChecked(True)
         self._act_statusbar.triggered.connect(self._toggle_statusbar)
         m_view.addAction(self._act_statusbar)
+        m_view.addSeparator()
+        # 主题子菜单（任务3：模式组 + 主题组）
+        self._build_theme_menu(m_view, win)
 
         # 帮助菜单
         m_help = mb.addMenu('帮助')
@@ -1055,6 +1065,100 @@ class QtSerialDebugApp:
             f'color: {t.get("fg", "#cccccc")};')
         self._update_status()
 
+    # ---- 主题菜单（任务3）----
+    def _apply_theme(self, theme_name: str, pref: str | None = None):
+        """应用具体主题 + 可选更新模式，持久化到 config。
+
+        :param theme_name: 具体主题名（dark/monokai/solarized_dark/...）
+        :param pref: 新模式 auto/light/dark；None 表示不改模式
+        """
+        self.theme_name = theme_name
+        self._theme_name_resolved = theme_name
+        if pref is not None:
+            self.theme_pref = pref
+        # 持久化：模式 + 对应深浅的 specific
+        try:
+            themes.save_pref(self.theme_pref)
+            kind = themes.THEME_KIND.get(theme_name)
+            if kind:
+                themes.save_specific(kind, theme_name)
+        except Exception:
+            pass
+        from serial_debug.ui import qt_theme
+        qt_theme.apply_qss(self._app, theme_name)
+        self._apply_theme_to_log()
+        self._save_cfg_debounced()
+        # 同步菜单勾选
+        self._sync_theme_menu()
+
+    def _on_theme_pref_selected(self, pref: str):
+        """模式组选择：跟随系统/浅色/深色 → 解析具体主题应用。"""
+        specific = themes.resolve(pref)
+        self._apply_theme(specific, pref=pref)
+
+    def _on_theme_specific_selected(self, theme_name: str):
+        """主题组选择：具体主题 → 应用，并更新对应深浅的 specific。"""
+        kind = themes.THEME_KIND.get(theme_name)
+        if kind is None:
+            return
+        # 若当前模式与该主题 kind 一致，保持模式；否则切到对应模式
+        # （选深色主题时若 pref=auto/light，改为 dark 让用户意图明确）
+        new_pref = self.theme_pref
+        if self.theme_pref == 'auto':
+            # auto 模式下选主题：保留 auto，只更新 specific
+            pass
+        elif self.theme_pref != kind:
+            new_pref = kind
+        self._apply_theme(theme_name, pref=new_pref)
+
+    def _build_theme_menu(self, parent_menu, parent_widget):
+        """在 parent_menu 下加「主题」子菜单，含模式组 + 主题组。
+
+        :param parent_menu: 父 QMenu（如 m_view）
+        :param parent_widget: menu 的 parent（self._win）
+        :return: 创建的 QMenu（供外部引用）
+        """
+        from PySide6.QtGui import QActionGroup
+        m_theme = parent_menu.addMenu('主题')
+
+        # 模式组：跟随系统 / 浅色 / 深色
+        mode_grp = QActionGroup(m_theme)
+        mode_grp.setExclusive(True)
+        self._theme_mode_actions = {}
+        for pref, label in (('auto', '跟随系统'),
+                            ('light', '浅色'),
+                            ('dark', '深色')):
+            act = m_theme.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(mode_grp)
+            act.triggered.connect(lambda _checked=False, p=pref:
+                                   self._on_theme_pref_selected(p))
+            self._theme_mode_actions[pref] = act
+        m_theme.addSeparator()
+
+        # 主题组：6 套主题
+        theme_grp = QActionGroup(m_theme)
+        theme_grp.setExclusive(True)
+        self._theme_specific_actions = {}
+        for name, label in themes.THEME_DISPLAY:
+            act = m_theme.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(theme_grp)
+            act.triggered.connect(lambda _checked=False, n=name:
+                                   self._on_theme_specific_selected(n))
+            self._theme_specific_actions[name] = act
+        self._sync_theme_menu()
+        return m_theme
+
+    def _sync_theme_menu(self):
+        """根据当前 theme_pref + theme_name 同步菜单勾选。"""
+        pref = getattr(self, 'theme_pref', 'auto')
+        name = getattr(self, 'theme_name', 'dark')
+        for p, act in getattr(self, '_theme_mode_actions', {}).items():
+            act.setChecked(p == pref)
+        for n, act in getattr(self, '_theme_specific_actions', {}).items():
+            act.setChecked(n == name)
+
     # ---- 菜单动作 -----------------------------------------------------
     def _open_qt_monitor(self):
         """启动数据监视窗口子进程（避免双事件循环冲突）。
@@ -1248,7 +1352,7 @@ class QtSerialDebugApp:
             cfg['append_crlf'] = self.append_crlf
             cfg['ts_convert_enabled'] = self.ts_convert
             cfg['raw_display_enabled'] = self.raw_display
-            cfg['theme_pref'] = self.theme_name
+            cfg['theme_pref'] = self.theme_pref
             cfg['bytesize'] = self._bytesize
             cfg['parity'] = self._parity
             cfg['stopbits'] = self._stopbits

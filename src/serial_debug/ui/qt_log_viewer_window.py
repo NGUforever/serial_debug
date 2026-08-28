@@ -1002,8 +1002,14 @@ class QtLogViewerWindow(QMainWindow):
     def __init__(self, path: str | None = None,
                  theme_name: str = 'auto'):
         super().__init__()
-        self._theme_name = theme_name
-        self._theme = themes.THEMES[themes.resolve(theme_name)]
+        # theme_name 可以是模式（auto/light/dark）或具体主题名
+        self._theme_pref = (theme_name if theme_name in ('auto', 'light', 'dark')
+                           else themes.load_pref())
+        if theme_name in themes.THEMES:
+            self._theme_name = theme_name
+        else:
+            self._theme_name = themes.resolve(self._theme_pref)
+        self._theme = themes.THEMES[self._theme_name]
         self._tabs: list[_QtLogViewTab] = []
         self._filter_panel: _QtFilterPanel | None = None  # Phase 2
         # 后台共享搜索线程：当前文件搜索 + 全局搜索都丢这里跑，避免阻塞 UI
@@ -1097,8 +1103,33 @@ class QtLogViewerWindow(QMainWindow):
         QShortcut(QKeySequence('Escape'), self,
                   activated=lambda: self._toggle_global_search(False))
 
+        # 任务3：运行中主题联动——轮询 config 主题变化
+        self._start_theme_watch()
+
         if path:
             self.open_file(path)
+
+    def _start_theme_watch(self):
+        """启动 5 秒轮询：主程序切主题写 config，本进程发现变化跟随。"""
+        from PySide6.QtCore import QTimer
+        self._theme_watch_timer = QTimer(self)
+        self._theme_watch_timer.setInterval(5000)
+        self._theme_watch_timer.timeout.connect(self._check_theme_changed)
+        self._theme_watch_timer.start()
+
+    def _check_theme_changed(self):
+        """检查 config 主题与本进程是否一致，不一致则应用。"""
+        try:
+            from serial_debug.infra import config
+            cfg = config.load()
+            pref = cfg.get('theme_pref', 'auto')
+            expected = themes.resolve(pref)
+            if expected != self._theme_name:
+                self._theme_pref = pref
+                self.apply_theme(expected)
+        except Exception:
+            pass
+
 
     # ---- 工具栏 -------------------------------------------------------
     def _build_toolbar(self):
@@ -1197,6 +1228,9 @@ class QtLogViewerWindow(QMainWindow):
         a.setShortcut('Ctrl+End')
         a.triggered.connect(self._jump_to_end)
         m_view.addAction(a)
+        m_view.addSeparator()
+        # 主题子菜单（任务3：模式组 + 主题组）
+        self._build_theme_menu(m_view)
         # 工具菜单
         m_tools = mb.addMenu('工具(T)')
         a = QAction('全局搜索…', self)
@@ -1476,19 +1510,87 @@ class QtLogViewerWindow(QMainWindow):
 
     # ---- 主题 + 关闭 -------------------------------------------------
     def apply_theme(self, theme_name):
+        """应用具体主题名 + 持久化 + 同步菜单。"""
         self._theme_name = theme_name
-        self._theme = themes.THEMES[themes.resolve(theme_name)]
+        self._theme = themes.THEMES.get(theme_name, themes.THEMES['dark'])
         qt_theme.apply_qss(self._app, theme_name)
         for tab in self._tabs:
             tab.apply_theme(self._theme)
         if self._filter_panel is not None:
             self._filter_panel.apply_theme(self._theme)
         self._global_search.apply_theme(self._theme)
+        self._sync_theme_menu()
+
+    def _apply_theme_with_pref(self, theme_name, pref=None):
+        """应用主题 + 更新模式 + 持久化（任务3）。"""
+        if pref is not None:
+            self._theme_pref = pref
+        self._theme_name = theme_name
+        try:
+            themes.save_pref(self._theme_pref)
+            kind = themes.THEME_KIND.get(theme_name)
+            if kind:
+                themes.save_specific(kind, theme_name)
+        except Exception:
+            pass
+        self.apply_theme(theme_name)
+
+    def _on_theme_pref_selected(self, pref: str):
+        specific = themes.resolve(pref)
+        self._apply_theme_with_pref(specific, pref=pref)
+
+    def _on_theme_specific_selected(self, theme_name: str):
+        kind = themes.THEME_KIND.get(theme_name)
+        if kind is None:
+            return
+        new_pref = self._theme_pref
+        if self._theme_pref != 'auto' and self._theme_pref != kind:
+            new_pref = kind
+        self._apply_theme_with_pref(theme_name, pref=new_pref)
+
+    def _build_theme_menu(self, parent_menu):
+        from PySide6.QtGui import QActionGroup
+        m_theme = parent_menu.addMenu('主题')
+        mode_grp = QActionGroup(m_theme)
+        mode_grp.setExclusive(True)
+        self._theme_mode_actions = {}
+        for pref, label in (('auto', '跟随系统'),
+                            ('light', '浅色'),
+                            ('dark', '深色')):
+            act = m_theme.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(mode_grp)
+            act.triggered.connect(lambda _c=False, p=pref:
+                                   self._on_theme_pref_selected(p))
+            self._theme_mode_actions[pref] = act
+        m_theme.addSeparator()
+        theme_grp = QActionGroup(m_theme)
+        theme_grp.setExclusive(True)
+        self._theme_specific_actions = {}
+        for name, label in themes.THEME_DISPLAY:
+            act = m_theme.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(theme_grp)
+            act.triggered.connect(lambda _c=False, n=name:
+                                   self._on_theme_specific_selected(n))
+            self._theme_specific_actions[name] = act
+        self._sync_theme_menu()
+        return m_theme
+
+    def _sync_theme_menu(self):
+        pref = getattr(self, '_theme_pref', 'auto')
+        name = getattr(self, '_theme_name', 'dark')
+        for p, act in getattr(self, '_theme_mode_actions', {}).items():
+            act.setChecked(p == pref)
+        for n, act in getattr(self, '_theme_specific_actions', {}).items():
+            act.setChecked(n == name)
 
     def _toggle_theme(self):
-        cur = themes.resolve(self._theme_name)
-        new = 'light' if cur == 'dark' else 'dark'
-        self.apply_theme(new)
+        """工具栏按钮：在当前深浅的两个默认主题间切换。"""
+        cur_kind = themes.THEME_KIND.get(self._theme_name, 'dark')
+        new_kind = 'light' if cur_kind == 'dark' else 'dark'
+        new_theme = themes.load_specific(new_kind)
+        self._apply_theme_with_pref(new_theme, pref=new_kind)
 
     def _on_close(self):
         try:

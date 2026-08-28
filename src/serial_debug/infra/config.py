@@ -44,6 +44,8 @@ DEFAULTS = {
     'auto_scroll': True,
     'log_path': '',
     'theme_pref': 'auto',
+    'theme_specific_light': 'light',    # 浅色模式下具体主题（6 选 1）
+    'theme_specific_dark': 'dark',      # 深色模式下具体主题（6 选 1）
     'at_commands': [],
     'filter_pattern': '',
     'filter_enabled': False,

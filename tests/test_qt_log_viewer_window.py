@@ -1800,6 +1800,120 @@ def test_qt_log_viewer_window_toggle_theme(qtbot):
     win.close()
 
 
+# ---- 任务3：主题菜单系统（log_viewer）----
+
+def test_log_viewer_theme_menu_built(qtbot, monkeypatch, tmp_path):
+    """构造 QtLogViewerWindow 后应建出主题菜单 actions。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    # _build_menubar 应已调 _build_theme_menu，留下 mode/specific actions
+    assert hasattr(win, '_theme_mode_actions')
+    assert hasattr(win, '_theme_specific_actions')
+    assert set(win._theme_mode_actions) == {'auto', 'light', 'dark'}
+    assert len(win._theme_specific_actions) == 6
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_log_viewer_apply_theme_with_pref_persists(qtbot, monkeypatch, tmp_path):
+    """_apply_theme_with_pref 应持久化 pref + specific。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win._apply_theme_with_pref('solarized_dark', pref='dark')
+    cfg = config.load()
+    assert cfg['theme_pref'] == 'dark'
+    assert cfg['theme_specific_dark'] == 'solarized_dark'
+    assert win._theme_name == 'solarized_dark'
+    assert win._theme_pref == 'dark'
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_log_viewer_on_theme_pref_selected_auto(qtbot, monkeypatch, tmp_path):
+    """选 'auto' 模式应解析为系统深浅对应的具体主题。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config, themes
+    importlib.reload(config)
+    importlib.reload(themes)
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'dark')
+    # 预设 specific_dark
+    cfg = config.load()
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    win._on_theme_pref_selected('auto')
+    assert win._theme_pref == 'auto'
+    assert win._theme_name == 'monokai'
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
+def test_log_viewer_sync_theme_menu_checks_current(qtbot, monkeypatch, tmp_path):
+    """_sync_theme_menu 应勾选当前 pref + theme。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win._apply_theme_with_pref('github_light', pref='light')
+    assert win._theme_mode_actions['light'].isChecked()
+    assert not win._theme_mode_actions['dark'].isChecked()
+    assert win._theme_specific_actions['github_light'].isChecked()
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()
+
+
 def test_qt_log_viewer_window_show_about(qtbot):
     """_show_about 应弹出关于对话框（mock exec 避免阻塞）。"""
     _make_qapp()

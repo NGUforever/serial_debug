@@ -48,6 +48,25 @@ def test_light_theme_keys_complete(themes_mod):
     assert expected <= set(keys.keys())
 
 
+def test_all_themes_keys_complete(themes_mod):
+    """任务3：6 套主题都应含全部必要 key。"""
+    expected = {'bg', 'panel_bg', 'panel_fg', 'fg', 'cursor', 'select_bg',
+                'btn_bg', 'btn_hover', 'btn_active', 'btn_primary',
+                'btn_primary_hover', 'status_ok', 'status_wait',
+                'status_err', 'status_idle', 'ts', 'send', 'resp', 'note',
+                'log', 'muted', 'accent', 'border'}
+    for name, t in themes_mod.THEMES.items():
+        assert expected <= set(t.keys()), f'主题 {name} 缺键：{expected - set(t.keys())}'
+
+
+def test_themes_have_six(themes_mod):
+    """任务3：应有 6 套主题（2 原 + 4 新）。"""
+    assert len(themes_mod.THEMES) >= 6
+    for name in ('dark', 'light', 'monokai', 'solarized_dark',
+                 'solarized_light', 'github_light'):
+        assert name in themes_mod.THEMES
+
+
 def test_dark_and_light_differ(themes_mod):
     """dark / light 配色不同（至少 bg 不同）。"""
     assert themes_mod.THEMES['dark']['bg'] != themes_mod.THEMES['light']['bg']
@@ -55,22 +74,32 @@ def test_dark_and_light_differ(themes_mod):
 
 # ---- resolve(pref) ----
 
-def test_resolve_light_returns_light(themes_mod):
+def test_resolve_light_returns_light(themes_mod, monkeypatch):
+    """resolve('light') 默认读 theme_specific_light（无 config 时兜底 'light'）。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {})
     assert themes_mod.resolve('light') == 'light'
 
 
-def test_resolve_dark_returns_dark(themes_mod):
+def test_resolve_dark_returns_dark(themes_mod, monkeypatch):
+    """resolve('dark') 默认读 theme_specific_dark（无 config 时兜底 'dark'）。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {})
     assert themes_mod.resolve('dark') == 'dark'
 
 
 def test_resolve_auto_uses_system_theme(themes_mod, monkeypatch):
-    """resolve('auto') 调 detect_system_theme 兜底。"""
+    """resolve('auto') 调 detect_system_theme + 读 specific 兜底。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {})
     monkeypatch.setattr(themes_mod, 'detect_system_theme', lambda: 'light')
     assert themes_mod.resolve('auto') == 'light'
 
 
 def test_resolve_unknown_pref_falls_back_to_system(themes_mod, monkeypatch):
-    """未知 pref 应兜底到 detect_system_theme。"""
+    """未知 pref 应兜底到 detect_system_theme + specific。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {})
     monkeypatch.setattr(themes_mod, 'detect_system_theme', lambda: 'dark')
     assert themes_mod.resolve('xyz') == 'dark'
 
@@ -131,18 +160,26 @@ def test_platform_specific_font_family(themes_mod):
 # ---- load_pref / save_pref ----
 
 def test_load_pref_returns_auto_when_config_missing(themes_mod, monkeypatch):
-    """config 模块 import 失败时应返回 'auto'。"""
-    # 让 config 模块不可 import
-    import sys
-    monkeypatch.setitem(sys.modules, 'config', None)
+    """config.load 抛异常时应返回 'auto'。"""
+    from serial_debug.infra import config
+
+    def boom():
+        raise RuntimeError('config read fail')
+
+    monkeypatch.setattr(config, 'load', boom)
     r = themes_mod.load_pref()
     assert r == 'auto'
 
 
 def test_save_pref_swallows_config_failure(themes_mod, monkeypatch):
-    """save_pref 在 config 不可用时不应抛。"""
-    import sys
-    monkeypatch.setitem(sys.modules, 'config', None)
+    """save_pref 在 config.load/save 抛异常时不应抛。"""
+    from serial_debug.infra import config
+
+    def boom(*a, **kw):
+        raise RuntimeError('disk full')
+
+    monkeypatch.setattr(config, 'load', boom)
+    monkeypatch.setattr(config, 'save', boom)
     # 不应抛
     themes_mod.save_pref('dark')
 
@@ -301,47 +338,40 @@ def test_detect_system_theme_linux_no_gsettings(monkeypatch):
 
 
 # ---- load_pref / save_pref with mocked config ----
+# 注：themes 内部用 `from serial_debug.infra import config`，所以 monkeypatch
+# 替换的是 serial_debug.infra.config 模块的 load/save，而非 sys.modules['config']
 
 def test_load_pref_returns_stored_value(themes_mod, monkeypatch):
     """config 模块可用时应读 theme_pref。"""
-    import types
-    fake_config = types.ModuleType('config')
-    fake_config.load = lambda: {'theme_pref': 'dark'}
-    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {'theme_pref': 'dark'})
     assert themes_mod.load_pref() == 'dark'
 
 
 def test_load_pref_default_auto_when_missing(themes_mod, monkeypatch):
     """config.load 没设 theme_pref 时回 'auto'。"""
-    import types
-    fake_config = types.ModuleType('config')
-    fake_config.load = lambda: {}
-    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {})
     assert themes_mod.load_pref() == 'auto'
 
 
 def test_load_pref_swallows_exception(themes_mod, monkeypatch):
     """config.load 抛异常应回 'auto'。"""
-    import types
-    fake_config = types.ModuleType('config')
+    from serial_debug.infra import config
 
     def boom():
         raise RuntimeError('config read fail')
 
-    fake_config.load = boom
-    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    monkeypatch.setattr(config, 'load', boom)
     assert themes_mod.load_pref() == 'auto'
 
 
 def test_save_pref_writes_to_config(themes_mod, monkeypatch):
     """save_pref 应合并 theme_pref 写回 config.save。"""
-    import types
+    from serial_debug.infra import config
     saved = {}
-
-    fake_config = types.ModuleType('config')
-    fake_config.load = lambda: {'other_key': 1}
-    fake_config.save = lambda cfg: saved.update(cfg)
-    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    monkeypatch.setattr(config, 'load', lambda: {'other_key': 1})
+    monkeypatch.setattr(config, 'save', lambda cfg: saved.update(cfg))
     themes_mod.save_pref('light')
     assert saved.get('theme_pref') == 'light'
     assert saved.get('other_key') == 1
@@ -349,16 +379,89 @@ def test_save_pref_writes_to_config(themes_mod, monkeypatch):
 
 def test_save_pref_swallows_save_failure(themes_mod, monkeypatch):
     """config.save 抛异常不应让 save_pref 抛。"""
-    import types
-    fake_config = types.ModuleType('config')
-    fake_config.load = lambda: {}
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {})
 
     def boom(cfg):
         raise RuntimeError('disk full')
 
-    fake_config.save = boom
-    monkeypatch.setitem(sys.modules, 'config', fake_config)
+    monkeypatch.setattr(config, 'save', boom)
     # 不应抛
     themes_mod.save_pref('dark')
+
+
+# ---- 任务3：load_specific / save_specific / resolve 扩展 ----
+
+def test_resolve_light_mode_reads_specific_light(themes_mod, monkeypatch):
+    """resolve('light') 读 config.theme_specific_light，兜底 'light'。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load',
+                        lambda: {'theme_specific_light': 'solarized_light'})
+    assert themes_mod.resolve('light') == 'solarized_light'
+
+
+def test_resolve_dark_mode_reads_specific_dark(themes_mod, monkeypatch):
+    """resolve('dark') 读 config.theme_specific_dark，兜底 'dark'。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load',
+                        lambda: {'theme_specific_dark': 'monokai'})
+    assert themes_mod.resolve('dark') == 'monokai'
+
+
+def test_resolve_auto_uses_system_theme_and_specific(themes_mod, monkeypatch):
+    """resolve('auto') 按 detect_system_theme 选深浅 + 读 specific。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load', lambda: {
+        'theme_specific_dark': 'solarized_dark',
+        'theme_specific_light': 'github_light',
+    })
+    monkeypatch.setattr(themes_mod, 'detect_system_theme', lambda: 'dark')
+    assert themes_mod.resolve('auto') == 'solarized_dark'
+    monkeypatch.setattr(themes_mod, 'detect_system_theme', lambda: 'light')
+    assert themes_mod.resolve('auto') == 'github_light'
+
+
+def test_resolve_invalid_specific_falls_back_to_kind(themes_mod, monkeypatch):
+    """specific 主题名不在 THEMES 或 kind 不匹配时兜底 kind 名。"""
+    from serial_debug.infra import config
+    monkeypatch.setattr(config, 'load',
+                        lambda: {'theme_specific_light': 'nonexistent'})
+    assert themes_mod.resolve('light') == 'light'
+
+
+def test_load_specific_swallows_exception(themes_mod, monkeypatch):
+    """config.load 抛异常应回 kind 名。"""
+    from serial_debug.infra import config
+
+    def boom():
+        raise RuntimeError('fail')
+
+    monkeypatch.setattr(config, 'load', boom)
+    assert themes_mod.load_specific('dark') == 'dark'
+
+
+def test_save_specific_writes_to_config(themes_mod, monkeypatch):
+    """save_specific 应写 theme_specific_<kind> 到 config.save。"""
+    from serial_debug.infra import config
+    saved = {}
+    monkeypatch.setattr(config, 'load', lambda: {})
+    monkeypatch.setattr(config, 'save', lambda cfg: saved.update(cfg))
+    themes_mod.save_specific('dark', 'monokai')
+    assert saved.get('theme_specific_dark') == 'monokai'
+
+
+def test_theme_kind_mapping_covers_all(themes_mod):
+    """THEME_KIND 应覆盖所有 THEMES key，且值仅 light/dark。"""
+    for name in themes_mod.THEMES:
+        assert name in themes_mod.THEME_KIND
+        assert themes_mod.THEME_KIND[name] in ('light', 'dark')
+
+
+def test_theme_display_has_six_entries(themes_mod):
+    """THEME_DISPLAY 应有 6 个条目，每条 (name, 显示名)。"""
+    assert len(themes_mod.THEME_DISPLAY) == 6
+    for name, label in themes_mod.THEME_DISPLAY:
+        assert name in themes_mod.THEMES
+        assert isinstance(label, str) and label
 
 
