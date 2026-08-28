@@ -3478,14 +3478,11 @@ class QtMonitorWindow:
                     del curves[name]
             # 创建/更新曲线（跳过被取消勾选的变量）
             for name in vars_to_show:
-                if name not in self._data:
-                    continue
                 if not vis.get(name, True):
                     continue  # checkbox 未勾选：不画曲线
-                pts = self._data[name]
-                if not pts:
-                    continue
-                # 始终通过 _get_xy 获取 numpy 数组，不覆盖 self._data
+                # 始终通过 _get_xy 获取 numpy 数组（锁内取 + asarray 拷贝，
+                # 避免与 reader 线程的 append/del 竞争 self._data[name]）。
+                # 不在锁外读 self._data[name]：_get_xy 对不存在或空返回 None。
                 xs, ys = self._get_xy(name)
                 if xs is None or len(xs) == 0:
                     continue
@@ -3776,13 +3773,9 @@ class QtMonitorWindow:
                 del curves[name]
         # 创建/更新曲线（跳过被取消勾选的变量）
         for name in vars_to_show:
-            if name not in self._data:
-                continue
             if not vis.get(name, True):
                 continue
-            pts = self._data[name]
-            if not pts:
-                continue
+            # 锁内取 + asarray 拷贝，避免与 reader 线程竞争 self._data[name]
             xs, ys = self._get_xy(name)
             if xs is None or len(xs) == 0:
                 continue

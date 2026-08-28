@@ -3088,3 +3088,163 @@ def test_refresh_plot_empty_var_buffer_skipped(monitor, monkeypatch):
     monkeypatch.setattr(monitor, '_refresh_popouts', lambda: None)
     monitor._refresh_plot()
     assert monitor._curves[0] == {}
+
+
+# ---- 任务2：缩放/接收并发加固 ----
+
+def test_refresh_plot_concurrent_with_reader_no_error(monitor, monkeypatch):
+    """reader 线程持续 append + 截断 _data[name] 时，主线程反复 _refresh_plot
+    不应抛异常（验证锁内 _get_xy 拷贝路径，消除锁外 self._data[name] 竞争）。
+
+    场景对应任务2：鼠标缩放时主线程卡在 Qt 事件循环，reader 线程仍 append。
+    本测试直接压测 _refresh_plot × reader 并发，验证 setData 用的拷贝
+    不受 reader 修改影响、无 IndexError/ValueError。
+    """
+    import threading
+
+    import numpy as np
+
+    class _FakeItem:
+        _legend_color = '#fff'
+        def setData(self, xs, ys, pen=None):
+            # 持续校验 xs/ys 是 numpy 数组且长度一致（拷贝完整）
+            assert len(xs) == len(ys), 'setData xs/ys 长度不一致'
+
+    class _FakePW:
+        def plot(self, xs, ys, pen=None, name=None):
+            return _FakeItem()
+        def removeItem(self, item):
+            pass
+        def scene(self):
+            class _S:
+                sigMouseMoved = type("Sig", (), {"connect": lambda *a, **kw: None})()
+            return _S()
+        def addItem(self, item, ignoreBounds=False):
+            pass
+
+    pw = _FakePW()
+    monitor._plot_widgets = [pw]
+    monitor._curves = [{}]
+    monitor._plot_headers = [None]
+    monitor._visible_plots = [{'title': 'A', 'vars': [], 'var_visibility': {}}]
+    monitor._var_meta = {'v': {'color': '#fff', 'label': 'V'}}
+    monitor._sidebar = None
+    monitor._max_points = 2000
+    monkeypatch.setattr(monitor, '_refresh_header_legend', lambda *a: None)
+    monkeypatch.setattr(monitor, '_draw_stat_markers', lambda *a: None)
+    monkeypatch.setattr(monitor, '_refresh_sidebar_values', lambda: None)
+    monkeypatch.setattr(monitor, '_refresh_sidebar_visibility', lambda: None)
+    monkeypatch.setattr(monitor, '_refresh_popouts', lambda: None)
+
+    # 初始放一个变量
+    monitor._data['v'] = [(0.0, 1.0)]
+
+    stop = threading.Event()
+    errors = []
+
+    def _reader():
+        """模拟 reader 线程：高频 append + 触发 _max_points 截断。"""
+        t = 0.0
+        while not stop.is_set():
+            t += 0.001
+            with monitor._data_lock:
+                buf = monitor._data.setdefault('v', [])
+                buf.append((t, float(t * 1000)))
+                if len(buf) > monitor._max_points:
+                    del buf[:len(buf) - monitor._max_points]
+
+    # 启动 reader
+    th = threading.Thread(target=_reader, daemon=True)
+    th.start()
+    try:
+        # 主线程反复 _refresh_plot，模拟 40ms 定时器 + 鼠标缩放事件穿插
+        for _ in range(200):
+            try:
+                monitor._refresh_plot()
+            except Exception as e:
+                errors.append(e)
+                break
+    finally:
+        stop.set()
+        th.join(timeout=2.0)
+
+    assert not errors, f'_refresh_plot 并发时抛异常：{errors!r}'
+
+
+def test_get_xy_returns_copy_not_live_reference(monitor):
+    """_get_xy 返回的 numpy 数组应是拷贝，不随 reader append 变化。
+
+    这是任务2加固的核心保证：setData 用的 xs/ys 是锁内 asarray 拷贝，
+    reader 后续 append/del 不会影响已返回的数组。
+    """
+    import numpy as np
+    monitor._data['v'] = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+    xs, ys = monitor._get_xy('v')
+    assert xs is not None and len(xs) == 3
+    # reader 在锁内 append
+    with monitor._data_lock:
+        monitor._data['v'].append((3.0, 4.0))
+    # 返回的 xs/ys 不应变化（拷贝）
+    assert len(xs) == 3, '_get_xy 返回了 live 引用，受 reader 影响'
+    assert len(ys) == 3
+    # 再取一次应是 4 个点
+    xs2, ys2 = monitor._get_xy('v')
+    assert len(xs2) == 4
+
+
+def test_refresh_plot_skips_var_removed_by_reader(monitor, monkeypatch):
+    """reader 在 _refresh_plot 迭代期间删掉某变量，不应抛 KeyError。
+
+    原代码锁外读 self._data[name] 再 _get_xy，中间变量可能消失。
+    加固后直接 _get_xy（锁内 None 兜底），消除 KeyError 风险。
+    """
+    import numpy as np
+
+    class _FakeItem:
+        _legend_color = '#fff'
+        def setData(self, xs, ys, pen=None):
+            pass
+
+    class _FakePW:
+        def plot(self, xs, ys, pen=None, name=None):
+            return _FakeItem()
+        def removeItem(self, item):
+            pass
+        def scene(self):
+            class _S:
+                sigMouseMoved = type("Sig", (), {"connect": lambda *a, **kw: None})()
+            return _S()
+        def addItem(self, item, ignoreBounds=False):
+            pass
+
+    pw = _FakePW()
+    monitor._plot_widgets = [pw]
+    monitor._curves = [{}]
+    monitor._plot_headers = [None]
+    monitor._visible_plots = [{'title': 'A', 'vars': ['v', 'gone'], 'var_visibility': {}}]
+    monitor._data['v'] = [(0.0, 1.0), (1.0, 2.0)]
+    monitor._data['gone'] = [(0.0, 1.0)]
+    monitor._var_meta = {'v': {'color': '#fff', 'label': 'V'}, 'gone': {'color': '#f00', 'label': 'G'}}
+    monitor._sidebar = None
+    monkeypatch.setattr(monitor, '_refresh_header_legend', lambda *a: None)
+    monkeypatch.setattr(monitor, '_draw_stat_markers', lambda *a: None)
+    monkeypatch.setattr(monitor, '_refresh_sidebar_values', lambda: None)
+    monkeypatch.setattr(monitor, '_refresh_sidebar_visibility', lambda: None)
+    monkeypatch.setattr(monitor, '_refresh_popouts', lambda: None)
+
+    # 让 _get_xy('gone') 在被调用前由 reader 删掉该变量
+    orig_get_xy = monitor._get_xy
+    call_count = {'n': 0}
+    def _patched_get_xy(name):
+        call_count['n'] += 1
+        if name == 'gone':
+            with monitor._data_lock:
+                monitor._data.pop('gone', None)
+            return None, None  # 模拟变量已消失
+        return orig_get_xy(name)
+    monkeypatch.setattr(monitor, '_get_xy', _patched_get_xy)
+
+    # 不应抛 KeyError
+    monitor._refresh_plot()
+    assert 'v' in monitor._curves[0]
+    assert 'gone' not in monitor._curves[0]
