@@ -31,6 +31,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDockWidget,
     QFileDialog,
@@ -1964,11 +1965,23 @@ class _QtFilterPanel(QDockWidget):
         self._filter_max_value = int(
             cfg.get('log_view_filter_result_max',
                     config.DEFAULTS['log_view_filter_result_max']))
+        # 无限制模式：True 时忽略 spinbox 上限，_get_filter_max 返回大数（2e9）
+        # 不截断；spinbox 仍保存值但禁用变灰。见 _save_unlimited / _get_filter_max。
+        self._unlimited = bool(
+            cfg.get('log_view_filter_unlimited',
+                    config.DEFAULTS['log_view_filter_unlimited']))
         self._build_widgets()
         self.apply_theme(theme)
 
     def _get_filter_max(self) -> int:
-        """当前筛选结果行数上限（来自 spinbox 值，兜底常量）。"""
+        """当前筛选结果行数上限。
+
+        无限制模式（self._unlimited=True）：返回 2_000_000_000（int 上限内，
+        `>=` 比较正常不截断），spinbox 值保存但不用。
+        有上限模式：取 spinbox 值，兜底内存值 / 常量。
+        """
+        if self._unlimited:
+            return 2_000_000_000
         try:
             if hasattr(self, '_max_rows_box') and self._max_rows_box is not None:
                 return int(self._max_rows_box.value())
@@ -1980,11 +1993,29 @@ class _QtFilterPanel(QDockWidget):
             return FILTER_RESULT_MAX
 
     def _save_filter_max(self, value: int):
-        """spinbox 值变化：存内存 + 持久化到 config，并触发重筛。"""
+        """spinbox 值变化：存内存 + 持久化到 config，并触发重筛。
+
+        无限制模式下 spinbox 被禁用，不会触发 valueChanged，本方法不执行。
+        """
         self._filter_max_value = int(value)
         try:
             cfg = config.load()
             cfg['log_view_filter_result_max'] = int(value)
+            config.save(cfg)
+        except Exception:
+            pass
+        self._apply_filter()
+
+    def _save_unlimited(self, checked: bool):
+        """切换无限制模式：持久化 + 启用/禁用 spinbox + 重筛。"""
+        self._unlimited = bool(checked)
+        try:
+            self._max_rows_box.setEnabled(not self._unlimited)
+        except Exception:
+            pass
+        try:
+            cfg = config.load()
+            cfg['log_view_filter_unlimited'] = self._unlimited
             config.save(cfg)
         except Exception:
             pass
@@ -2059,7 +2090,17 @@ class _QtFilterPanel(QDockWidget):
         ml.setSpacing(6)
         ml.addWidget(QLabel('上限'))
         ml.addWidget(self._max_rows_box, 1)
+        # 无限制复选框：勾选后 spinbox 变灰，_get_filter_max 返回 2e9 不截断
+        self._unlimited_box = QCheckBox('无限制')
+        self._unlimited_box.setChecked(self._unlimited)
+        self._unlimited_box.setToolTip(
+            '勾选后不限制筛选结果行数（可能加载数十万行，操作变慢）')
+        self._unlimited_box.toggled.connect(self._save_unlimited)
+        ml.addWidget(self._unlimited_box)
         v.addWidget(max_row)
+        # 初始禁用 spinbox 若已是无限制模式
+        if self._unlimited:
+            self._max_rows_box.setEnabled(False)
         # 结果 Tree
         self._tree = QTreeWidget()
         self._tree.setColumnCount(2)
@@ -2080,7 +2121,8 @@ class _QtFilterPanel(QDockWidget):
         # 内部控件不卡最小宽度，允许 DockWidget 拖到任意窄
         for w in (self._level_box, self._regex_edit, self._tree,
                   self._apply_btn, self._clear_btn, self._info_lbl,
-                  self._max_rows_box, btn_row, container, level_row, regex_row):
+                  self._max_rows_box, self._unlimited_box, btn_row, container,
+                  level_row, regex_row):
             try:
                 w.setMinimumWidth(0)
                 w.setMinimumSize(0, 0)
@@ -2187,6 +2229,10 @@ class _QtFilterPanel(QDockWidget):
         self._filtered_idx = filtered
         self._last_scanned_idx = total
         self._render_results(filtered, total)
+        # 无限制模式下命中行数过多时追加警告，引导用户筛更精确
+        if self._unlimited and len(filtered) > 500000:
+            info = (f'{info}  ⚠ 已加载 {len(filtered)} 行，'
+                    '继续操作可能变慢，建议筛更精确')
         self._info_lbl.setText(info)
 
     @Slot(int, str)
@@ -2232,8 +2278,13 @@ class _QtFilterPanel(QDockWidget):
             self._filtered_idx.extend(new_filtered)
             self._insert_into_tree(new_filtered)
         self._last_scanned_idx = end
-        self._info_lbl.setText(
-            f'{len(self._filtered_idx)} / {len(lines)} 行（增量 +{len(new_filtered)}）')
+        info = (f'{len(self._filtered_idx)} / {len(lines)} 行'
+                f'（增量 +{len(new_filtered)}）')
+        # 无限制模式下累计命中过多时追加警告
+        if self._unlimited and len(self._filtered_idx) > 500000:
+            info = (f'{info}  ⚠ 已加载 {len(self._filtered_idx)} 行，'
+                    '继续操作可能变慢，建议筛更精确')
+        self._info_lbl.setText(info)
 
     def _render_results(self, filtered: list[int], total: int = 0):
         """全量渲染：清 Tree + 分批插。包 setUpdatesEnabled 减少闪烁/卡顿。"""

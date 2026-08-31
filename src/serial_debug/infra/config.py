@@ -84,6 +84,7 @@ DEFAULTS = {
     'log_view_show_toolbar': True,      # 日志查看器工具栏显隐
     'log_view_geometry': '1400x800',    # 日志查看器窗口几何
     'log_view_filter_result_max': 500000,  # 筛选结果行数上限（可配置，默认 50 万）
+    'log_view_filter_unlimited': False,    # 筛选结果行数无限制（True 时忽略 spinbox 上限）
     # Qt 监视窗口（Stage 1：多 plot 子图 + 配置持久化）
     'qt_monitor_plots': [],            # list[dict]：每个 plot 的配置
     'qt_monitor_geometry': '',          # 窗口几何（'WxH+X+Y'）

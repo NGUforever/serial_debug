@@ -1772,6 +1772,203 @@ def test_filter_panel_loads_custom_config_on_init(qtbot, monkeypatch, tmp_path):
     panel.shutdown_filter_thread()
 
 
+# ---- 任务1（无限制）：筛选行数不受限制 ----
+
+def test_filter_panel_unlimited_default_off(qtbot, monkeypatch, tmp_path):
+    """默认非无限制：_unlimited=False，checkbox 未勾选，spinbox 启用。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    assert panel._unlimited is False
+    assert panel._unlimited_box.isChecked() is False
+    assert panel._max_rows_box.isEnabled() is True
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_get_filter_max_unlimited_returns_big(qtbot, monkeypatch, tmp_path):
+    """无限制模式下 _get_filter_max 返回 2_000_000_000，不受 spinbox 影响。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 切到无限制
+    panel._unlimited_box.setChecked(True)
+    assert panel._unlimited is True
+    assert panel._max_rows_box.isEnabled() is False
+    # 不管 spinbox 是什么值，都返回大数
+    assert panel._get_filter_max() == 2_000_000_000
+    # 切回有上限：spinbox 恢复启用，值生效
+    panel._unlimited_box.setChecked(False)
+    assert panel._max_rows_box.isEnabled() is True
+    assert panel._get_filter_max() == panel._max_rows_box.value()
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_save_unlimited_persists(qtbot, monkeypatch, tmp_path):
+    """切换无限制应持久化到 config，重开面板读到。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel._save_unlimited(True)
+    panel.shutdown_filter_thread()
+    cfg = config.load()
+    assert cfg['log_view_filter_unlimited'] is True
+
+
+def test_filter_panel_loads_unlimited_on_init(qtbot, monkeypatch, tmp_path):
+    """config 已设无限制时，新面板构造应读到：checkbox 勾选 + spinbox 禁用。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    cfg = config.load()
+    cfg['log_view_filter_unlimited'] = True
+    config.save(cfg)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    assert panel._unlimited is True
+    assert panel._unlimited_box.isChecked() is True
+    assert panel._max_rows_box.isEnabled() is False
+    assert panel._get_filter_max() == 2_000_000_000
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_unlimited_does_not_truncate(qtbot, monkeypatch, tmp_path):
+    """无限制模式下全量筛选不截断：命中行数 = 实际命中行数。
+
+    构造 3000 行全部命中，无限制下筛选结果 = 3000（若用默认 500000 不
+    截断也成立，但这里验证 _get_filter_max 在无限制下确实返回大数，且
+    worker 不会因 cap 提前 break）。同时验证 info 标签含警告（>500000 时），
+    这里用 3000 不触发警告，但验证 _on_filter_done 路径不破坏 info。
+    """
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 切无限制
+    panel._unlimited_box.setChecked(True)
+    assert panel._get_filter_max() == 2_000_000_000
+    lines = ['hit'] * 3000
+    tab = _make_tab(qtbot, tmp_path, lines)
+    panel.set_tab(tab)
+    panel._regex_edit.setText('hit')
+    panel._apply_filter()
+    qtbot.wait(200)
+    # 命中行数应等于 3000，不截断
+    assert len(panel._filtered_idx) == 3000
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_capped_mode_still_truncates(qtbot, monkeypatch, tmp_path):
+    """非无限制模式下 spinbox 上限仍生效：命中超 cap 截断。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 设小上限
+    panel._max_rows_box.setValue(1500)
+    assert panel._unlimited is False
+    assert panel._get_filter_max() == 1500
+    lines = ['hit'] * 3000
+    tab = _make_tab(qtbot, tmp_path, lines)
+    panel.set_tab(tab)
+    panel._regex_edit.setText('hit')
+    panel._apply_filter()
+    qtbot.wait(200)
+    # 应截断到 cap
+    assert len(panel._filtered_idx) <= 1500
+    assert len(panel._filtered_idx) == 1500
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_unlimited_warning_above_threshold(qtbot, monkeypatch, tmp_path):
+    """无限制模式 + 命中 > 500000 时，info label 应含警告提示。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel._unlimited_box.setChecked(True)
+    # 构造 600000 行全部命中（超过 500000 阈值）
+    lines = ['hit'] * 600_000
+    tab = _make_tab(qtbot, tmp_path, lines)
+    panel.set_tab(tab)
+    panel._regex_edit.setText('hit')
+    panel._apply_filter()
+    qtbot.wait(500)
+    assert len(panel._filtered_idx) == 600_000
+    info_text = panel._info_lbl.text()
+    assert '可能变慢' in info_text or '建议筛更精确' in info_text
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_unlimited_incremental_no_truncate(qtbot, monkeypatch, tmp_path):
+    """无限制模式下增量筛选不截断：逐步追加全部命中。"""
+    import importlib
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    panel._unlimited_box.setChecked(True)
+    lines = ['hit'] * 2500
+    tab = _make_tab(qtbot, tmp_path, lines)
+    panel.set_tab(tab)
+    panel._filtered_idx = []
+    panel._last_scanned_idx = 0
+    panel._regex_edit.setText('hit')
+    # 分两批增量
+    panel._apply_filter_incremental(1500)
+    panel._apply_filter_incremental(1000)
+    assert len(panel._filtered_idx) == 2500
+    panel.shutdown_filter_thread()
+
+
 # ---- QtLogViewerWindow 基础构造 ----
 
 def test_qt_log_viewer_window_construction(qtbot, tmp_path):
