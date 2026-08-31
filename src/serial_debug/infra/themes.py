@@ -277,7 +277,13 @@ def detect_system_theme() -> str:
             return 'light'
         except Exception:
             return 'dark'
-    # Linux: gsettings（GNOME）；非 GNOME 环境会失败，降级 dark
+    # Linux: gsettings（GNOME）；非 GNOME 环境会失败，降级 dark。
+    # 依据 freedesktop org.gnome.desktop.interface color-scheme 规范取值：
+    #   'prefer-dark'  → 深色
+    #   'prefer-light' → 浅色
+    #   'default'      → 无偏好，Ubuntu GNOME 默认是浅色 Yaru，按浅色处理
+    # gsettings 返回值带单引号（如 "'default'"），已 lower，用 in 子串匹配即可命中。
+    # 规范外的异常值（非 dark/light/default）保守兜底 dark。
     try:
         r = subprocess.run(
             ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],
@@ -285,7 +291,7 @@ def detect_system_theme() -> str:
         out = r.stdout.lower()
         if 'dark' in out:
             return 'dark'
-        if 'light' in out:
+        if 'light' in out or 'default' in out:
             return 'light'
     except Exception:
         pass

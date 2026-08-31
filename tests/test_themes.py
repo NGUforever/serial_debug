@@ -329,6 +329,42 @@ def test_detect_system_theme_linux_light(monkeypatch):
     assert themes_mod.detect_system_theme() == 'light'
 
 
+def test_detect_system_theme_linux_default_is_light(monkeypatch):
+    """linux: gsettings 返 'default'（无偏好）应判 light。
+
+    依据 freedesktop 规范，'default' 表示无深浅偏好，Ubuntu GNOME 默认主题是
+    浅色 Yaru，故归 light。本机真实场景即返回 "'default'"。
+    """
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+
+    class _R:
+        stdout = "'default'\n"
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'light'
+
+
+def test_detect_system_theme_linux_empty_stdout_falls_back_dark(monkeypatch):
+    """linux: gsettings 返回空（命令存在但无 color-scheme 键或非 GNOME 窗口管理器）应兜底 dark。"""
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+
+    class _R:
+        stdout = ''
+
+    monkeypatch.setattr(themes_mod.subprocess, 'run', lambda *a, **kw: _R())
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
+def test_detect_system_theme_linux_subprocess_timeout_falls_back_dark(monkeypatch):
+    """linux: gsettings 超时应兜底 dark（subprocess.TimeoutExpired 走 except 兜底）。"""
+    import subprocess as _sp
+    themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
+    monkeypatch.setattr(themes_mod.subprocess, 'run',
+                        lambda *a, **kw: (_ for _ in ()).throw(_sp.TimeoutExpired(
+                            cmd=a[0] if a else 'gsettings', timeout=1)))
+    assert themes_mod.detect_system_theme() == 'dark'
+
+
 def test_detect_system_theme_linux_no_gsettings(monkeypatch):
     """linux: gsettings 不存在应回 dark。"""
     themes_mod = _reload_themes_with_platform(monkeypatch, 'linux')
