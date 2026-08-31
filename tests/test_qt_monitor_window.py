@@ -2140,6 +2140,116 @@ def test_open_parser_config_no_win_returns(monitor):
     monitor._open_parser_config()  # 不应抛
 
 
+def test_reparse_after_config_change_no_source(monitor):
+    """无日志/无串口时，_reparse_after_config_change 应刷 plot 不抛。"""
+    monitor._refresh_plot = lambda: None
+    monitor._refresh_sidebar = lambda: None
+    monitor._refresh_sidebar_visibility = lambda: None
+    monitor.log_path = ''
+    monitor._serial = None
+    monitor._reparse_after_config_change()  # 不应抛
+
+
+def test_reparse_after_config_change_reloads_log(monitor, tmp_path):
+    """有 log_path 时 _reparse_after_config_change 应重读文件重解析。
+
+    构造一个日志文件，先 load_log 解析出变量，改 _CUSTOM_PARSER_STATE 让它
+    能解析出不同变量，再调 _reparse_after_config_change 应重解析出新变量。
+    """
+    p = tmp_path / 'motor.log'
+    p.write_text(
+        '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0\n' * 5,
+        encoding='utf-8')
+    monitor._refresh_plot = lambda: None
+    monitor._refresh_sidebar = lambda: None
+    monitor._refresh_sidebar_visibility = lambda: None
+    monitor._file_label = None
+    monitor._win = None  # 避免 statusBar
+    monitor.log_path = str(p)
+    monitor.load_log(str(p))
+    assert any(name.startswith('motor.') for name in monitor._data)
+    # 改解析器为 custom 模式，自定义 parse_line 产出 different 变量名
+    def parse_line(line):
+        if '3wd1t_1' in line:
+            ts = 1.0
+            yield ts, 'custom.var', 42.0
+    mod._CUSTOM_PARSER_STATE.update({'mode': 'custom', 'func': parse_line})
+    monitor._reparse_after_config_change()
+    # 重解析后应含 custom.var，不含 motor.*
+    assert 'custom.var' in monitor._data
+    assert not any(name.startswith('motor.') for name in monitor._data)
+
+
+def test_open_parser_config_reparse_on_save(monitor, tmp_path, monkeypatch):
+    """保存解析器配置后，若有 log_path 应自动重解析（_open_parser_config 路径）。"""
+    # 构造日志
+    p = tmp_path / 'motor.log'
+    p.write_text(
+        '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0\n' * 3,
+        encoding='utf-8')
+    monitor._refresh_plot = lambda: None
+    monitor._refresh_sidebar = lambda: None
+    monitor._refresh_sidebar_visibility = lambda: None
+    monitor._file_label = None
+    monitor.log_path = str(p)
+    monitor.load_log(str(p))
+    assert any(name.startswith('motor.') for name in monitor._data)
+
+    # mock 对话框：直接模拟保存（写 _CUSTOM_PARSER_STATE）+ 返回非 None result
+    from PySide6.QtWidgets import QMainWindow
+    win = QMainWindow()
+    monitor._win = win
+
+    def parse_line(line):
+        if '3wd1t_1' in line:
+            yield 1.0, 'new.var', 1.0
+    mod._CUSTOM_PARSER_STATE.update({'mode': 'custom', 'func': parse_line,
+                                     'discovered_vars': [{'name': 'new.var',
+                                                         'label': 'new.var'}]})
+
+    # patch _QtParserConfigDialog 让 exec() 返回非 None 触发重解析分支
+    class _FakeDlg:
+        def __init__(self, *a, **kw):
+            pass
+        def exec(self):
+            return {'mode': 'custom'}  # truthy → 进入重解析
+    monkeypatch.setattr(mod, '_QtParserConfigDialog', _FakeDlg)
+    monitor._open_parser_config()
+    assert 'new.var' in monitor._data
+    win.deleteLater()
+
+
+def test_save_invalid_parser_shows_warning(monitor, monkeypatch):
+    """_on_save 时 exec 失败 / 无 parse_line 应弹 QMessageBox.warning（非静默吞）。
+
+    用真实 _QtParserConfigDialog 构造（需 QApplication），填坏代码，mock
+    QMessageBox.warning 记录调用，mock _dlg.accept 避免真关闭。
+    """
+    from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+    app = QApplication.instance() or QApplication([])
+    win = QMainWindow()
+    calls = []
+
+    dlg = mod._QtParserConfigDialog(win, callback_save=lambda: None)
+    dlg._build()  # 构造内部控件（_code_edit 等）
+    # 填一段无 parse_line 的代码 → callable(ns.get('parse_line')) is False
+    dlg._code_edit.setPlainText('def x():\n  pass')
+    dlg._mode_built.setChecked(False)
+    dlg._mode_custom.setChecked(True)
+    # mode both 也走 custom 分支，这里用 custom 即可
+
+    monkeypatch.setattr(QMessageBox, 'warning',
+                        lambda *a, **kw: calls.append(a))
+    # 避免 accept 真关 dialog（_dlg 是真实 QDialog）
+    monkeypatch.setattr(dlg._dlg, 'accept', lambda: None)
+    dlg._on_save()
+    # 应触发 warning（代码未定义 parse_line）
+    assert len(calls) >= 1
+    # func 应为 None（未启用）
+    assert mod._CUSTOM_PARSER_STATE.get('func') is None
+    win.deleteLater()
+
+
 # ---- _auto_avoid_legend ----
 
 def test_auto_avoid_legend_no_curves(monitor):
@@ -2875,6 +2985,80 @@ def test_build_menubar_creates_menus(monitor, qtbot):
     # _act_sidebar / _act_toolbar 应被设置
     assert monitor._act_sidebar is not None
     assert monitor._act_toolbar is not None
+    win.deleteLater()
+
+
+def test_build_menubar_tools_has_parser_config_entry(monitor, qtbot):
+    """_build_menubar 传入 _open_parser_cfg 时，「工具」菜单应含「日志格式配置…」。"""
+    from PySide6.QtWidgets import QMainWindow
+    win = QMainWindow()
+    called = []
+    monitor._build_menubar(
+        win,
+        _add_plot=lambda: None,
+        _edit_plot=lambda: None,
+        _del_plot=lambda: None,
+        _open_log=lambda: None,
+        _mock_10w=lambda: None,
+        _mock_100w=lambda: None,
+        _clear=lambda: None,
+        _toggle_theme=lambda: None,
+        _toggle_sidebar=lambda: None,
+        _show_stats=lambda: None,
+        _export_csv=lambda: None,
+        _connect_serial=lambda: None,
+        _disconnect_serial=lambda: None,
+        _perf_test=lambda: None,
+        _import_plots_cfg=lambda: None,
+        _export_plots_cfg=lambda: None,
+        _open_parser_cfg=lambda: called.append('cfg'),
+    )
+    mb = win.menuBar()
+    # 找「工具」菜单
+    tools_menu = None
+    for a in mb.actions():
+        if a.text() == '工具':
+            tools_menu = a.menu()
+            break
+    assert tools_menu is not None
+    tool_actions = [a.text() for a in tools_menu.actions()]
+    assert '日志格式配置…' in tool_actions
+    # 触发应调用回调
+    idx = tool_actions.index('日志格式配置…')
+    tools_menu.actions()[idx].trigger()
+    assert called == ['cfg']
+    win.deleteLater()
+
+
+def test_build_menubar_no_parser_cfg_omits_entry(monitor, qtbot):
+    """_build_menubar 不传 _open_parser_cfg 时，「工具」菜单无解析器项（向后兼容）。"""
+    from PySide6.QtWidgets import QMainWindow
+    win = QMainWindow()
+    monitor._build_menubar(
+        win,
+        _add_plot=lambda: None,
+        _edit_plot=lambda: None,
+        _del_plot=lambda: None,
+        _open_log=lambda: None,
+        _mock_10w=lambda: None,
+        _mock_100w=lambda: None,
+        _clear=lambda: None,
+        _toggle_theme=lambda: None,
+        _toggle_sidebar=lambda: None,
+        _show_stats=lambda: None,
+        _export_csv=lambda: None,
+        _connect_serial=lambda: None,
+        _disconnect_serial=lambda: None,
+        _perf_test=lambda: None,
+    )
+    mb = win.menuBar()
+    tools_menu = None
+    for a in mb.actions():
+        if a.text() == '工具':
+            tools_menu = a.menu()
+            break
+    tool_actions = [a.text() for a in tools_menu.actions()]
+    assert '日志格式配置…' not in tool_actions
     win.deleteLater()
 
 

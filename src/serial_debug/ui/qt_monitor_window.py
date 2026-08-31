@@ -988,16 +988,31 @@ class _QtParserConfigDialog:
         # exec + 发现变量
         func = None
         discovered: list = []
+        exec_error: str = ''
         if code and mode in ('custom', 'both'):
             try:
                 ns: dict = {}
                 exec(compile(code, '<custom_parser>', 'exec'), ns)
                 if callable(ns.get('parse_line')):
                     func = ns['parse_line']
-            except Exception:
-                pass  # 保存时坏代码：dialog 已校验过，这里再失败仅记日志
+                else:
+                    exec_error = '代码未定义 parse_line(line) 函数'
+            except SyntaxError as e:
+                exec_error = f'语法错误（行 {e.lineno}）：{e.msg}'
+            except Exception as e:
+                exec_error = f'exec 失败：{e!r}'
             if func is not None:
                 discovered = _discover_vars_from_sample(func, sample)
+            else:
+                # 代码无效：保存配置但提示用户，避免静默接受坏解析器。
+                # 仍写入 code/mode（用户意图保留），func=None 让 custom 模式不
+                # 运行坏代码，用户应回头改。
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self._dlg, '解析器代码无效',
+                    f'代码无法执行：{exec_error}\n\n'
+                    '配置已保存（代码 + 模式），但解析器未启用。'
+                    '请修正代码后再次保存，或先点"测试解析"验证。')
 
         new_state = {
             'mode': mode,
@@ -2027,7 +2042,8 @@ class QtMonitorWindow:
                             _show_stats, _export_csv,
                             _connect_serial, _disconnect_serial,
                             _perf_test,
-                            _import_plots_cfg, _export_plots_cfg)
+                            _import_plots_cfg, _export_plots_cfg,
+                            self._open_parser_config)
 
         # 状态栏
         try:
@@ -2168,7 +2184,8 @@ class QtMonitorWindow:
                         _show_stats, _export_csv,
                         _connect_serial, _disconnect_serial,
                         _perf_test,
-                        _import_plots_cfg=None, _export_plots_cfg=None):
+                        _import_plots_cfg=None, _export_plots_cfg=None,
+                        _open_parser_cfg=None):
         from PySide6.QtGui import QAction
         from PySide6.QtWidgets import QStyle
         mb = win.menuBar()
@@ -2242,6 +2259,15 @@ class QtMonitorWindow:
         act_stats.triggered.connect(_show_stats)
         m_tools.addAction(act_stats)
         m_tools.addSeparator()
+        # 日志格式配置：菜单栏入口（与工具栏按钮同入口，命名更直观）
+        if _open_parser_cfg is not None:
+            act_parser_cfg = QAction('日志格式配置…', win)
+            act_parser_cfg.setShortcut('Ctrl+Shift+P')
+            act_parser_cfg.setToolTip(
+                '配置 Python 解析代码 + 样本日志 + 格式校验')
+            act_parser_cfg.triggered.connect(_open_parser_cfg)
+            m_tools.addAction(act_parser_cfg)
+            m_tools.addSeparator()
         act_mock10 = QAction('模拟 10w 点', win)
         act_mock10.triggered.connect(_mock_10w)
         m_tools.addAction(act_mock10)
@@ -3051,7 +3077,13 @@ class QtMonitorWindow:
                 pass
 
     def _open_parser_config(self):
-        """打开"解析器配置"对话框：贴代码 + 样本日志 → 测试 → 保存。"""
+        """打开"日志格式配置"对话框：贴代码 + 样本日志 → 测试 → 保存。
+
+        保存成功后，若当前已加载日志文件，自动重解析全量数据（用新解析器
+        重跑 _iter_panel_vars），让用户改完立即看到曲线变化；若串口在连，
+        清旧解析数据点（无原始行缓存，无法重解析历史，新行自动用新解析器），
+        状态栏提示用户后续行会按新配置解析。
+        """
         win = self._win
         if win is None:
             return
@@ -3065,9 +3097,54 @@ class QtMonitorWindow:
                     f'，{n} 个发现变量', 5000)
             except Exception:
                 pass
-            # 重新刷侧栏 / plot 对话框预览（已加载的曲线不动）
+            # 重解析：让用户改完立即看到曲线变化
+            self._reparse_after_config_change()
+
+    def _reparse_after_config_change(self):
+        """解析器配置变更后重解析当前数据源。
+
+        - 日志文件场景：重读文件重跑 _iter_panel_vars，曲线立即按新规则刷新。
+        - 串口场景：清旧解析数据点（无原始行缓存无法重解析历史），后续新行
+          自动用新解析器，状态栏提示。
+        - 无数据源：仅刷新侧栏/plot 预览。
+        """
+        win = self._win
+        log_path = getattr(self, 'log_path', '') or ''
+        if log_path:
+            try:
+                n = self.load_log(log_path)
+                if win is not None:
+                    win.statusBar().showMessage(
+                        f'已用新解析器重新解析：{n} 行，{len(self._data)} 变量',
+                        5000)
+            except Exception as e:
+                log_exc('warning',
+                        f'{__file__}:_reparse_after_config_change reload failed', e)
+                try:
+                    self._refresh_plot()
+                    self._refresh_sidebar()
+                    self._refresh_sidebar_visibility()
+                except Exception:
+                    pass
+        elif getattr(self, '_serial', None) is not None and self._serial.is_open:
+            # 串口在连：清旧解析数据，新行自动用新解析器
+            with self._data_lock:
+                self._data.clear()
+                self._data_cache.clear()
             try:
                 self._refresh_plot()
+                self._refresh_sidebar()
+                self._refresh_sidebar_visibility()
+            except Exception:
+                pass
+            if win is not None:
+                win.statusBar().showMessage(
+                    '已切换解析器，历史数据已清空；后续新行按新配置解析', 5000)
+        else:
+            try:
+                self._refresh_plot()
+                self._refresh_sidebar()
+                self._refresh_sidebar_visibility()
             except Exception:
                 pass
 
