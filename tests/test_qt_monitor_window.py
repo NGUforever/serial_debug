@@ -3357,3 +3357,113 @@ def test_refresh_plot_skips_var_removed_by_reader(monitor, monkeypatch):
     monitor._refresh_plot()
     assert 'v' in monitor._curves[0]
     assert 'gone' not in monitor._curves[0]
+
+
+# ---- 任务5：跟随系统模式实时跟随系统深浅变化 ----
+
+def _prep_monitor_for_theme(monitor):
+    """置空 monitor 的渲染相关状态，避免真 pyqtgraph/QSS 构造。"""
+    monitor._app = None
+    monitor._plot_widgets = []
+    monitor._visible_plots = []
+    monitor._curves = []
+    monitor._sidebar = None
+
+
+def test_monitor_check_theme_changed_auto_system_dark_to_light(monitor, qtbot, monkeypatch, tmp_path):
+    """跟随系统模式：系统从 dark 切到 light，_check_theme_changed 应 apply 浅色主题。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    _prep_monitor_for_theme(monitor)
+    from serial_debug.infra import config, themes
+    cfg = config.load()
+    cfg['theme_pref'] = 'auto'
+    cfg['theme_specific_light'] = 'github_light'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'dark')
+    monitor.theme_pref = 'auto'
+    monitor.theme_name = 'monokai'
+    monitor._last_system_kind = 'dark'
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    # 系统切到 light
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'light')
+    monitor._check_theme_changed()
+    assert monitor.theme_name == 'github_light'
+    assert applied == ['github_light']
+    assert monitor._last_system_kind == 'light'
+
+
+def test_monitor_check_theme_changed_auto_no_change_no_apply(monitor, qtbot, monkeypatch, tmp_path):
+    """跟随系统模式：系统深浅未变时不重复 apply。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    _prep_monitor_for_theme(monitor)
+    from serial_debug.infra import config, themes
+    cfg = config.load()
+    cfg['theme_pref'] = 'auto'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'dark')
+    monitor.theme_pref = 'auto'
+    monitor.theme_name = 'monokai'
+    monitor._last_system_kind = 'dark'
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    monitor._check_theme_changed()
+    assert applied == []
+    assert monitor.theme_name == 'monokai'
+
+
+def test_monitor_check_theme_changed_fixed_dark_ignores_system(monitor, qtbot, monkeypatch, tmp_path):
+    """固定深色模式：系统切到浅色不应跟随。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    _prep_monitor_for_theme(monitor)
+    from serial_debug.infra import config, themes
+    cfg = config.load()
+    cfg['theme_pref'] = 'dark'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    monitor.theme_pref = 'dark'
+    monitor.theme_name = 'monokai'
+    monitor._last_system_kind = 'dark'
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'light')
+    monitor._check_theme_changed()
+    assert applied == []
+    assert monitor.theme_name == 'monokai'
+
+
+def test_monitor_check_theme_changed_config_pref_change(monitor, qtbot, monkeypatch, tmp_path):
+    """config.theme_pref 变化（跨进程联动）应 apply 新主题。"""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    _prep_monitor_for_theme(monitor)
+    from serial_debug.infra import config, themes
+    # 起始 pref=auto/dark
+    cfg = config.load()
+    cfg['theme_pref'] = 'auto'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'dark')
+    monitor.theme_pref = 'auto'
+    monitor.theme_name = 'monokai'
+    monitor._last_system_kind = 'dark'
+    # 外部把 pref 改成 light + specific_light=github_light
+    cfg = config.load()
+    cfg['theme_pref'] = 'light'
+    cfg['theme_specific_light'] = 'github_light'
+    config.save(cfg)
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    monitor._check_theme_changed()
+    assert monitor.theme_pref == 'light'
+    assert monitor.theme_name == 'github_light'
+    assert applied == ['github_light']

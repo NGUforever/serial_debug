@@ -2082,27 +2082,58 @@ class QtMonitorWindow:
         """启动 5 秒轮询：检查 config 主题是否与本进程不一致，是则应用。
 
         跨进程联动：主程序切主题写 config，子进程此处发现变化并跟随。
+        跟随系统实时跟随：pref='auto' 时额外检测 detect_system_theme() 变化，
+        系统切深浅即重新 resolve+apply（QSS 不会自动跟随系统，需主动 apply）。
         低频（5s）不影响性能，关闭窗口时 timer 随 win 释放。
         """
         from PySide6.QtCore import QTimer
+        # 记住上次检测到的系统深浅，避免无变化时重复 apply
+        try:
+            self._last_system_kind = themes.detect_system_theme()
+        except Exception:
+            self._last_system_kind = None
         self._theme_watch_timer = QTimer(self._win)
         self._theme_watch_timer.setInterval(5000)
         self._theme_watch_timer.timeout.connect(self._check_theme_changed)
         self._theme_watch_timer.start()
 
     def _check_theme_changed(self):
-        """检查 config 主题与本进程是否一致，不一致则应用。"""
+        """检查 config 主题 + 系统深浅变化，必要时 apply。
+
+        - 检测 config.theme_pref 变化（跨进程联动：主程序切主题写 config）
+        - pref='auto' 时额外检测 detect_system_theme() 变化（跟随系统实时跟随）
+        """
+        from serial_debug.infra import config
+        from serial_debug.infra.error_log import log_exc
         try:
-            from serial_debug.infra import config
             cfg = config.load()
             pref = cfg.get('theme_pref', 'auto')
             # 按当前 pref 解析应有主题
             expected = themes.resolve(pref)
+            # 1) config/pref 变化（跨进程联动）
             if expected != self.theme_name:
                 self.theme_pref = pref
                 self._apply_theme_to_window(expected)
-        except Exception:
-            pass
+                # apply 后刷新系统深浅记忆，避免下一轮误判
+                try:
+                    self._last_system_kind = themes.detect_system_theme()
+                except Exception as e:
+                    log_exc('debug', 'qt_monitor: refresh _last_system_kind failed', e)
+                return
+            # 2) 跟随系统模式：系统深浅变化时重新 resolve+apply
+            if pref == 'auto':
+                try:
+                    sys_kind = themes.detect_system_theme()
+                except Exception as e:
+                    log_exc('debug', 'qt_monitor: detect_system_theme failed', e)
+                    sys_kind = None
+                if sys_kind is not None and sys_kind != self._last_system_kind:
+                    self._last_system_kind = sys_kind
+                    new_theme = themes.resolve('auto')
+                    if new_theme != self.theme_name:
+                        self._apply_theme_to_window(new_theme)
+        except Exception as e:
+            log_exc('warning', 'qt_monitor: _check_theme_changed failed', e)
 
 
     def _loaded_var_meta(self) -> list[dict]:

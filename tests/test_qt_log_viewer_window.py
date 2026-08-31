@@ -2249,3 +2249,104 @@ def test_global_search_bar_do_search_dangerous_regex(qtbot):
     bar._do_search()
     QApplication.processEvents()
     assert '嵌套' in bar._info_lbl.text() or '回溯' in bar._info_lbl.text()
+
+
+# ---- 任务5：跟随系统模式实时跟随系统深浅变化 ----
+
+def test_log_viewer_check_theme_changed_auto_system_dark_to_light(qtbot, monkeypatch):
+    """跟随系统模式：系统从 dark 切到 light，_check_theme_changed 应 apply 浅色主题。"""
+    _make_qapp()
+    from serial_debug.infra import config, themes
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    # 预置：pref=auto, specific_light=github_light, specific_dark=monokai
+    cfg = config.load()
+    cfg['theme_pref'] = 'auto'
+    cfg['theme_specific_light'] = 'github_light'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    # 起始：系统 dark → 应用 monokai
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'dark')
+    win._theme_pref = 'auto'
+    win._theme_name = 'monokai'
+    win._theme = themes.THEMES['monokai']
+    win._last_system_kind = 'dark'
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    # 系统切到 light
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'light')
+    win._check_theme_changed()
+    assert win._theme_name == 'github_light'
+    assert applied == ['github_light']
+    assert win._last_system_kind == 'light'
+    _close_log_viewer(win)
+
+
+def test_log_viewer_check_theme_changed_auto_no_change_no_apply(qtbot, monkeypatch):
+    """跟随系统模式：系统深浅未变时不重复 apply。"""
+    _make_qapp()
+    from serial_debug.infra import config, themes
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    cfg = config.load()
+    cfg['theme_pref'] = 'auto'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'dark')
+    win._theme_pref = 'auto'
+    win._theme_name = 'monokai'
+    win._theme = themes.THEMES['monokai']
+    win._last_system_kind = 'dark'
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    win._check_theme_changed()
+    assert applied == []
+    assert win._theme_name == 'monokai'
+    _close_log_viewer(win)
+
+
+def test_log_viewer_check_theme_changed_fixed_dark_ignores_system(qtbot, monkeypatch):
+    """固定深色模式：系统切到浅色不应跟随。"""
+    _make_qapp()
+    from serial_debug.infra import config, themes
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    cfg = config.load()
+    cfg['theme_pref'] = 'dark'
+    cfg['theme_specific_dark'] = 'monokai'
+    config.save(cfg)
+    win._theme_pref = 'dark'
+    win._theme_name = 'monokai'
+    win._theme = themes.THEMES['monokai']
+    win._last_system_kind = 'dark'
+    applied = []
+    import serial_debug.ui.qt_theme as qt_theme
+    monkeypatch.setattr(qt_theme, 'apply_qss',
+                        lambda a, name: applied.append(name))
+    monkeypatch.setattr(themes, 'detect_system_theme', lambda: 'light')
+    win._check_theme_changed()
+    assert applied == []
+    assert win._theme_name == 'monokai'
+    _close_log_viewer(win)
+
+
+def _close_log_viewer(win):
+    """关闭 log_viewer 窗口，避免后台线程 hang 测试。"""
+    if win._filter_panel is not None:
+        try:
+            win._filter_panel.shutdown_filter_thread()
+        except Exception:
+            pass
+    try:
+        win._search_thread.quit()
+        win._search_thread.wait(1000)
+    except Exception:
+        pass
+    win.close()

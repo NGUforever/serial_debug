@@ -1125,25 +1125,59 @@ class QtLogViewerWindow(QMainWindow):
             self.open_file(path)
 
     def _start_theme_watch(self):
-        """启动 5 秒轮询：主程序切主题写 config，本进程发现变化跟随。"""
+        """启动 5 秒轮询：主程序切主题写 config，本进程发现变化跟随。
+
+        兼任"跟随系统"实时跟随：pref='auto' 时额外检测 detect_system_theme()
+        返回值是否与上次不同，系统切深浅即重新 resolve+apply（修复标题栏变
+        浅色但工具栏仍深色的 bug——QSS 必须程序主动 apply）。
+        """
         from PySide6.QtCore import QTimer
+        # 记住上次检测到的系统深浅，避免无变化时重复 apply
+        try:
+            self._last_system_kind = themes.detect_system_theme()
+        except Exception:
+            self._last_system_kind = None
         self._theme_watch_timer = QTimer(self)
         self._theme_watch_timer.setInterval(5000)
         self._theme_watch_timer.timeout.connect(self._check_theme_changed)
         self._theme_watch_timer.start()
 
     def _check_theme_changed(self):
-        """检查 config 主题与本进程是否一致，不一致则应用。"""
+        """检查 config 主题 + 系统深浅变化，必要时 apply。
+
+        - 检测 config.theme_pref 变化（跨进程联动：主程序切主题写 config）
+        - pref='auto' 时额外检测 detect_system_theme() 变化（跟随系统实时跟随）
+        """
+        from serial_debug.infra import config
+        from serial_debug.infra.error_log import log_exc
         try:
-            from serial_debug.infra import config
             cfg = config.load()
             pref = cfg.get('theme_pref', 'auto')
             expected = themes.resolve(pref)
+            # 1) config/pref 变化（跨进程联动）
             if expected != self._theme_name:
                 self._theme_pref = pref
                 self.apply_theme(expected)
-        except Exception:
-            pass
+                # apply 后刷新系统深浅记忆，避免下一轮误判
+                try:
+                    self._last_system_kind = themes.detect_system_theme()
+                except Exception as e:
+                    log_exc('debug', 'qt_log_viewer: refresh _last_system_kind failed', e)
+                return
+            # 2) 跟随系统模式：系统深浅变化时重新 resolve+apply
+            if pref == 'auto':
+                try:
+                    sys_kind = themes.detect_system_theme()
+                except Exception as e:
+                    log_exc('debug', 'qt_log_viewer: detect_system_theme failed', e)
+                    sys_kind = None
+                if sys_kind is not None and sys_kind != self._last_system_kind:
+                    self._last_system_kind = sys_kind
+                    new_theme = themes.resolve('auto')
+                    if new_theme != self._theme_name:
+                        self.apply_theme(new_theme)
+        except Exception as e:
+            log_exc('warning', 'qt_log_viewer: _check_theme_changed failed', e)
 
 
     # ---- 工具栏 -------------------------------------------------------

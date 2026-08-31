@@ -509,6 +509,8 @@ class QtSerialDebugApp:
         self._drain_timer = QTimer()
         self._drain_timer.timeout.connect(self._drain)
         self._drain_timer.start(DRAIN_MS)
+        # 启动主题变化检测（config 联动 + 跟随系统实时跟随）
+        self._start_theme_watch()
         return win
 
     def _build_menubar(self, win):
@@ -1090,6 +1092,65 @@ class QtSerialDebugApp:
         self._save_cfg_debounced()
         # 同步菜单勾选
         self._sync_theme_menu()
+
+    def _start_theme_watch(self):
+        """启动 5 秒轮询：检测 config 主题变化 + 跟随系统深浅变化。
+
+        - config 变化：跨进程联动（子进程也会读 config 跟随，但主程序自身
+          需主动检测，因为主程序不收外部信号）
+        - 跟随系统实时跟随：pref='auto' 时检测 detect_system_theme() 变化，
+          系统切深浅即重新 resolve+apply（QSS 不会自动跟随系统，需主动 apply）。
+          apply 后写 config 让子进程跟随（pref 仍是 'auto' 不改，子进程各自检测）。
+        """
+        from PySide6.QtCore import QTimer
+        # 记住上次检测到的系统深浅，避免无变化时重复 apply
+        try:
+            self._last_system_kind = themes.detect_system_theme()
+        except Exception:
+            self._last_system_kind = None
+        self._theme_watch_timer = QTimer(self._win)
+        self._theme_watch_timer.setInterval(5000)
+        self._theme_watch_timer.timeout.connect(self._check_theme_changed)
+        self._theme_watch_timer.start()
+
+    def _check_theme_changed(self):
+        """检查 config 主题 + 系统深浅变化，必要时 apply。
+
+        - 检测 config.theme_pref 变化（跨进程：子进程/外部改 config 时主程序跟随）
+        - pref='auto' 时额外检测 detect_system_theme() 变化（跟随系统实时跟随）
+        - apply 走完整 _apply_theme 链路（QSS + 日志区 + 菜单 + 持久化）
+        """
+        from serial_debug.infra import config
+        from serial_debug.infra.error_log import log_exc
+        try:
+            cfg = config.load()
+            pref = cfg.get('theme_pref', 'auto')
+            expected = themes.resolve(pref)
+            # 1) config/pref 变化（跨进程联动）
+            if expected != self.theme_name:
+                self._apply_theme(expected, pref=pref)
+                # apply 后刷新系统深浅记忆，避免下一轮误判
+                try:
+                    self._last_system_kind = themes.detect_system_theme()
+                except Exception as e:
+                    log_exc('debug', 'qt_app: refresh _last_system_kind failed', e)
+                return
+            # 2) 跟随系统模式：系统深浅变化时重新 resolve+apply
+            if pref == 'auto':
+                try:
+                    sys_kind = themes.detect_system_theme()
+                except Exception as e:
+                    log_exc('debug', 'qt_app: detect_system_theme failed', e)
+                    sys_kind = None
+                if sys_kind is not None and sys_kind != self._last_system_kind:
+                    self._last_system_kind = sys_kind
+                    new_theme = themes.resolve('auto')
+                    if new_theme != self.theme_name:
+                        # pref 保持 'auto'，只 apply 具体主题；_apply_theme 会
+                        # 持久化 specific，子进程读 config 也会各自检测系统跟随
+                        self._apply_theme(new_theme, pref='auto')
+        except Exception as e:
+            log_exc('warning', 'qt_app: _check_theme_changed failed', e)
 
     def _on_theme_pref_selected(self, pref: str):
         """模式组选择：跟随系统/浅色/深色 → 解析具体主题应用。"""
