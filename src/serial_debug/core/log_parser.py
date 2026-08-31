@@ -12,7 +12,10 @@ __all__ = ["_LOG_TS_RE", "extract_log_ts"]
 
 # 匹配日志行中的 10~13 位数字时间戳（毫秒或秒）。
 # 前后必须非数字，避免从长串 ID 中误匹配中段。
-_LOG_TS_RE = re.compile(r'(?<!\d)(\d{10,13})(?!\d)')
+# 第二组可选捕获小数部分（如 1787888455.650 的 .650），用于
+# 日志查看器精确还原毫秒。group(1) 仍是整数部分，向后兼容
+# 仅用 group(1) 的调用方（如 extract_log_ts）。
+_LOG_TS_RE = re.compile(r'(?<!\d)(\d{10,13})(?:\.(\d{1,6}))?(?!\d)')
 
 
 def extract_log_ts(line: str) -> float | None:

@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from serial_debug.core.log_parser import _LOG_TS_RE
 from serial_debug.infra import config, themes
 from serial_debug.infra.error_log import log_exc
 from serial_debug.ui import qt_theme
@@ -61,7 +62,6 @@ from serial_debug.ui.qt_monitor_window import _iter_panel_vars
 
 # ---- 常量（与 tkinter 版一致）----------------------------------------
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')
-TS_RE = re.compile(r'^(\d{13})\b')
 RENDER_BATCH = 50000
 SEARCH_SCAN_LIMIT = 2_000_000
 GLOBAL_SEARCH_MAX = 500
@@ -91,20 +91,35 @@ def _classify(line: str) -> str:
 
 
 def _convert_ts(line: str) -> str:
-    """13 位 ms 时间戳 → [MM-DD HH:MM:SS.mmm] 前缀（不含年份）。失败返回空串。
+    """日志行时间戳 → [MM-DD HH:MM:SS.mmm] 前缀（不含年份）。失败返回空串。
 
-    格式：月-日 时:分:秒.毫秒。毫秒仍手拼以避免 strftime 的 %f 位数不可控
+    支持两种格式（复用 core.log_parser._LOG_TS_RE，DRY）：
+    - 13 位毫秒时间戳（如 1693045530123）：整数即毫秒
+    - 10~12 位秒级时间戳（如 1787888455 或 1787888455.650）：
+      整数即秒，可选小数部分作毫秒（取前 3 位，不足补零）
+
+    格式：月-日 时:分:秒.毫秒。毫秒手拼以避免 strftime %f 位数不可控
     和 Windows 上 strftime 对 %f 支持不一致的问题。
     """
-    m = TS_RE.match(line)
+    m = _LOG_TS_RE.search(line)
     if not m:
         return ''
+    digits = m.group(1)
+    frac = m.group(2)
     try:
-        ms = int(m.group(1))
+        num = int(digits)
     except ValueError:
         return ''
-    dt = datetime.fromtimestamp(ms / 1000.0)
-    return dt.strftime('[%m-%d %H:%M:%S.') + f'{ms % 1000:03d}] '
+    if len(digits) == 13:
+        # 13 位毫秒时间戳：整数本身即毫秒，忽略可能的小数部分
+        seconds = num // 1000
+        ms = num % 1000
+    else:
+        # 10~12 位秒级时间戳：小数部分即毫秒（取前 3 位，不足补零）
+        seconds = num
+        ms = int(frac[:3].ljust(3, '0')) if frac else 0
+    dt = datetime.fromtimestamp(seconds)
+    return dt.strftime('[%m-%d %H:%M:%S.') + f'{ms:03d}] '
 
 
 # ---- 行号区 ----------------------------------------------------------

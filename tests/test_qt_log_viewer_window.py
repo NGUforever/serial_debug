@@ -97,6 +97,120 @@ def test_convert_ts_without_timestamp_returns_empty():
     assert _convert_ts('12345 short') == ''
 
 
+# ---- _convert_ts 10 位秒级格式（用户真实日志格式，2026-08-31 缺陷修复）----
+
+def test_convert_ts_10digit_seconds_with_fraction_milliseconds():
+    """10 位秒 + 小数点 + 3 位毫秒（用户真实日志格式）应正确转换。
+
+    1787888455.650 在 UTC+8 → [08-28 11:40:55.650]。
+    """
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    result = _convert_ts('1787888455.650 -17.037 29.143 -23.445')
+    assert result == '[08-28 11:40:55.650] ', f'真实日志格式转换错误：{result!r}'
+
+
+def test_convert_ts_10digit_seconds_pure():
+    """10 位纯秒时间戳（无小数）应转换，毫秒补零为 .000。"""
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    result = _convert_ts('1787888455 hello')
+    assert result == '[08-28 11:40:55.000] ', f'10 位纯秒转换错误：{result!r}'
+
+
+def test_convert_ts_13digit_milliseconds_unchanged():
+    """13 位毫秒时间戳仍应正常工作（格式不破坏）。
+
+    1693045530123 在 UTC+8 → [08-26 18:25:30.123]。
+    """
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    result = _convert_ts('1693045530123 hello')
+    assert result == '[08-26 18:25:30.123] ', f'13 位毫秒格式破坏：{result!r}'
+
+
+def test_convert_ts_10digit_seconds_single_digit_fraction_padded():
+    """10 位秒 + 1 位小数（如 .6）应补零到 3 位（.600）。"""
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    result = _convert_ts('1787888455.6 hello')
+    assert result == '[08-28 11:40:55.600] ', f'1 位小数补零错误：{result!r}'
+
+
+def test_convert_ts_existing_date_format_not_mangled():
+    """已是日期格式（如 2026-08-28 11:40:55）不应被误转换。
+
+    各数字段（2026/08/28/11/40/55）均不足 10 位，正则不匹配，返回空串。
+    """
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    assert _convert_ts('2026-08-28 11:40:55 hello') == ''
+    assert _convert_ts('08-28 11:40:55 hello') == ''
+
+
+def test_convert_ts_no_timestamp_unchanged():
+    """无时间戳行应返回空串（调用方原样显示）。"""
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    assert _convert_ts('no timestamp here') == ''
+    assert _convert_ts('123456789 too short') == ''  # 9 位不算时间戳
+
+
+def test_convert_ts_not_anchored_to_line_start():
+    """时间戳不必在行首（search 而非 match），支持前导内容。
+
+    回放日志可能含 '[INFO] 1787888455.650 ...' 这类前缀。
+    """
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    result = _convert_ts('[INFO] 1787888455.650 some data')
+    assert result == '[08-28 11:40:55.650] ', f'非行首时间戳转换错误：{result!r}'
+
+
+def test_convert_ts_real_log_file_first_lines(tmp_path, monkeypatch):
+    """端到端：用户机器上的真实日志文件前 5 行都应加 [08-28 ...] 前缀。
+
+    真实文件路径：/home/ninebot/Documents/3K0055_08-28-16-17_08-28-16-40_3444/
+    private/rtk_1787888444649_1787888485249.txt，格式为
+    '1787888455.650 -17.037 29.143 -23.445'。
+    本测试内联同样数据（不依赖外部文件存在），验证批量转换正确。
+    """
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    # 真实日志前 5 行（从机器 head -5 读取，1787888xxx 即 08-28）
+    real_lines = [
+        '1787888455.650 -17.037 29.143 -23.445',
+        '1787888456.049 -16.958 29.177 -23.449',
+        '1787888456.451 -16.917 29.225 -23.459',
+        '1787888456.849 -16.872 29.295 -23.461',
+        '1787888457.249 -16.854 29.373 -23.467',
+    ]
+    expected = [
+        '[08-28 11:40:55.650] ',
+        '[08-28 11:40:56.049] ',
+        '[08-28 11:40:56.451] ',
+        '[08-28 11:40:56.849] ',
+        '[08-28 11:40:57.249] ',
+    ]
+    for line, exp in zip(real_lines, expected):
+        got = _convert_ts(line)
+        assert got == exp, f'真实日志行 {line!r} 期望 {exp!r} 实得 {got!r}'
+
+    # 若机器上真实文件存在，额外读取并验证前 5 行
+    import os
+
+    real_path = (
+        '/home/ninebot/Documents/3K0055_08-28-16-17_08-28-16-40_3444/'
+        'private/rtk_1787888444649_1787888485249.txt'
+    )
+    if os.path.exists(real_path):
+        with open(real_path, encoding='utf-8', errors='replace') as f:
+            head_lines = [next(f).rstrip('\n') for _ in range(5)]
+        for line in head_lines:
+            got = _convert_ts(line)
+            assert got.startswith('[08-28 11:40'), f'真实文件行 {line!r} 转换错误：{got!r}'
+
+
 # ---- _is_dangerous_regex ----
 
 def test_is_dangerous_regex_detects_nested_quantifiers():
