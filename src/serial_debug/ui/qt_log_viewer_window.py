@@ -74,6 +74,13 @@ FILTER_RESULT_MAX = 50000       # 旧默认值，保留作为兜底常量；运�
 FILTER_INSERT_BATCH = 5000
 FILTER_MAX_LINE_LEN = 8000  # 单行搜索时截断上限：避免超长行 + 灾难性正则回溯
 FILTER_SCAN_TIMEOUT_MS = 800  # 单次筛选扫描超时（墙钟）：超过就中断 + 报警
+# 显示懒加载：筛选命中总数可达数十万行（无限制模式），但 QTreeWidget 一次性
+# 插入全部会让每个 QTreeWidgetItem 占内存 + 渲染卡死。_filtered_idx 仍存全部命中
+# （int 列表，50万行约 4MB，无压力），但树只插入前 FILTER_DISPLAY_MAX 行，状态栏
+# 提示"命中 X 行，仅显示前 N 行"，并提供"加载更多"按钮与 locate_line 按需加载窗口。
+# 见 _render_results / _load_more / locate_line。
+FILTER_DISPLAY_MAX = 50000   # 树初始显示行数上限
+FILTER_LOAD_MORE_BATCH = 50000  # "加载更多" / locate_line 按需加载时每批行数
 LIVE_POLL_MS = 500
 LIVE_IDLE_POLL_MS = 2000
 LIVE_IDLE_THRESHOLD = 6
@@ -1909,6 +1916,10 @@ class _QtFilterPanel(QDockWidget):
         self._filtered_idx: list[int] = []
         self._last_scanned_idx = 0
         self._on_locate = on_locate
+        # 显示懒加载：_filtered_idx 存全部命中，但树只插前 N 行，避免 QTreeWidget
+        # 一次性插入几十万 QTreeWidgetItem 导致内存爆 + 渲染卡死。
+        # _displayed_count = 当前树中已插入的命中数（= _filtered_idx 的前缀）。
+        self._displayed_count = 0
         # 后台筛选：worker 运行在独立 QThread，避免正则灾难性回溯冻结 UI
         self._filter_epoch = 0
         self._filter_thread = QThread(self)
@@ -2117,12 +2128,18 @@ class _QtFilterPanel(QDockWidget):
         # info Label
         self._info_lbl = QLabel('就绪')
         v.addWidget(self._info_lbl)
+        # "加载更多"按钮：命中数超过树已显示数时可见，点击加载下一批。
+        # 解决无限制模式下命中几十万行 QTreeWidget 一次性插入卡死的问题。
+        self._load_more_btn = QPushButton('加载更多…')
+        self._load_more_btn.setVisible(False)
+        self._load_more_btn.clicked.connect(self._load_more)
+        v.addWidget(self._load_more_btn)
         self.setWidget(container)
         # 内部控件不卡最小宽度，允许 DockWidget 拖到任意窄
         for w in (self._level_box, self._regex_edit, self._tree,
                   self._apply_btn, self._clear_btn, self._info_lbl,
                   self._max_rows_box, self._unlimited_box, btn_row, container,
-                  level_row, regex_row):
+                  level_row, regex_row, self._load_more_btn):
             try:
                 w.setMinimumWidth(0)
                 w.setMinimumSize(0, 0)
@@ -2162,7 +2179,9 @@ class _QtFilterPanel(QDockWidget):
         self._filter_epoch += 1
         self._filtered_idx = []
         self._last_scanned_idx = 0
+        self._displayed_count = 0
         self._tree.clear()
+        self._load_more_btn.setVisible(False)
         if tab is not None:
             tab._on_lines_appended = self._on_lines_appended
         self._apply_filter()
@@ -2229,6 +2248,11 @@ class _QtFilterPanel(QDockWidget):
         self._filtered_idx = filtered
         self._last_scanned_idx = total
         self._render_results(filtered, total)
+        # 信息：命中数 vs 已显示数，超显示上限时提示
+        shown = self._displayed_count
+        if len(filtered) > shown:
+            info = (f'{info}（命中 {len(filtered)} 行，仅显示前 {shown} 行，'
+                    '点击「加载更多」或精确筛选）')
         # 无限制模式下命中行数过多时追加警告，引导用户筛更精确
         if self._unlimited and len(filtered) > 500000:
             info = (f'{info}  ⚠ 已加载 {len(filtered)} 行，'
@@ -2240,7 +2264,9 @@ class _QtFilterPanel(QDockWidget):
         if epoch != self._filter_epoch:
             return
         self._filtered_idx = []
+        self._displayed_count = 0
         self._tree.clear()
+        self._load_more_btn.setVisible(False)
         self._info_lbl.setText(msg)
 
     def _apply_filter_incremental(self, new_count: int):
@@ -2276,10 +2302,20 @@ class _QtFilterPanel(QDockWidget):
             new_filtered.append(i)
         if new_filtered:
             self._filtered_idx.extend(new_filtered)
-            self._insert_into_tree(new_filtered)
+            # 仅在未达显示上限时插入新命中到树（保持树 = _filtered_idx 前缀）
+            if self._displayed_count < FILTER_DISPLAY_MAX:
+                remain = FILTER_DISPLAY_MAX - self._displayed_count
+                to_show = new_filtered[:remain]
+                if to_show:
+                    self._insert_into_tree(to_show)
+                    self._displayed_count += len(to_show)
+            self._update_load_more_btn()
         self._last_scanned_idx = end
         info = (f'{len(self._filtered_idx)} / {len(lines)} 行'
                 f'（增量 +{len(new_filtered)}）')
+        if len(self._filtered_idx) > self._displayed_count:
+            info = (f'{info}（命中 {len(self._filtered_idx)} 行，'
+                    f'仅显示前 {self._displayed_count} 行）')
         # 无限制模式下累计命中过多时追加警告
         if self._unlimited and len(self._filtered_idx) > 500000:
             info = (f'{info}  ⚠ 已加载 {len(self._filtered_idx)} 行，'
@@ -2287,22 +2323,32 @@ class _QtFilterPanel(QDockWidget):
         self._info_lbl.setText(info)
 
     def _render_results(self, filtered: list[int], total: int = 0):
-        """全量渲染：清 Tree + 分批插。包 setUpdatesEnabled 减少闪烁/卡顿。"""
+        """全量渲染：清 Tree + 只插前 FILTER_DISPLAY_MAX 行（显示懒加载）。
+
+        _filtered_idx 存全部命中（int 列表），但 QTreeWidget 一次性插入几十万
+        QTreeWidgetItem 会让每个对象占内存 + 渲染卡死。故树只插前 N 行，状态栏
+        提示"命中 X 行，仅显示前 N 行"，提供「加载更多」按钮，locate_line 按需加载。
+        """
         self._tree.setUpdatesEnabled(False)
         try:
             self._tree.clear()
-            self._insert_into_tree(filtered)
+            display_slice = filtered[:FILTER_DISPLAY_MAX]
+            self._insert_into_tree(display_slice)
+            self._displayed_count = len(display_slice)
         finally:
             self._tree.setUpdatesEnabled(True)
         if total == 0:
             total = len(self._tab.all_lines()) if self._tab else 0
-        self._info_lbl.setText(f'{len(filtered)} / {total} 行')
+        self._update_load_more_btn()
+        self._update_info_text(total)
 
     def _insert_into_tree(self, idx_list: list[int]):
-        """分批插入 QTreeWidgetItem（FILTER_INSERT_BATCH=5000）。"""
+        """分批插入 QTreeWidgetItem（FILTER_INSERT_BATCH=5000）。
+
+        idx_list 是要插入的 line_idx 列表（已截断到显示范围，由调用方负责）。
+        """
         if not idx_list:
             return
-        # 简化：直接 addTopLevelItems 批插（QTreeWidget 比 tkinter Treeview 快）
         lines = self._tab.all_lines() if self._tab else []
         tags = self._tab._line_tags if self._tab else []
         start = 0
@@ -2322,9 +2368,87 @@ class _QtFilterPanel(QDockWidget):
                 items.append(item)
             self._tree.addTopLevelItems(items)
             start = end
-        # 跳到顶部
+        # 跳到顶部（仅全量渲染后；增量/load_more 不跳）
         if self._tree.topLevelItemCount() > 0:
             self._tree.setCurrentItem(self._tree.topLevelItem(0))
+
+    def _update_load_more_btn(self):
+        """「加载更多」按钮可见性：命中数 > 已显示数 时显示。"""
+        self._load_more_btn.setVisible(
+            len(self._filtered_idx) > self._displayed_count)
+
+    def _load_more(self):
+        """「加载更多」按钮：插入下一批命中到树。"""
+        start = self._displayed_count
+        end = min(start + FILTER_LOAD_MORE_BATCH, len(self._filtered_idx))
+        if start >= end:
+            return
+        self._tree.setUpdatesEnabled(False)
+        try:
+            self._insert_into_tree_no_jump(self._filtered_idx[start:end])
+            self._displayed_count = end
+        finally:
+            self._tree.setUpdatesEnabled(True)
+        self._update_load_more_btn()
+        self._update_info_text()
+
+    def _insert_into_tree_no_jump(self, idx_list: list[int]):
+        """分批插入但不跳到顶部（用于 load_more / ensure_displayed）。"""
+        if not idx_list:
+            return
+        lines = self._tab.all_lines() if self._tab else []
+        tags = self._tab._line_tags if self._tab else []
+        start = 0
+        while start < len(idx_list):
+            end = min(start + FILTER_INSERT_BATCH, len(idx_list))
+            items = []
+            for i in range(start, end):
+                line_idx = idx_list[i]
+                ln = lines[line_idx] if line_idx < len(lines) else ''
+                tag = tags[line_idx] if line_idx < len(tags) else 'log'
+                item = QTreeWidgetItem([str(line_idx + 1), ln])
+                item.setData(0, Qt.UserRole, line_idx)
+                color = self._color_for_tag(tag)
+                item.setForeground(0, QColor(color))
+                item.setForeground(1, QColor(color))
+                items.append(item)
+            self._tree.addTopLevelItems(items)
+            start = end
+
+    def _ensure_displayed_to(self, pos: int):
+        """确保树已插入到覆盖 idx_list 位置 pos 的行（供 locate_line 用）。
+
+        pos 是 _filtered_idx 中的下标。若 pos >= _displayed_count，按需加载
+        到 pos + 1（向上取整到 FILTER_LOAD_MORE_BATCH 批，减少反复加载）。
+        """
+        if pos < self._displayed_count:
+            return
+        target = min(len(self._filtered_idx),
+                      pos + 1 + FILTER_LOAD_MORE_BATCH)
+        if target <= self._displayed_count:
+            return
+        self._tree.setUpdatesEnabled(False)
+        try:
+            self._insert_into_tree_no_jump(
+                self._filtered_idx[self._displayed_count:target])
+            self._displayed_count = target
+        finally:
+            self._tree.setUpdatesEnabled(True)
+        self._update_load_more_btn()
+        self._update_info_text()
+
+    def _update_info_text(self, total: int | None = None):
+        """刷新 info label（命中/已显示/总数），保留无限制警告。"""
+        if total is None:
+            total = (len(self._tab.all_lines()) if self._tab else 0)
+        info = (f'{len(self._filtered_idx)} / {total} 行')
+        if len(self._filtered_idx) > self._displayed_count:
+            info = (f'{info}（命中 {len(self._filtered_idx)} 行，'
+                    f'仅显示前 {self._displayed_count} 行）')
+        if self._unlimited and len(self._filtered_idx) > 500000:
+            info = (f'{info}  ⚠ 已加载 {len(self._filtered_idx)} 行，'
+                    '继续操作可能变慢，建议筛更精确')
+        self._info_lbl.setText(info)
 
     def _color_for_tag(self, tag: str) -> str:
         t = self._theme
@@ -2351,11 +2475,17 @@ class _QtFilterPanel(QDockWidget):
                 pass
 
     def locate_line(self, line_idx: int):
-        """主 Text 点击 → 选中 <= line_idx 的最近匹配行。"""
+        """主 Text 点击 → 选中 <= line_idx 的最近匹配行。
+
+        显示懒加载：若 pos 超过树已显示数，先按需加载到 pos+1 再定位。
+        """
         # 二分查找 filtered_idx 中 <= line_idx 的最大值
         pos = bisect_right(self._filtered_idx, line_idx) - 1
         if pos < 0:
             return
+        # 懒加载：目标 pos 超过树已插入行数时，按需加载到覆盖 pos 的批次
+        if pos >= self._displayed_count:
+            self._ensure_displayed_to(pos)
         item = self._tree.topLevelItem(pos)
         if item is None:
             return
@@ -2366,7 +2496,9 @@ class _QtFilterPanel(QDockWidget):
     def clear_results(self):
         self._tree.clear()
         self._filtered_idx = []
+        self._displayed_count = 0
         self._last_scanned_idx = 0
+        self._load_more_btn.setVisible(False)
         self._info_lbl.setText('就绪')
 
     def shutdown_filter_thread(self):

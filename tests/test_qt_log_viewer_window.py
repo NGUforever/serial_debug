@@ -1969,6 +1969,198 @@ def test_filter_panel_unlimited_incremental_no_truncate(qtbot, monkeypatch, tmp_
     panel.shutdown_filter_thread()
 
 
+# ---- 显示懒加载（大日志筛选不卡死）----
+
+def test_filter_panel_render_results_caps_display(qtbot, tmp_path):
+    """_render_results 命中数超过 FILTER_DISPLAY_MAX 时，树只插前 N 行，
+    _filtered_idx 仍存全部命中。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui import qt_log_viewer_window as mod
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['hit'] * 10)
+    panel.set_tab(tab)
+    panel._filtered_idx = list(range(10))
+    # 构造 10 条命中，但临时把显示上限调到 3
+    old = mod.FILTER_DISPLAY_MAX
+    mod.FILTER_DISPLAY_MAX = 3
+    try:
+        panel._render_results(list(range(10)), 10)
+        # 树只插前 3 行
+        assert panel._tree.topLevelItemCount() == 3
+        # _filtered_idx 仍存全部 10 条
+        assert len(panel._filtered_idx) == 10
+        assert panel._displayed_count == 3
+        # 「加载更多」按钮应可见（offscreen 下父未 show 时 isVisible() 总返
+        # False，改用 not isHidden() 校验显隐意图）
+        assert not panel._load_more_btn.isHidden()
+        # info 标签应提示"仅显示前 N 行"
+        assert '仅显示前' in panel._info_lbl.text()
+    finally:
+        mod.FILTER_DISPLAY_MAX = old
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_load_more_inserts_next_batch(qtbot, tmp_path):
+    """「加载更多」点击后插入下一批，displayed_count 增长，按钮可见性更新。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui import qt_log_viewer_window as mod
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['hit'] * 12)
+    panel.set_tab(tab)
+    panel._filtered_idx = list(range(12))
+    old_disp = mod.FILTER_DISPLAY_MAX
+    old_batch = mod.FILTER_LOAD_MORE_BATCH
+    mod.FILTER_DISPLAY_MAX = 3
+    mod.FILTER_LOAD_MORE_BATCH = 5
+    try:
+        panel._render_results(list(range(12)), 12)
+        assert panel._tree.topLevelItemCount() == 3
+        assert panel._displayed_count == 3
+        # 加载一批 → 3+5=8
+        panel._load_more()
+        assert panel._tree.topLevelItemCount() == 8
+        assert panel._displayed_count == 8
+        assert not panel._load_more_btn.isHidden()
+        # 再加载一批 → 8+4=12（只剩 4 条）
+        panel._load_more()
+        assert panel._tree.topLevelItemCount() == 12
+        assert panel._displayed_count == 12
+        # 全部加载完按钮隐藏
+        assert panel._load_more_btn.isHidden()
+    finally:
+        mod.FILTER_DISPLAY_MAX = old_disp
+        mod.FILTER_LOAD_MORE_BATCH = old_batch
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_locate_line_lazy_loads(qtbot, tmp_path):
+    """locate_line 目标 pos 超过已显示数时按需加载，定位成功。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui import qt_log_viewer_window as mod
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, [str(i) for i in range(20)])
+    panel.set_tab(tab)
+    old_disp = mod.FILTER_DISPLAY_MAX
+    old_batch = mod.FILTER_LOAD_MORE_BATCH
+    mod.FILTER_DISPLAY_MAX = 5
+    mod.FILTER_LOAD_MORE_BATCH = 3
+    try:
+        # 命中 20 行，树只显示前 5
+        panel._filtered_idx = list(range(20))
+        panel._render_results(list(range(20)), 20)
+        assert panel._displayed_count == 5
+        # locate_line(15) → bisect_right([0..19], 15) - 1 = 15，pos=15 > displayed=5
+        # 应触发按需加载，然后定位到 item
+        panel.locate_line(15)
+        # 现在已加载覆盖到 pos=15
+        assert panel._displayed_count > 15
+        item = panel._tree.currentItem()
+        assert item is not None
+        # 当前选中项的 line_idx 应 = 15
+        from PySide6.QtCore import Qt
+        assert item.data(0, Qt.UserRole) == 15
+    finally:
+        mod.FILTER_DISPLAY_MAX = old_disp
+        mod.FILTER_LOAD_MORE_BATCH = old_batch
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_large_log_500k_no_freeze(qtbot, monkeypatch, tmp_path):
+    """50 万行大日志 + 宽正则命中全部：筛选不卡死，树显示受限。
+
+    验收点：构造 50 万行，宽正则命中全部，_filtered_idx=500000（不截断），
+    树只插 FILTER_DISPLAY_MAX 行（不是 50 万），渲染耗时合理（< 10s），
+    locate_line 在未显示区按需加载不抛。
+    """
+    import importlib
+    import time as _time
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / '.config'))
+    from serial_debug.infra import config
+    importlib.reload(config)
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui import qt_log_viewer_window as mod
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    # 无限制模式：不截断命中
+    panel._unlimited_box.setChecked(True)
+    assert panel._get_filter_max() == 2_000_000_000
+    n = 500_000
+    lines = ['hit'] * n
+    tab = _make_tab(qtbot, tmp_path, lines)
+    panel.set_tab(tab)
+    panel._regex_edit.setText('hit')
+    t0 = _time.monotonic()
+    panel._apply_filter()
+    qtbot.wait(1500)
+    elapsed = _time.monotonic() - t0
+    # 命中不截断
+    assert len(panel._filtered_idx) == n, (
+        f'expected {n} hits, got {len(panel._filtered_idx)}')
+    # 树显示受限：不应是 50 万（应是 FILTER_DISPLAY_MAX）
+    tree_count = panel._tree.topLevelItemCount()
+    assert tree_count == mod.FILTER_DISPLAY_MAX, (
+        f'tree should cap at FILTER_DISPLAY_MAX={mod.FILTER_DISPLAY_MAX}, '
+        f'got {tree_count}')
+    assert panel._displayed_count == mod.FILTER_DISPLAY_MAX
+    # 「加载更多」按钮可见
+    assert not panel._load_more_btn.isHidden()
+    # info 标签提示"仅显示前"
+    assert '仅显示前' in panel._info_lbl.text()
+    # 渲染耗时合理（worker 扫 50 万 + 树插 5 万，应 < 10s）
+    assert elapsed < 10.0, f'render too slow: {elapsed:.2f}s'
+    # locate_line 在未显示区（如 line_idx=400000）按需加载不抛
+    panel.locate_line(400_000)
+    assert panel._displayed_count > 400_000
+    # 定位后选中项应存在
+    cur = panel._tree.currentItem()
+    assert cur is not None
+    panel.shutdown_filter_thread()
+
+
+def test_filter_panel_ensure_displayed_to_idempotent(qtbot, tmp_path):
+    """_ensure_displayed_to 对已显示范围不重复加载。"""
+    _make_qapp()
+    from serial_debug.infra import themes
+    from serial_debug.ui import qt_log_viewer_window as mod
+    from serial_debug.ui.qt_log_viewer_window import _QtFilterPanel
+
+    panel = _QtFilterPanel(parent=None, theme=themes.THEMES['dark'])
+    qtbot.addWidget(panel)
+    tab = _make_tab(qtbot, tmp_path, ['hit'] * 10)
+    panel.set_tab(tab)
+    old_disp = mod.FILTER_DISPLAY_MAX
+    mod.FILTER_DISPLAY_MAX = 4
+    try:
+        panel._filtered_idx = list(range(10))
+        panel._render_results(list(range(10)), 10)
+        assert panel._displayed_count == 4
+        # pos=2 已在已显示范围 → 不加载
+        panel._ensure_displayed_to(2)
+        assert panel._displayed_count == 4
+        # pos=8 超出 → 加载
+        panel._ensure_displayed_to(8)
+        assert panel._displayed_count > 8
+    finally:
+        mod.FILTER_DISPLAY_MAX = old_disp
+    panel.shutdown_filter_thread()
+
+
 # ---- QtLogViewerWindow 基础构造 ----
 
 def test_qt_log_viewer_window_construction(qtbot, tmp_path):
