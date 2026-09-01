@@ -211,6 +211,47 @@ def test_convert_ts_real_log_file_first_lines(tmp_path, monkeypatch):
             assert got.startswith('[08-28 11:40'), f'真实文件行 {line!r} 转换错误：{got!r}'
 
 
+def test_convert_ts_beijing_time_independent_of_system_timezone(monkeypatch):
+    """_convert_ts 应显式北京时间（UTC+8），不依赖系统时区。
+
+    在 TZ=UTC（系统时区设为 UTC）下，1787888455 的 UTC 时间是 03:40:55，
+    北京时间是 11:40:55。若 _convert_ts 仍用裸 fromtimestamp（依赖系统时区），
+    则在 TZ=UTC 下会返回 [08-28 03:40:55.xxx]（错误）。显式 BEIJING_TZ 应返回
+    [08-28 11:40:55.xxx] 无论系统时区。
+    """
+    monkeypatch.setenv('TZ', 'UTC')
+    import time as _time
+    _time.tzset()  # 应用 TZ=UTC 到进程
+    from serial_debug.ui.qt_log_viewer_window import _convert_ts
+
+    # 10 位秒 + 毫秒
+    assert _convert_ts('1787888455.650') == '[08-28 11:40:55.650] '
+    # 10 位纯秒
+    assert _convert_ts('1787888455') == '[08-28 11:40:55.000] '
+    # 13 位毫秒
+    assert _convert_ts('1787888455650') == '[08-28 11:40:55.650] '
+
+
+def test_convert_ts_beijing_offset_eight_hours():
+    """北京时间 = UTC + 8。验证一个已知 UTC 时间戳的差恰好 8 小时。
+
+    1787888455 的 UTC 是 03:40:55（2026-08-28），北京是 11:40:55，差 8h。
+    """
+    from datetime import datetime, timezone
+
+    from serial_debug.ui.qt_log_viewer_window import BEIJING_TZ, _convert_ts
+
+    ts = 1787888455
+    # UTC 直接算
+    utc_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M:%S')
+    assert utc_str == '03:40:55', f'UTC 时间计算错：{utc_str}'
+    # 北京时间
+    beijing_str = datetime.fromtimestamp(ts, tz=BEIJING_TZ).strftime('%H:%M:%S')
+    assert beijing_str == '11:40:55', f'北京时间计算错：{beijing_str}'
+    # _convert_ts 输出含北京时间
+    assert '11:40:55' in _convert_ts(f'{ts}.0')
+
+
 # ---- _is_dangerous_regex ----
 
 def test_is_dangerous_regex_detects_nested_quantifiers():

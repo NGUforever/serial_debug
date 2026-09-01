@@ -15,7 +15,7 @@ import re
 import sys
 import time
 from bisect import bisect_right
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import QObject, QRect, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
@@ -85,6 +85,12 @@ LIVE_POLL_MS = 500
 LIVE_IDLE_POLL_MS = 2000
 LIVE_IDLE_THRESHOLD = 6
 
+# 日志时间戳统一按北京时间（UTC+8）显示。不依赖 tzdata/系统时区数据库——
+# 日志时间戳是 Unix 秒（绝对时间），转北京时间即 +8 偏移。这样 PyInstaller
+# 打包版即使无 tzdata（无 Asia/Shanghai 字符串）也能正确显示北京时间，
+# 不会 fallback 到 UTC。见 _convert_ts / qt_monitor_window 时间轴/曲线。
+BEIJING_TZ = timezone(timedelta(hours=8))
+
 _NOTE_KEYWORDS = ('error', 'fail', 'warn', 'exception', 'critical')
 
 
@@ -126,7 +132,9 @@ def _convert_ts(line: str) -> str:
         # 10~12 位秒级时间戳：小数部分即毫秒（取前 3 位，不足补零）
         seconds = num
         ms = int(frac[:3].ljust(3, '0')) if frac else 0
-    dt = datetime.fromtimestamp(seconds)
+    # 显式北京时间（UTC+8）：不依赖 tzdata/系统时区数据库，避免 PyInstaller
+    # 打包版无 tzdata 时 fromtimestamp fallback 到 UTC 显示成 UTC 时间。
+    dt = datetime.fromtimestamp(seconds, tz=BEIJING_TZ)
     return dt.strftime('[%m-%d %H:%M:%S.') + f'{ms:03d}] '
 
 

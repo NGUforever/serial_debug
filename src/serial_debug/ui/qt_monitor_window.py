@@ -21,6 +21,7 @@ import argparse
 import os
 import sys
 import threading
+from datetime import timedelta, timezone
 
 # 延迟导入 PySide6/pyqtgraph：仅 Qt 窗口实际启动时才加载
 # 让旧 tkinter 主程序不强制依赖 Qt（即便没装 Qt 也能跑 tkinter 路径）
@@ -35,6 +36,11 @@ from serial_debug.core.panel_vars import (
 )
 from serial_debug.infra import themes
 from serial_debug.infra.error_log import log_exc
+
+# 日志时间戳统一按北京时间（UTC+8）显示：不依赖 tzdata/系统时区数据库，
+# 避免 PyInstaller 打包版无 tzdata 时 fromtimestamp fallback 到 UTC。
+# 见 _make_time_axis / _draw_hover_label 等 fromtimestamp 调用。
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 # ---- 静态变量注册表（从 Panel.DEFAULT_VARS 派生，加前缀避免冲突）---------
@@ -277,7 +283,8 @@ def _make_time_axis(theme):
                 fmt = '%m-%d'
             for v in values:
                 try:
-                    out.append(_dt.datetime.fromtimestamp(v).strftime(fmt))
+                    out.append(_dt.datetime.fromtimestamp(
+                        v, tz=BEIJING_TZ).strftime(fmt))
                 except (OSError, ValueError, OverflowError):
                     out.append(f'{v:.0f}')
             return out
@@ -4125,8 +4132,8 @@ class QtMonitorWindow:
                 snap_ts = rows[0][3]
                 try:
                     import datetime as _dt
-                    t_str = _dt.datetime.fromtimestamp(snap_ts).strftime(
-                        '%H:%M:%S')
+                    t_str = _dt.datetime.fromtimestamp(
+                        snap_ts, tz=BEIJING_TZ).strftime('%H:%M:%S')
                 except Exception:
                     t_str = f't={snap_ts:.3f}'
                 # 用 HTML 拼：每行前面带一个该曲线颜色的圆点

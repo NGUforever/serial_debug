@@ -2277,6 +2277,33 @@ def test_make_time_axis_theme_failure_swallowed(monitor):
     assert ax is not None
 
 
+def test_make_time_axis_uses_beijing_time(monitor, monkeypatch):
+    """时间轴刻度应显式北京时间（UTC+8），不依赖系统时区。
+
+    1787888455 的 UTC 是 03:40:55，北京是 11:40:55。在 TZ=UTC 下，
+    若用裸 fromtimestamp 会得到 03:40:55（错误）；显式 BEIJING_TZ 应得 11:40:55。
+    """
+    monkeypatch.setenv('TZ', 'UTC')
+    import time as _time
+    _time.tzset()
+    ax = mod._make_time_axis({'muted': '#888', 'fg': '#fff'})
+    # spacing=10 → fmt='%H:%M:%S'
+    out = ax.tickStrings([1787888455.0], 1, 10)
+    assert isinstance(out, list)
+    assert out[0] == '11:40:55', f'时间轴非北京时间：{out[0]!r}'
+
+
+def test_make_time_axis_mmdd_uses_beijing_time(monitor, monkeypatch):
+    """时间轴 > 1h 精度（MM-DD HH:MM）也用北京时间。"""
+    monkeypatch.setenv('TZ', 'UTC')
+    import time as _time
+    _time.tzset()
+    ax = mod._make_time_axis({'muted': '#888', 'fg': '#fff'})
+    # spacing=100000 (>86400) → fmt='%m-%d'
+    out = ax.tickStrings([1787888455.0], 1, 100000)
+    assert out[0] == '08-28', f'时间轴日期非北京时间：{out[0]!r}'
+
+
 # ---- _on_plot_hover ----
 
 def test_on_plot_hover_outside_scene(monitor):
