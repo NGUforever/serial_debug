@@ -966,3 +966,96 @@ def test_app_check_theme_changed_config_pref_change_applies(app, monkeypatch):
     assert app.theme_pref == 'light'
     assert app.theme_name == 'github_light'
     assert applied == ['github_light']
+
+
+# ---- _open_qt_monitor / _open_log_viewer 子进程命令构造 ----
+# 教训7子任务：源码版（sys.frozen=False）必须加 -m serial_debug 才会跑 main()，
+# 打包版（sys.frozen=True）sys.executable 是二进制自身不能再加 -m。
+# mock subprocess.Popen 捕获 cmd/env，mock sys.frozen 区分两种场景。
+def _capture_popen(monkeypatch):
+    """返回 (calls_list, popen_mock)。每次 Popen(cmd, env=env) 记录 (cmd, env)。"""
+    calls = []
+
+    class _FakeProc:
+        pass
+
+    def _fake_popen(cmd, env=None, **kwargs):
+        calls.append((list(cmd), dict(env or {})))
+        return _FakeProc()
+
+    import subprocess as _sp
+    monkeypatch.setattr(_sp, 'Popen', _fake_popen)
+    return calls
+
+
+def test_open_qt_monitor_source_mode_adds_m_serial_debug(app, monkeypatch):
+    """源码版（sys.frozen=False）：Popen 命令应为 [python, -m, serial_debug]。"""
+    monkeypatch.setattr(sys, 'frozen', False, raising=False)
+    calls = _capture_popen(monkeypatch)
+    app._open_qt_monitor()
+    assert len(calls) == 1
+    cmd, env = calls[0]
+    assert cmd[:2] == [sys.executable, '-m']
+    assert cmd[2] == 'serial_debug'
+    assert env.get('SERIAL_DEBUG_QT_PILOT') == '1'
+
+
+def test_open_qt_monitor_frozen_mode_no_m_flag(app, monkeypatch):
+    """打包版（sys.frozen=True）：Popen 命令应为 [sys.executable]，不加 -m。"""
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    calls = _capture_popen(monkeypatch)
+    app._open_qt_monitor()
+    assert len(calls) == 1
+    cmd, env = calls[0]
+    assert cmd == [sys.executable]
+    assert '-m' not in cmd
+    assert env.get('SERIAL_DEBUG_QT_PILOT') == '1'
+
+
+def test_open_log_viewer_source_mode_adds_m_serial_debug(app, monkeypatch):
+    """源码版（sys.frozen=False）：Popen 命令应为 [python, -m, serial_debug]。"""
+    monkeypatch.setattr(sys, 'frozen', False, raising=False)
+    calls = _capture_popen(monkeypatch)
+    app._open_log_viewer()
+    assert len(calls) == 1
+    cmd, env = calls[0]
+    assert cmd[:2] == [sys.executable, '-m']
+    assert cmd[2] == 'serial_debug'
+    assert env.get('SERIAL_DEBUG_LOG_VIEWER') == '1'
+
+
+def test_open_log_viewer_frozen_mode_no_m_flag(app, monkeypatch):
+    """打包版（sys.frozen=True）：Popen 命令应为 [sys.executable]，不加 -m。"""
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    calls = _capture_popen(monkeypatch)
+    app._open_log_viewer()
+    assert len(calls) == 1
+    cmd, env = calls[0]
+    assert cmd == [sys.executable]
+    assert '-m' not in cmd
+    assert env.get('SERIAL_DEBUG_LOG_VIEWER') == '1'
+
+
+def test_open_qt_monitor_propagates_env_from_parent(app, monkeypatch):
+    """子进程应继承父进程环境变量（env = dict(os.environ)）再追加子窗口标记。"""
+    monkeypatch.setattr(sys, 'frozen', False, raising=False)
+    monkeypatch.setenv('PARENT_MARKER', 'present')
+    calls = _capture_popen(monkeypatch)
+    app._open_qt_monitor()
+    assert len(calls) == 1
+    _, env = calls[0]
+    assert env.get('PARENT_MARKER') == 'present'
+    assert env.get('SERIAL_DEBUG_QT_PILOT') == '1'
+
+
+def test_open_log_viewer_propagates_env_from_parent(app, monkeypatch):
+    """子进程应继承父进程环境变量（env = dict(os.environ)）再追加子窗口标记。"""
+    monkeypatch.setattr(sys, 'frozen', False, raising=False)
+    monkeypatch.setenv('PARENT_MARKER', 'present')
+    calls = _capture_popen(monkeypatch)
+    app._open_log_viewer()
+    assert len(calls) == 1
+    _, env = calls[0]
+    assert env.get('PARENT_MARKER') == 'present'
+    assert env.get('SERIAL_DEBUG_LOG_VIEWER') == '1'
+

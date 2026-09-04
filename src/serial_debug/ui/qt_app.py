@@ -1225,13 +1225,25 @@ class QtSerialDebugApp:
         """启动数据监视窗口子进程（避免双事件循环冲突）。
 
         用 sys.executable + 环境变量 SERIAL_DEBUG_QT_PILOT=1 走 main()
-        里的 QtMonitorWindow 路径，兼容 PyInstaller 打包后 -m 不识别。
+        里的 QtMonitorWindow 路径。
+
+        命令构造按 sys.frozen 区分：
+          - 打包版（PyInstaller，sys.frozen=True）：sys.executable 是二进制
+            自身，启动它会跑 main()，读环境变量走对应路径，不能再加 -m
+            （bootloader 不识别 -m）。
+          - 源码版（uv run python -m serial_debug，sys.frozen=False）：
+            sys.executable 是 .venv/bin/python3，必须加 -m serial_debug 才会
+            跑 main()；裸 python3 启动后不读环境变量、瞬间退出，子窗口打不开。
         """
         import subprocess
         env = dict(os.environ)
         env['SERIAL_DEBUG_QT_PILOT'] = '1'
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, '-m', 'serial_debug']
         try:
-            subprocess.Popen([sys.executable], env=env)
+            subprocess.Popen(cmd, env=env)
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self._win, '启动失败', str(e))
@@ -1356,14 +1368,24 @@ class QtSerialDebugApp:
 
         用 sys.executable + 环境变量 SERIAL_DEBUG_LOG_VIEWER=1 走 main()
         里的 _run_log_viewer_only([]) 路径，子进程内启动 QtLogViewerWindow
-        （PySide6 + QPlainTextEdit + QTabWidget），与主程序 Qt 路径一致；
-        兼容 PyInstaller 打包后 -m 不识别的情况。
+        （PySide6 + QPlainTextEdit + QTabWidget），与主程序 Qt 路径一致。
+
+        命令构造按 sys.frozen 区分（同 _open_qt_monitor）：
+          - 打包版（PyInstaller，sys.frozen=True）：sys.executable 是二进制
+            自身，启动它会跑 main()，读环境变量走对应路径，不能再加 -m
+            （bootloader 不识别 -m）。
+          - 源码版（sys.frozen=False）：sys.executable 是解释器，必须加
+            -m serial_debug 才会跑 main()，否则裸解释器瞬间退出子窗口打不开。
         """
         import subprocess
         env = dict(os.environ)
         env['SERIAL_DEBUG_LOG_VIEWER'] = '1'
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, '-m', 'serial_debug']
         try:
-            subprocess.Popen([sys.executable], env=env)
+            subprocess.Popen(cmd, env=env)
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self._win, '启动失败', str(e))
