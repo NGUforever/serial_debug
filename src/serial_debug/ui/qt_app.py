@@ -21,16 +21,25 @@ import queue
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
+from serial_debug.core.log_parser import _LOG_TS_RE
 from serial_debug.core.serial_backend import SerialBackend
 from serial_debug.infra import config, themes
 
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')   # 响应行判定
-TS_RE = re.compile(r'^(\d{13})\b')             # 设备时间戳：13 位毫秒
+# 设备时间戳正则复用 core.log_parser._LOG_TS_RE（DRY）：支持 10~13 位秒/毫秒
+# + 可选小数毫秒，与日志查看器 _convert_ts 一致，避免两套正则再次分叉。
 MAX_LINES = 5000
 DRAIN_MS = 30
 RESP_TIMEOUT = 2.0
 SAVE_DEBOUNCE_MS = 400
+
+# 日志时间戳统一按北京时间（UTC+8）显示。不依赖 tzdata/系统时区数据库——
+# 时间戳是 Unix 秒（绝对时间），转北京时间即 +8 偏移。这样 PyInstaller
+# 打包版即使无 tzdata（无 Asia/Shanghai 字符串）也能正确显示北京时间，
+# 不会 fallback 到 UTC。见 _ts_prefix_if_needed。
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _resource_path(relative_path: str) -> str:
@@ -946,23 +955,36 @@ class QtSerialDebugApp:
         return (f'{prefix}{line}\n', tag)
 
     def _ts_prefix_if_needed(self, line: str) -> str:
-        """13 位毫秒时间戳转可读时间（如果开启 ts_convert 且匹配）。"""
+        """行首时间戳转可读时间前缀（如果开启 ts_convert 且匹配）。
+
+        复用 core.log_parser._LOG_TS_RE 与日志查看器 _convert_ts 的算法（DRY）：
+        - 13 位毫秒时间戳（如 1788418270935）：整数即毫秒
+        - 10~12 位秒级时间戳（如 1788418270 或 1788418270.935）：
+          整数即秒，可选小数部分作毫秒（取前 3 位，不足补零）
+        输出 [MM-DD HH:MM:SS.mmm] 前缀（含日期，北京时间 UTC+8），
+        不依赖系统时区/tzdata（见 BEIJING_TZ 注释）。
+        """
         if not self.ts_convert:
             return ''
-        m = TS_RE.match(line)
+        m = _LOG_TS_RE.match(line)
         if not m:
             return ''
+        digits = m.group(1)
+        frac = m.group(2)
         try:
-            ts_ms = int(m.group(1))
-            secs = ts_ms / 1000.0
-            # 时:分:秒.毫秒
-            h = int(secs // 3600) % 24
-            mi = int(secs // 60) % 60
-            s = int(secs) % 60
-            ms = ts_ms % 1000
-            return f'{h:02d}:{mi:02d}:{s:02d}.{ms:03d} '
-        except Exception:
+            num = int(digits)
+        except ValueError:
             return ''
+        if len(digits) == 13:
+            # 13 位毫秒时间戳：整数本身即毫秒
+            seconds = num // 1000
+            ms = num % 1000
+        else:
+            # 10~12 位秒级时间戳：小数部分即毫秒（取前 3 位，不足补零）
+            seconds = num
+            ms = int(frac[:3].ljust(3, '0')) if frac else 0
+        dt = datetime.fromtimestamp(seconds, tz=BEIJING_TZ)
+        return dt.strftime('[%m-%d %H:%M:%S.') + f'{ms:03d}] '
 
     def _append_batch(self, batch: list[tuple[str, str]]):
         for text, tag in batch:
@@ -1334,7 +1356,7 @@ class QtSerialDebugApp:
             default_path = os.path.expanduser('~/serial_debug.log')
         path, _ = QFileDialog.getSaveFileName(
             self._win, '选择日志落盘文件', default_path,
-            '日志 (*.log);;文本 (*.txt);;所有文件 (*)')
+            '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)')
         if not path:
             return
         lw = LogWriter(path)

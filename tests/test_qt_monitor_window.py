@@ -3957,3 +3957,29 @@ def test_monitor_check_theme_changed_config_pref_change(monitor, qtbot, monkeypa
     assert monitor.theme_pref == 'light'
     assert monitor.theme_name == 'github_light'
     assert applied == ['github_light']
+
+
+# ---- _on_load_sample_file 文件对话框过滤器（问题2：所有文件首选） ----
+def test_on_load_sample_file_filter_all_files_first(qtbot, monkeypatch):
+    """解析器配置对话框的样本日志打开：过滤器以"所有文件"为第一段。"""
+    from PySide6.QtWidgets import QApplication, QMainWindow
+    _ = QApplication.instance() or QApplication([])
+    win = QMainWindow()
+    dlg = mod._QtParserConfigDialog(win, callback_save=lambda: None)
+    dlg._build()
+    captured = {}
+
+    def _fake_get_open(parent, title, last_dir, filters):
+        captured['filters'] = filters
+        return ('', '')  # 用户取消
+
+    import PySide6.QtWidgets as _w
+    monkeypatch.setattr(_w.QFileDialog, 'getOpenFileName', _fake_get_open)
+    dlg._on_load_sample_file()
+    expected = '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)'
+    assert captured['filters'] == expected
+    assert captured['filters'].split(';;')[0] == '所有文件 (*)'
+    second = captured['filters'].split(';;')[1]
+    for ext in ('*.txt', '*.log', '*.md', '*.csv', '*.json'):
+        assert ext in second
+    win.deleteLater()

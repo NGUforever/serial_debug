@@ -121,11 +121,15 @@ def test_ts_prefix_disabled_returns_empty(app):
 
 def test_ts_prefix_converts_13_digit_ms(app):
     app.ts_convert = True
-    p = app._ts_prefix_if_needed('1783996615491 hello')
-    assert p.endswith(' ')
-    # 形如 HH:MM:SS.mmm
-    parts = p.strip().split(':')
-    assert len(parts) == 3
+    p = app._ts_prefix_if_needed('1788418270935 hello')
+    # 形如 [MM-DD HH:MM:SS.mmm]  + 空格
+    assert p.startswith('[') and p.endswith('] ')
+    inner = p.rstrip()  # '[09-03 14:51:10.935]'
+    date_part, hms_part = inner[1:-1].split(' ')  # 去掉方括号
+    assert date_part.count('-') == 1   # MM-DD 含 1 个连字符
+    hms_parts = hms_part.split(':')
+    assert len(hms_parts) == 3
+    assert hms_parts[2].endswith('.935')  # 毫秒位
 
 
 def test_ts_prefix_no_match_returns_empty(app):
@@ -133,18 +137,35 @@ def test_ts_prefix_no_match_returns_empty(app):
     assert app._ts_prefix_if_needed('hello world') == ''
 
 
-def test_ts_prefix_non_13_digit_no_match(app):
-    """TS_RE 只匹配 13 位，10 位秒级时间戳不匹配。"""
+def test_ts_prefix_10_digit_seconds_with_fraction(app):
+    """10 位秒 + 小数毫秒也应转换（与日志查看器 _convert_ts 一致）。"""
     app.ts_convert = True
-    assert app._ts_prefix_if_needed('1234567890 hello') == ''
+    p = app._ts_prefix_if_needed('1788418270.935 hello')
+    assert p.startswith('[') and p.endswith('] ')
+    # 与 13 位毫秒 1788418270935 同一时刻
+    p13 = app._ts_prefix_if_needed('1788418270935 hello')
+    assert p == p13
+
+
+def test_ts_prefix_10_digit_seconds_no_fraction_zero_ms(app):
+    """10 位纯秒（无小数）→ 毫秒补零为 .000。"""
+    app.ts_convert = True
+    p = app._ts_prefix_if_needed('1788418270 hello')
+    assert p.endswith('.000] ')
+
+
+def test_ts_prefix_too_short_no_match(app):
+    """9 位及以下不匹配（_LOG_TS_RE 要求 10~13 位）。"""
+    app.ts_convert = True
+    assert app._ts_prefix_if_needed('123456789 hello') == ''
 
 
 def test_ts_prefix_combined_with_route_line(app):
     app.ts_convert = True
-    text, tag = app._route_line('1783996615491 I model 3wd1t_1 0 0 0')
+    text, tag = app._route_line('1788418270935 I model 3wd1t_1 0 0 0')
     assert tag == 'log'
-    # 应有时间戳前缀（HH:MM:SS.mmm + 空格）
-    assert ':' in text.split(' ')[0]
+    # 应有时间戳前缀 [MM-DD HH:MM:SS.mmm] （含空格分隔日期与时间）
+    assert text.startswith('[09-03 14:51:10.935] ')
 
 
 # ---- _make_status_dot set_state ----
@@ -389,9 +410,47 @@ def test_apply_at_mode_hidden_clears_state(app):
 
 # ---- _ts_prefix_if_needed 边界 ----
 def test_ts_prefix_13_digit_zero(app):
+    """13 位全 0 时间戳 → Unix epoch 的北京时间 [01-01 08:00:00.000]。"""
     app.ts_convert = True
     p = app._ts_prefix_if_needed('0000000000000 hello')
-    assert p.startswith('00:00:00.000 ')
+    assert p == '[01-01 08:00:00.000] '
+
+
+def test_ts_prefix_beijing_time_independent_of_system_tz(app, monkeypatch):
+    """TZ=UTC 环境下 1788418270935 仍输出北京时间（UTC+8），不依赖系统时区。"""
+    monkeypatch.setenv('TZ', 'UTC')
+    import time as _time
+    _time.tzset()
+    app.ts_convert = True
+    p = app._ts_prefix_if_needed('1788418270935 hello')
+    # 1788418270 秒 → UTC 2026-09-03 06:51:10 → 北京 +8 = 2026-09-03 14:51:10
+    assert p == '[09-03 14:51:10.935] '
+
+
+def test_ts_prefix_beijing_offset_eight_hours(app, monkeypatch):
+    """同一 Unix 时间戳 UTC vs 北京时间差 8 小时。"""
+    monkeypatch.setenv('TZ', 'UTC')
+    import time as _time
+    _time.tzset()
+    app.ts_convert = True
+    # 1788418270 秒 → UTC 06:51:10，北京时间 14:51:10
+    p_utc_line = app._ts_prefix_if_needed('1788418270.000 hello')
+    assert p_utc_line == '[09-03 14:51:10.000] '
+
+
+def test_ts_prefix_includes_date(app):
+    """前缀含 MM-DD 日期部分（与日志查看器一致）。"""
+    app.ts_convert = True
+    p = app._ts_prefix_if_needed('1788418270935 hello')
+    assert '-' in p  # 含日期分隔符
+    assert p.startswith('[09-03 14:51:10.935] ')
+
+
+def test_ts_prefix_non_ts_line_no_prefix(app):
+    """非时间戳行（含数字但非行首 10~13 位）不转换。"""
+    app.ts_convert = True
+    assert app._ts_prefix_if_needed('I model 3wd1t_1 1788418270935') == ''
+    assert app._ts_prefix_if_needed('TICKS 12345 67890') == ''
 
 
 # ---- _drain ----
@@ -1058,4 +1117,43 @@ def test_open_log_viewer_propagates_env_from_parent(app, monkeypatch):
     _, env = calls[0]
     assert env.get('PARENT_MARKER') == 'present'
     assert env.get('SERIAL_DEBUG_LOG_VIEWER') == '1'
+
+
+# ---- _start_log_writer 文件对话框过滤器（问题2：所有文件首选） ----
+EXPECTED_LOG_FILTER = '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)'
+
+
+def test_start_log_writer_filter_all_files_first(app, monkeypatch):
+    """日志落盘保存对话框：过滤器以"所有文件"为第一段（Qt 默认选中第一段）。"""
+    captured = {}
+
+    def _fake_get_save(parent, title, default, filters):
+        captured['filters'] = filters
+        return ('', '')  # 用户取消，不真正创建文件
+
+    import PySide6.QtWidgets as _w
+    monkeypatch.setattr(_w.QFileDialog, 'getSaveFileName', _fake_get_save)
+    app.log_path = None
+    app._start_log_writer()
+    assert captured['filters'] == EXPECTED_LOG_FILTER
+    # 第一段必须是"所有文件 (*)"——Qt 默认选中第一段，让用户直接看到所有文件
+    assert captured['filters'].split(';;')[0] == '所有文件 (*)'
+
+
+def test_start_log_writer_filter_contains_common_extensions(app, monkeypatch):
+    """过滤器第二段"日志与文本"应含常见日志/文本/数据格式扩展名。"""
+    captured = {}
+
+    def _fake_get_save(parent, title, default, filters):
+        captured['filters'] = filters
+        return ('', '')
+
+    import PySide6.QtWidgets as _w
+    monkeypatch.setattr(_w.QFileDialog, 'getSaveFileName', _fake_get_save)
+    app.log_path = None
+    app._start_log_writer()
+    second = captured['filters'].split(';;')[1]
+    for ext in ('*.txt', '*.log', '*.md', '*.csv', '*.json'):
+        assert ext in second, f'过滤器缺少 {ext}: {second}'
+
 

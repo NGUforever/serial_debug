@@ -2780,3 +2780,29 @@ def _close_log_viewer(win):
     except Exception:
         pass
     win.close()
+
+
+# ---- _open_file_dialog 过滤器（问题2：所有文件首选） ----
+def test_open_file_dialog_filter_all_files_first(qtbot, monkeypatch):
+    """打开日志文件对话框：过滤器以"所有文件"为第一段（Qt 默认选中第一段）。"""
+    _make_qapp()
+    from serial_debug.ui.qt_log_viewer_window import QtLogViewerWindow
+    captured = {}
+
+    def _fake_get_open(parent, title, last_dir, filters):
+        captured['filters'] = filters
+        return ([], '')  # 用户取消，不实际打开文件
+
+    import PySide6.QtWidgets as _w
+    monkeypatch.setattr(_w.QFileDialog, 'getOpenFileNames', _fake_get_open)
+    win = QtLogViewerWindow()
+    qtbot.addWidget(win)
+    win._open_file_dialog()
+    expected = '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)'
+    assert captured['filters'] == expected
+    assert captured['filters'].split(';;')[0] == '所有文件 (*)'
+    second = captured['filters'].split(';;')[1]
+    for ext in ('*.txt', '*.log', '*.md', '*.csv', '*.json'):
+        assert ext in second
+    _close_log_viewer(win)
+

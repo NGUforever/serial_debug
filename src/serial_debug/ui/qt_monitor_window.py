@@ -956,7 +956,7 @@ class _QtParserConfigDialog:
         from PySide6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(
             self._dlg, '选择样本日志', '',
-            '日志 (*.txt *.log *.md);;所有文件 (*)')
+            '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)')
         if not path:
             return
         try:
@@ -1904,7 +1904,7 @@ class QtMonitorWindow:
             start_dir = self._last_dir('qt_monitor_last_log_dir')
             path, _ = QFileDialog.getOpenFileName(
                 win, '打开日志文件', start_dir,
-                '日志 (*.txt *.log);;所有文件 (*)')
+                '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)')
             if path:
                 self._remember_dir('qt_monitor_last_log_dir', path)
                 n = self.load_log(path)

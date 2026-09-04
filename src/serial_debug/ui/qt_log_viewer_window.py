@@ -1339,7 +1339,7 @@ class QtLogViewerWindow(QMainWindow):
         last_dir = config.load().get('log_view_last_dir', '')
         paths, _ = QFileDialog.getOpenFileNames(
             self, '打开日志文件', last_dir,
-            '日志 (*.txt *.log);;所有文件 (*)')
+            '所有文件 (*);;日志与文本 (*.txt *.log *.md *.csv *.json)')
         if paths:
             for p in paths:
                 self.open_file(p)
