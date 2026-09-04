@@ -34,6 +34,12 @@ from serial_debug.core.panel_vars import (
     ImuMonitorPanel,
     MotorMonitorPanel,
 )
+from serial_debug.core.panel_vars import (
+    iter_plain_text_vars as _iter_plain_text_vars,
+)
+from serial_debug.core.panel_vars import (
+    parse_plain_text_header as _parse_plain_text_header,
+)
 from serial_debug.infra import themes
 from serial_debug.infra.error_log import log_exc
 
@@ -78,6 +84,9 @@ _CUSTOM_PARSER_STATE = {
         'min_parsed_count': 10,
         'sample_lines': 200,
     },
+    # 纯文本日志注释头列名（load_log 从首行 # 解析）。None=无头/未知。
+    # _iter_panel_vars 在内置解析无 yield 时用它做 plain-text 兜底命名。
+    'plain_text_header': None,
 }
 
 # 内置解析器模板（dialog 首次打开时预填）
@@ -178,13 +187,48 @@ def _iter_builtin_panel_vars(line: str, ts: float):
                 yield ts, f'imu.{v["name"]}', val
 
 
+def _is_plain_numeric_line(line: str) -> bool:
+    """判断该行是否为纯数值行（plain-text 兜底的前置守门）。
+
+    纯数值行 = 首列时间戳外，其余列全部可 ``float()`` 解析。覆盖两类：
+      - 普通行 ``1788418270935 0 27 0 83 800 -2147483648``（首列后全数值）
+      - ``#`` 内联头 ``#header#0 0.1 0.2``（最后一个 ``#`` 后全数值）
+
+    混合文本+数值行（如 motor 日志 ``TICKS -372 243 42 0``——首列后含
+    'TICKS' 文本）返回 False，避免误生成 col 变量。``#`` 纯头行（无
+    数值数据）也返回 False（不是数据行）。
+    """
+    stripped = line.lstrip()
+    if stripped.startswith('#'):
+        idx = line.rfind('#')
+        if idx < 0:
+            return False
+        data_text = line[idx + 1:].strip()
+        if not data_text:
+            return False  # 纯头行
+        cols = data_text.split()
+    else:
+        cols = line.split()
+    if len(cols) < 2:
+        return False
+    # 首列是时间戳，跳过；其余列必须全部可 float
+    for tok in cols[1:]:
+        try:
+            float(tok)
+        except ValueError:
+            return False
+    return True
+
+
 def _iter_panel_vars(line: str, ts_fallback: float | None = None):
     """从一行日志中提取所有 (ts, name, value) 三元组。
 
     按 `_CUSTOM_PARSER_STATE['mode']` 分发：
-      - ``built-in``：仅内置 motor/BMS/IMU 解析器
-      - ``custom``：仅用户自定义 `parse_line(line)` 函数
-      - ``both``：两者都跑，yield 项取并集（同 name 重复时取最后一次）
+      - ``built-in``：内置 motor/BMS/IMU 解析器；若无 yield 则尝试
+        plain-text 兜底（纯数值多列日志，如 WeatherInfo.txt / lio.txt）。
+      - ``custom``：仅用户自定义 `parse_line(line)` 函数。
+      - ``both``：内置 + plain-text 兜底 + 自定义，yield 项取并集
+        （同 name 重复时取最后一次，自定义优先覆盖 plain-text）。
 
     :param ts_fallback: 行内提取不到时间戳时用此值。实时串口 feed 的
         设备原始行（如 ``783587 I model ...`` 只有 6 位、``OK,0%`` 无时间戳）
@@ -201,9 +245,23 @@ def _iter_panel_vars(line: str, ts_fallback: float | None = None):
     seen_names: dict[str, tuple] = {}  # name -> (ts, name, val)（dedup 用）
 
     if mode in ('built-in', 'both'):
+        builtin_hit = False
         for item in _iter_builtin_panel_vars(line, ts):
             if len(item) == 3:
                 seen_names[item[1]] = tuple(item)
+                builtin_hit = True
+        # 内置没认 → plain-text 兜底（纯数值多列日志）
+        # 仅当该行为纯数值行（首列时间戳外其余列全可 float）或 # 头内联
+        # 数据行时才兜底，避免混合文本+数值的日志行（如 motor 日志的
+        # 'TICKS -372 243 42 0' / 'BOARD_MON [...]')误生成 col 变量。
+        if not builtin_hit and _is_plain_numeric_line(line):
+            header_cols = _CUSTOM_PARSER_STATE.get('plain_text_header')
+            try:
+                for item in _iter_plain_text_vars(line, ts, header_cols):
+                    if len(item) == 3:
+                        seen_names[item[1]] = tuple(item)
+            except Exception:
+                pass  # plain-text 兜底异常吞掉，留 log_exc 在调用方处理
     if mode in ('custom', 'both') and _CUSTOM_PARSER_STATE.get('func') is not None:
         try:
             result = _CUSTOM_PARSER_STATE['func'](line)
@@ -1616,6 +1674,12 @@ class QtMonitorWindow:
         先清 _data + _data_cache：避免旧日志/mock 数据残留导致时间戳跳跃，
         曲线错位（与 _replay_to_monitor 走新实例 _data={} 路径对齐）。
         var_meta 不清——颜色/label 等用户配置应跨日志保留。
+
+        纯文本日志注释头处理（2026-09-04）：读文件首行若以 ``#`` 开头，
+        解析列名存入 _CUSTOM_PARSER_STATE['plain_text_header']，供
+        _iter_panel_vars 在内置解析无 yield 时做 plain-text 兜底命名。
+        首行若为 ``#header#data`` 内联格式，数据部分仍由 _iter_panel_vars
+        解析（行首 ``#`` 时取最后一个 ``#`` 后的数据）。
         """
         # 清数据点（保留 var_meta 配置）
         self._data.clear()
@@ -1626,6 +1690,15 @@ class QtMonitorWindow:
             'validation', {}).get('sample_lines', 200)))
         try:
             with open(path, encoding='utf-8', errors='replace') as f:
+                # 首行检测纯文本注释头（# 开头）
+                first_line = f.readline()
+                header_cols = None
+                if first_line:
+                    names, _data_text = _parse_plain_text_header(first_line)
+                    if names:
+                        header_cols = names
+                _CUSTOM_PARSER_STATE['plain_text_header'] = header_cols
+                f.seek(0)
                 for line in f:
                     if len(sample_lines) < sample_n:
                         sample_lines.append(line)

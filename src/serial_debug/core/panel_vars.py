@@ -18,6 +18,9 @@ __all__ = [
     "ImuMonitorPanel",
     "_parse_int_tokens",
     "_parse_pipe_hash",
+    # 纯文本数值日志兜底解析器（2026-09-04 新增）
+    "iter_plain_text_vars",
+    "parse_plain_text_header",
 ]
 
 
@@ -475,3 +478,154 @@ class ImuMonitorParser:
 MotorMonitorPanel = MotorMonitorParser
 BmsMonitorPanel = BmsMonitorParser
 ImuMonitorPanel = ImuMonitorParser
+
+
+# ---- 纯文本数值日志兜底解析器（2026-09-04 新增）---------------------------
+# 当内置 motor/BMS/IMU 解析器不认某行（非 model 3wd1t / Lxx STD_DEBUG / BMS /
+# Imu_data），且用户未配自定义解析器时，尝试按纯数值多列格式解析，让纯文本
+# 日志（如 WeatherInfo.txt 7 列纯数值、lio.txt #注释头+数值）也能自动出曲线。
+#
+# 两类格式：
+#   类型① 无注释头：首列时间戳，其余列纯数值
+#     1788418270935 0 27 0 83 800 -2147483648
+#   类型② 有 # 注释头：首行 #列名，后续数值行；或单行 #header#data 内联
+#     #timestamp #seq #position.xyz #orientation.xyzw
+#     1788417573.0 0 0.122568 -0.0140473 ...
+#     或：#currtime,#time,p.xyz,q.xyzw,#mah_dist,#outlier#0 0.122568 ...
+#
+# 变量名：有头则用头列名（多维后缀 .xyz/.xyzw 等展开为 .0/.1/.2），
+#         无头则用列号 col2/col3...（跳过首列时间戳）。列数超出头名时多余
+#         列也用 colN 兜底。
+
+# 多维后缀 → 该列名代表的数值列数。结尾匹配最长优先（.xyzw 先于 .xyz）。
+_PLAIN_TEXT_MULTI_SUFFIXES: list[tuple[str, int]] = [
+    ('.xyzw', 4),
+    ('.rgba', 4),
+    ('.xyz', 3),
+    ('.rgb', 3),
+    ('.xy', 2),
+    ('.quat', 4),
+]
+
+
+def _expand_header_names(names: list[str]) -> list[str]:
+    """把注释头列名展开为逐列变量名。
+
+    多维后缀（如 ``position.xyz`` 代表 3 列）展开为
+    ``position.xyz.0`` / ``position.xyz.1`` / ``position.xyz.2``；
+    单维列名保持原样。无后缀识别的列名也按单列处理。
+
+    列名前导 ``#`` 被剥离。``names`` 可为空列表。
+    """
+    out: list[str] = []
+    for raw in names:
+        name = raw.lstrip('#').strip()
+        if not name:
+            continue
+        matched = False
+        for suffix, count in _PLAIN_TEXT_MULTI_SUFFIXES:
+            if name.endswith(suffix):
+                for j in range(count):
+                    out.append(f'{name}.{j}')
+                matched = True
+                break
+        if not matched:
+            out.append(name)
+    return out
+
+
+def parse_plain_text_header(line: str) -> tuple[list[str], str | None]:
+    """解析注释头行，返回 (列名列表, 数据部分文本)。
+
+    支持两种头格式：
+      - 纯头行 ``# timestamp # seq #position.xyz ...``（无内联数据）→
+        返回 (names, None)。
+      - 内联头 ``#currtime,#time,...#0 0.122568 ...``（最后一个 ``#`` 后是
+        数值数据）→ 返回 (names, data_text)。
+
+    列名前导 ``#`` 被剥离。非注释行（不以 ``#`` 开头）返回 ([], None)。
+    """
+    stripped = line.lstrip()
+    if not stripped.startswith('#'):
+        return [], None
+    # 尝试检测内联数据：最后一个 '#' 之后的首个 token 是否 float 可解析
+    idx = line.rfind('#')
+    tail = line[idx + 1:].strip() if idx >= 0 else ''
+    data_part: str | None = None
+    header_part = line
+    if tail:
+        first_token = tail.split()[0] if tail.split() else ''
+        if first_token:
+            try:
+                float(first_token)
+                data_part = tail
+                header_part = line[:idx]
+            except ValueError:
+                pass
+    # 头部按逗号 + 空白混合分割取列名，剥离前导 #
+    names: list[str] = []
+    for tok in re.split(r'[,\s]+', header_part):
+        tok = tok.strip()
+        if tok:
+            # 剥离前导 #（可能多个，如 ##name）
+            clean = tok.lstrip('#').strip()
+            if clean:
+                names.append(clean)
+    return names, data_part
+
+
+def _plain_text_col_name(col_idx: int,
+                         expanded_header: list[str] | None) -> str:
+    """按列索引取变量名。col_idx 从 0 开始（含首列时间戳）。
+
+    有头且 col_idx 落在头名范围内 → 用头名；
+    否则用列号兜底（跳过首列 → col2/col3...）。
+    """
+    if expanded_header and col_idx < len(expanded_header):
+        return expanded_header[col_idx]
+    # 无头或超出头名范围：col2 起（首列是 col1=时间戳，跳过）
+    return f'col{col_idx + 1}'
+
+
+def iter_plain_text_vars(line: str, ts: float,
+                         header_cols: list[str] | None = None):
+    """纯文本数值行解析：按空白切列，首列时间戳，其余列每列一个变量。
+
+    :param line: 原始日志行。
+    :param ts: 已提取的时间戳（秒，float）。由 `_iter_panel_vars` 用
+        `_extract_log_ts` 提取后传入；纯文本兜底不重复提时间戳，遵循
+        “提不到则该行跳过”的设计。
+    :param header_cols: 注释头列名列表（原始未展开），由 `load_log` 从
+        首行 ``#`` 解析后传入。None 表示无头，用列号命名。
+    :return: yield (ts, name, value) 三元组。
+
+    处理 ``#header#data`` 内联格式：行首 ``#`` 时取最后一个 ``#`` 之后
+    的数据部分解析，头部部分由调用方（load_log）已存 header_cols。
+    纯头行（``#`` 后无数值）不 yield。
+    """
+    stripped = line.lstrip()
+    if stripped.startswith('#'):
+        # 内联头：取最后一个 '#' 后的数据
+        idx = line.rfind('#')
+        if idx < 0:
+            return
+        data_text = line[idx + 1:].strip()
+        if not data_text:
+            return  # 纯头行，非数据行
+        cols = data_text.split()
+    else:
+        cols = line.split()
+
+    if len(cols) < 2:
+        return  # 至少首列时间戳 + 1 数值列
+
+    expanded = _expand_header_names(header_cols) if header_cols else None
+
+    # 首列是时间戳，跳过；其余列每列一个变量
+    for i, token in enumerate(cols[1:], start=1):
+        try:
+            val = float(token)
+        except ValueError:
+            continue
+        name = _plain_text_col_name(i, expanded)
+        yield ts, name, val

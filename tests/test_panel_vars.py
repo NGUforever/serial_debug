@@ -231,3 +231,201 @@ def test_parse_pipe_hash_drops_empty_groups():
     rest = '0 0||0 0'  # 中间空组
     result = pv._parse_pipe_hash(rest)
     assert result == [[[0, 0], [0, 0]]]
+
+
+# ---- 纯文本兜底解析器（2026-09-04 新增）----
+# 验证 _expand_header_names / parse_plain_text_header / iter_plain_text_vars
+# 两类格式：无头纯数值 + #注释头（纯头行 / 内联头）
+
+# ---- _expand_header_names ----
+def test_expand_header_names_single_dim():
+    """单维列名保持原样。"""
+    names = ['timestamp', 'seq', 'val']
+    out = pv._expand_header_names(names)
+    assert out == ['timestamp', 'seq', 'val']
+
+
+def test_expand_header_names_xyz_to_three():
+    """.xyz 后缀展开为 3 列（.0/.1/.2）。"""
+    out = pv._expand_header_names(['position.xyz'])
+    assert out == ['position.xyz.0', 'position.xyz.1', 'position.xyz.2']
+
+
+def test_expand_header_names_xyzw_to_four():
+    """.xyzw 后缀展开为 4 列。"""
+    out = pv._expand_header_names(['q.xyzw'])
+    assert out == ['q.xyzw.0', 'q.xyzw.1', 'q.xyzw.2', 'q.xyzw.3']
+
+
+def test_expand_header_names_mixed():
+    """混合单维+多维列名。"""
+    out = pv._expand_header_names(
+        ['#timestamp', '#seq', 'position.xyz', 'orientation.xyzw'])
+    assert out == ['timestamp', 'seq',
+                   'position.xyz.0', 'position.xyz.1', 'position.xyz.2',
+                   'orientation.xyzw.0', 'orientation.xyzw.1',
+                   'orientation.xyzw.2', 'orientation.xyzw.3']
+
+
+def test_expand_header_names_strips_hash_prefix():
+    """列名前导 # 被剥离。"""
+    out = pv._expand_header_names(['#currtime', '#time'])
+    assert out == ['currtime', 'time']
+
+
+def test_expand_header_names_empty_list():
+    assert pv._expand_header_names([]) == []
+
+
+def test_expand_header_names_skips_empty_tokens():
+    """空 token（连续分隔符产生）被跳过。"""
+    out = pv._expand_header_names(['', 'val', '  '])
+    assert out == ['val']
+
+
+def test_expand_header_names_xyzw_takes_precedence_over_xyz():
+    """.xyzw 比 .xyz 长，优先匹配（不会被 .xyz 截断）。"""
+    out = pv._expand_header_names(['q.xyzw'])
+    assert len(out) == 4
+
+
+# ---- parse_plain_text_header ----
+def test_parse_header_plain_header_line():
+    """纯 # 头行（无内联数据）→ (names, None)。"""
+    line = '#timestamp #seq #position.xyz #orientation.xyzw\n'
+    names, data = pv.parse_plain_text_header(line)
+    assert data is None
+    assert 'timestamp' in names
+    assert 'seq' in names
+    assert 'position.xyz' in names
+    assert 'orientation.xyzw' in names
+
+
+def test_parse_header_inline_header_data():
+    """#header#data 内联格式 → (names, data_text)。"""
+    line = ('#currtime,#time,p.xyz,q.xyzw,#mah_dist,#outlier#'
+            '0 0.122568 -0.0140473 0.273287\n')
+    names, data = pv.parse_plain_text_header(line)
+    assert data is not None
+    assert data.startswith('0 0.122568')
+    assert 'currtime' in names
+    assert 'time' in names
+    assert 'p.xyz' in names
+    assert 'q.xyzw' in names
+    assert 'mah_dist' in names
+    assert 'outlier' in names
+
+
+def test_parse_header_non_comment_line():
+    """非 # 行 → ([], None)。"""
+    names, data = pv.parse_plain_text_header('1788418270935 0 27 0 83\n')
+    assert names == []
+    assert data is None
+
+
+def test_parse_header_pure_comment_no_numeric_tail():
+    """# 后全是文字（无数值）→ (names, None)。"""
+    line = '# This is just a comment with no data\n'
+    names, data = pv.parse_plain_text_header(line)
+    assert data is None
+    # 名字是 'This', 'is', 'just', ... （非标准但符合 split 逻辑）
+    assert len(names) > 0
+
+
+# ---- iter_plain_text_vars：无头纯数值（类型①）----
+def test_iter_plain_text_no_header_uses_col_names():
+    """无头纯数值行：首列时间戳跳过，其余列用 col2/col3... 命名。"""
+    line = '1788418270935 0 27 0 83 800 -2147483648\n'
+    ts = 1788418270.935
+    out = list(pv.iter_plain_text_vars(line, ts))
+    # 7 列，首列跳过 → 6 个变量
+    names = [n for _, n, _ in out]
+    assert names == ['col2', 'col3', 'col4', 'col5', 'col6', 'col7']
+    vals = [v for _, _, v in out]
+    assert vals == [0.0, 27.0, 0.0, 83.0, 800.0, -2147483648.0]
+    assert all(t == ts for t, _, _ in out)
+
+
+def test_iter_plain_text_no_header_single_data_col():
+    """仅 2 列（时间戳 + 1 值）→ 1 个变量 col2。"""
+    out = list(pv.iter_plain_text_vars('1234567890 42\n', 1234567.89))
+    assert len(out) == 1
+    assert out[0][1] == 'col2'
+    assert out[0][2] == 42.0
+
+
+def test_iter_plain_text_skips_non_numeric_cols():
+    """非数值列被跳过（不 yield）。"""
+    line = '1234567890 hello 42 world\n'
+    out = list(pv.iter_plain_text_vars(line, 1234567.89))
+    # 只有 '42' 可解析
+    names = [n for _, n, _ in out]
+    # col2=hello 跳过，col3=42 yield，col4=world 跳过
+    assert names == ['col3']
+    assert out[0][2] == 42.0
+
+
+def test_iter_plain_text_too_few_cols():
+    """仅 1 列（时间戳）→ 不 yield（需 ≥ 2 列）。"""
+    out = list(pv.iter_plain_text_vars('1234567890\n', 1234567.89))
+    assert out == []
+
+
+# ---- iter_plain_text_vars：有头（类型②）----
+def test_iter_plain_text_with_header_uses_header_names():
+    """有头时：其余列用头名（多维展开）。"""
+    header = ['timestamp', 'seq', 'position.xyz', 'orientation.xyzw']
+    line = '1234567890 0 0.122568 -0.0140473 0.273287 0.527782\n'
+    out = list(pv.iter_plain_text_vars(line, 1234567.89, header))
+    # 首列 timestamp 跳过；seq=0, position.xyz.0/1/2, orientation.xyzw.0
+    names = [n for _, n, _ in out]
+    assert names == ['seq', 'position.xyz.0', 'position.xyz.1',
+                     'position.xyz.2', 'orientation.xyzw.0']
+
+
+def test_iter_plain_text_header_fewer_names_than_cols():
+    """头名少于数据列时：多余列用 colN 兜底。"""
+    header = ['timestamp', 'seq']
+    line = '1234567890 0 0.1 0.2 0.3\n'
+    out = list(pv.iter_plain_text_vars(line, 1234567.89, header))
+    names = [n for _, n, _ in out]
+    # seq=0, col3=0.1, col4=0.2, col5=0.3
+    assert names == ['seq', 'col3', 'col4', 'col5']
+
+
+def test_iter_plain_text_inline_header_data_format():
+    """#header#data 内联格式：行首 # 取最后一个 # 后数据。"""
+    header = ['currtime', 'time', 'p.xyz', 'q.xyzw', 'mah_dist', 'outlier']
+    line = ('#currtime,#time,p.xyz,q.xyzw,#mah_dist,#outlier#'
+            '0 0.122568 -0.0140473 0.273287 0.527782 -0.525768 -0.472039'
+            ' 0.471374 0 0 0 0 0 0 1\n')
+    out = list(pv.iter_plain_text_vars(line, 0.0, header))
+    # 首列 currtime=0 跳过，其余 14 列 yield
+    assert len(out) == 14
+    names = [n for _, n, _ in out]
+    # 第二列 time → 'time'
+    assert names[0] == 'time'
+    # p.xyz 展开为 3 列
+    assert names[1:4] == ['p.xyz.0', 'p.xyz.1', 'p.xyz.2']
+    # q.xyzw 展开为 4 列
+    assert names[4:8] == ['q.xyzw.0', 'q.xyzw.1', 'q.xyzw.2', 'q.xyzw.3']
+    # mah_dist, outlier
+    assert names[8] == 'mah_dist'
+    assert names[9] == 'outlier'
+    # 多余列用 colN
+    assert names[10:] == ['col12', 'col13', 'col14', 'col15']
+
+
+def test_iter_plain_text_pure_header_line_no_yield():
+    """纯 # 头行（最后一个 # 后无数值）→ 不 yield。"""
+    line = '#timestamp #seq #position.xyz #orientation.xyzw\n'
+    out = list(pv.iter_plain_text_vars(line, 1234567.89))
+    assert out == []
+
+
+def test_iter_plain_text_header_none_uses_col_names():
+    """header_cols=None 时用 colN 兜底命名。"""
+    line = '1234567890 1.5 2.5\n'
+    out = list(pv.iter_plain_text_vars(line, 1234567.89, None))
+    names = [n for _, n, _ in out]
+    assert names == ['col2', 'col3']

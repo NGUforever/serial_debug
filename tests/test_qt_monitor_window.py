@@ -1512,6 +1512,285 @@ def test_load_log_nonexistent_file_returns_zero(monitor, tmp_path):
     assert n == 0
 
 
+# ---- 纯文本兜底解析（2026-09-04 新增）----
+# 验证 _iter_panel_vars built-in 无 yield 时 plain-text 兜底 +
+# load_log 注释头解析 + 不破坏 motor/BMS/IMU / 不破坏自定义解析器
+
+def _mock_ui(monitor):
+    """mock 掉 UI 刷新路径，避免真 pyqtgraph 渲染。"""
+    monitor._refresh_plot = lambda: None
+    monitor._refresh_sidebar = lambda: None
+    monitor._refresh_sidebar_visibility = lambda: None
+    monitor._file_label = None
+    monitor._win = None
+
+
+# ---- _iter_panel_vars plain-text 兜底分发 ----
+
+def test_iter_panel_vars_plain_text_fallback_no_header(monkeypatch):
+    """built-in 模式，内置不认的纯数值行 → plain-text 兜底用 colN 命名。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    # 13 位毫秒时间戳 + 6 列数值（WeatherInfo.txt 格式）
+    line = '1788418270935 0 27 0 83 800 -2147483648\n'
+    out = list(mod._iter_panel_vars(line))
+    # 首列时间戳跳过，6 列 → col2~col7
+    names = sorted(n for _, n, _ in out)
+    assert names == ['col2', 'col3', 'col4', 'col5', 'col6', 'col7']
+    # 时间戳正确（13 位 → 毫秒 → 秒）
+    assert all(abs(t - 1788418270.935) < 0.001 for t, _, _ in out)
+
+
+def test_iter_panel_vars_plain_text_fallback_with_header(monkeypatch):
+    """built-in 模式，# 头文件纯数值行 → 用头名（多维展开）。"""
+    header = ['timestamp', 'seq', 'position.xyz', 'orientation.xyzw']
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', header)
+    # 8 列：ts + seq + position.xyz×3 + orientation.xyzw×4 = 9 头名，给 8 数据列
+    line = '1234567890 0 0.1 0.2 0.3 0.4 0.5 0.6 0.7\n'
+    out = list(mod._iter_panel_vars(line))
+    names = [n for _, n, _ in out]
+    # seq + position.xyz×3 + orientation.xyzw×4 = 8
+    assert names == ['seq', 'position.xyz.0', 'position.xyz.1',
+                     'position.xyz.2', 'orientation.xyzw.0',
+                     'orientation.xyzw.1', 'orientation.xyzw.2',
+                     'orientation.xyzw.3']
+
+
+def test_iter_panel_vars_builtin_motor_not_fallback(monkeypatch):
+    """内置认了 motor 行 → 不走 plain-text 兜底（motor.* 前缀）。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    line = '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0'
+    out = list(mod._iter_panel_vars(line))
+    assert any(n.startswith('motor.') for _, n, _ in out)
+    # 不应有 colN 变量
+    assert not any(n.startswith('col') for _, n, _ in out)
+
+
+def test_iter_panel_vars_custom_mode_no_plain_text(monkeypatch):
+    """custom 模式 → 不走 plain-text 兜底，只跑用户 parse_line。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
+                        lambda line: [(1.0, 'custom.var', 5.0)])
+    line = '1234567890 0 27 0 83\n'  # 纯数值行
+    out = list(mod._iter_panel_vars(line, ts_fallback=1.0))
+    # 只有 custom.var，无 colN
+    names = [n for _, n, _ in out]
+    assert names == ['custom.var']
+
+
+def test_iter_panel_vars_both_mode_custom_overrides_plain_text(monkeypatch):
+    """both 模式：内置无 yield → plain-text 兜底 → custom 覆盖同名。"""
+    header = None
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'both')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', header)
+
+    def parse_line(line):
+        # 覆盖 col2 的值
+        yield 1.0, 'col2', 999.0
+
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', parse_line)
+    line = '1234567890 0 27\n'
+    out = list(mod._iter_panel_vars(line, ts_fallback=1.0))
+    # plain-text 先 yield col2=0.0, col3=27.0
+    # custom 后 yield col2=999.0 → 覆盖
+    col2 = [v for _, n, v in out if n == 'col2']
+    assert col2 == [999.0]
+    col3 = [v for _, n, v in out if n == 'col3']
+    assert col3 == [27.0]
+
+
+def test_iter_panel_vars_plain_text_no_ts_skips(monkeypatch):
+    """纯数值行但首列无法提时间戳（如相对 0）且无 fallback → 不 yield。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    # '0 0.1 0.2' — 首列 0 是 1 位数，_extract_log_ts 需 10~13 位 → None
+    line = '0 0.1 0.2\n'
+    out = list(mod._iter_panel_vars(line))
+    assert out == []
+
+
+def test_iter_panel_vars_plain_text_with_ts_fallback(monkeypatch):
+    """纯数值行首列无法提 ts，但有 ts_fallback → 用 fallback 出曲线。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    line = '0 0.1 0.2\n'
+    out = list(mod._iter_panel_vars(line, ts_fallback=100.0))
+    assert len(out) == 2  # col2, col3
+
+
+# ---- _is_plain_numeric_line 守门（防混合行误生成 col 变量）----
+
+def test_is_plain_numeric_line_pure_numeric():
+    """纯数值行（首列时间戳外全 float）→ True。"""
+    assert mod._is_plain_numeric_line('1788418270935 0 27 0 83 800 -2147483648\n')
+
+
+def test_is_plain_numeric_line_mixed_text_returns_false():
+    """混合文本+数值行（如 motor 日志 TICKS 行）→ False。"""
+    assert not mod._is_plain_numeric_line('1788417573020 I TICKS -372 243 42 0\n')
+    assert not mod._is_plain_numeric_line('1788417573022 I L31 SSL_MON_MB:[178]\n')
+    assert not mod._is_plain_numeric_line('1788417573040 F POWERON ECU START\n')
+
+
+def test_is_plain_numeric_line_single_col_returns_false():
+    """仅 1 列 → False（需 ≥ 2 列）。"""
+    assert not mod._is_plain_numeric_line('1788418270935\n')
+
+
+def test_is_plain_numeric_line_inline_hash_data():
+    """#header#data 内联格式：最后一个 # 后全数值 → True。"""
+    line = ('#currtime,#time,p.xyz#0 0.122568 -0.0140473 0.273287\n')
+    assert mod._is_plain_numeric_line(line)
+
+
+def test_is_plain_numeric_line_pure_header_returns_false():
+    """纯 # 头行（无内联数据）→ False。"""
+    assert not mod._is_plain_numeric_line('#timestamp #seq #position.xyz\n')
+
+
+def test_is_plain_numeric_line_inline_hash_mixed_returns_false():
+    """#header#data 内联但数据部分含文本 → False。"""
+    line = '#header#0 abc 0.1\n'
+    assert not mod._is_plain_numeric_line(line)
+
+
+def test_iter_panel_vars_mixed_line_no_plain_text_fallback(monkeypatch):
+    """motor 日志的混合文本行（如 TICKS）不走 plain-text 兜底。
+
+    场景：motor 日志含 'TICKS -372 243 42 0' 类行，内置不认，但
+    首列后有文本 'TICKS' → _is_plain_numeric_line 返回 False →
+    不兜底，不生成 col 变量。
+    """
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    line = '1788417573020 I TICKS -372 243 42 0\n'
+    out = list(mod._iter_panel_vars(line))
+    # 不应有 col 变量（_is_plain_numeric_line 守门返回 False）
+    assert not any(n.startswith('col') for _, n, _ in out)
+    # 但 TICKS 行也无内置 motor/BMS/IMU → 空
+    assert out == []
+
+
+# ---- load_log 注释头解析 ----
+
+def test_load_log_plain_text_no_header_file(monitor, tmp_path):
+    """类型①：纯数值多列无头文件 → colN 变量 + 有曲线点。"""
+    p = tmp_path / 'WeatherInfo.txt'
+    p.write_text(
+        '1788418270935 0 27 0 83 800 -2147483648\n'
+        '1788417665959 0 27 0 84 800 -2147483648\n'
+        '1788417061087 0 28 0 80 890 -2147483648\n',
+        encoding='utf-8')
+    _mock_ui(monitor)
+    n = monitor.load_log(str(p))
+    assert n == 3  # 3 行命中
+    # 6 个变量 col2~col7
+    names = sorted(monitor._data.keys())
+    assert names == ['col2', 'col3', 'col4', 'col5', 'col6', 'col7']
+    # 每个变量 3 个数据点
+    assert all(len(monitor._data[nm]) == 3 for nm in names)
+    # plain_text_header 应为 None（首行非 #）
+    assert mod._CUSTOM_PARSER_STATE['plain_text_header'] is None
+
+
+def test_load_log_plain_text_with_header_file(monitor, tmp_path):
+    """类型②：# 头 + 数值多行文件 → 头名变量 + 有曲线点。"""
+    p = tmp_path / 'msf_pose.txt'
+    p.write_text(
+        '#timestamp #seq #position.xyz #orientation.xyzw\n'
+        '1234567890 0 0.1 0.2 0.3 0.4 0.5 0.6 0.7\n'
+        '1234567891 1 0.11 0.22 0.33 0.44 0.55 0.66 0.77\n',
+        encoding='utf-8')
+    _mock_ui(monitor)
+    n = monitor.load_log(str(p))
+    assert n == 2  # 2 数据行命中（头行不 yield）
+    # 变量名用头名（多维展开）
+    expected = ['seq', 'position.xyz.0', 'position.xyz.1', 'position.xyz.2',
+                'orientation.xyzw.0', 'orientation.xyzw.1',
+                'orientation.xyzw.2', 'orientation.xyzw.3']
+    assert sorted(monitor._data.keys()) == sorted(expected)
+    # plain_text_header 应含头名
+    header = mod._CUSTOM_PARSER_STATE['plain_text_header']
+    assert header is not None
+    assert 'timestamp' in header
+    assert 'position.xyz' in header
+
+
+def test_load_log_plain_text_inline_header_file(monitor, tmp_path):
+    """类型②变体：#header#data 内联格式单行文件。"""
+    p = tmp_path / 'lio.txt'
+    p.write_text(
+        '#currtime,#time,p.xyz,q.xyzw,#mah_dist,#outlier#'
+        '0 0.122568 -0.0140473 0.273287 0.527782 -0.525768 -0.472039'
+        ' 0.471374 0 0 0 0 0 0 1\n',
+        encoding='utf-8')
+    _mock_ui(monitor)
+    # 首列 0 是 1 位，_extract_log_ts 提不到 → 该行不 yield
+    # 但头应被解析
+    n = monitor.load_log(str(p))
+    # 提不到 ts → 0 行命中
+    assert n == 0
+    # 头名仍应被解析
+    header = mod._CUSTOM_PARSER_STATE['plain_text_header']
+    assert header is not None
+    assert 'currtime' in header
+
+
+def test_load_log_motor_not_broken_by_plain_text(monitor, tmp_path):
+    """motor .log 文件 → motor.* 变量，不走 plain-text 兜底。"""
+    p = tmp_path / 'mcu.log'
+    p.write_text(
+        '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0\n'
+        '1783995845972 I L30 STD_DEBUG:[6|0|0 0|0 0|0 0 0|0 0|0|0 0|64]'
+        '[6|0|0 0|0 0|0 0 0|0 0|0|0 0|65]\n',
+        encoding='utf-8')
+    _mock_ui(monitor)
+    n = monitor.load_log(str(p))
+    assert n == 2
+    assert any(nm.startswith('motor.') for nm in monitor._data)
+    # 无 colN 变量（内置优先）
+    assert not any(nm.startswith('col') for nm in monitor._data)
+
+
+def test_load_log_custom_parser_not_broken_by_plain_text(monitor, tmp_path,
+                                                          monkeypatch):
+    """custom 模式：用户配的 parse_line 优先，不走 plain-text 兜底。"""
+    p = tmp_path / 'plain.txt'
+    p.write_text('1234567890 1 2 3\n' * 3, encoding='utf-8')
+
+    def parse_line(line):
+        if '1234567890' in line:
+            yield 1.0, 'myvar', 42.0
+
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', parse_line)
+    _mock_ui(monitor)
+    n = monitor.load_log(str(p))
+    assert n == 3
+    assert 'myvar' in monitor._data
+    # 无 colN 变量（custom 模式不走 plain-text）
+    assert not any(nm.startswith('col') for nm in monitor._data)
+
+
+def test_load_log_plain_text_clears_old_header(monitor, tmp_path):
+    """先加载 # 头文件再加载无头文件 → plain_text_header 被清为 None。"""
+    p1 = tmp_path / 'header.txt'
+    p1.write_text(
+        '#timestamp #seq\n'
+        '1234567890 0\n',
+        encoding='utf-8')
+    p2 = tmp_path / 'plain.txt'
+    p2.write_text('1234567890 1 2\n', encoding='utf-8')
+    _mock_ui(monitor)
+    monitor.load_log(str(p1))
+    assert mod._CUSTOM_PARSER_STATE['plain_text_header'] is not None
+    monitor.load_log(str(p2))
+    assert mod._CUSTOM_PARSER_STATE['plain_text_header'] is None
+
+
 # ---- _toggle_sidebar ----
 
 def test_toggle_sidebar_no_container_is_noop(monitor):
