@@ -138,6 +138,12 @@
     "period_ms": 0
   },
   {
+    "cmd": "AT+EPWRDOWN=1%",
+    "desc": "关机",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
     "cmd": "",
     "desc": "",
     "seq": 0,
