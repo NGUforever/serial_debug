@@ -1,0 +1,1598 @@
+{
+  "version": 1,
+  "plots": [
+    {
+      "title": "前行走电机",
+      "x_label": "时间",
+      "y_label": "y",
+      "vars": [
+        "motor.L30_MA_tgt_spd",
+        "motor.L30_MA_outavg_spd",
+        "motor.L30_MB_tgt_spd",
+        "motor.L30_MB_outavg_spd",
+        "motor.Vx",
+        "motor.Vx_Fbk"
+      ],
+      "var_visibility": {},
+      "show_max": true,
+      "show_min": true,
+      "show_avg": false,
+      "show_last": false,
+      "show_table": false,
+      "show_hover": true,
+      "legend_pos": "top-right",
+      "legend_font_size": 9,
+      "legend_auto_avoid": true,
+      "hover_mode": "all",
+      "hover_show_max": true,
+      "hover_show_min": true,
+      "hover_show_avg": false,
+      "hover_show_last": false
+    },
+    {
+      "title": "BMS",
+      "x_label": "时间 (s)",
+      "y_label": "值",
+      "vars": [
+        "bms.charge_i_set",
+        "bms.charge_v_set",
+        "bms.board_v",
+        "bms.board_i",
+        "bms.discharge_i",
+        "bms.realSOC"
+      ],
+      "var_visibility": {},
+      "show_max": false,
+      "show_min": false,
+      "show_avg": false,
+      "show_last": false,
+      "show_table": false,
+      "show_hover": true,
+      "legend_pos": "top-right",
+      "legend_font_size": 9,
+      "legend_auto_avoid": true,
+      "hover_mode": "current",
+      "hover_show_max": false,
+      "hover_show_min": false,
+      "hover_show_avg": true,
+      "hover_show_last": true
+    },
+    {
+      "title": "imu",
+      "x_label": "时间 (s)",
+      "y_label": "值",
+      "vars": [
+        "imu.PitchAngle",
+        "imu.RollAngle",
+        "imu.SlopeAngle"
+      ],
+      "var_visibility": {},
+      "show_max": true,
+      "show_min": true,
+      "show_avg": false,
+      "show_last": false,
+      "show_table": false,
+      "show_hover": true,
+      "legend_pos": "top-right",
+      "legend_font_size": 9,
+      "legend_auto_avoid": true,
+      "hover_mode": "all",
+      "hover_show_max": true,
+      "hover_show_min": true,
+      "hover_show_avg": true,
+      "hover_show_last": true
+    },
+    {
+      "title": "后行走电机",
+      "x_label": "时间 (s)",
+      "y_label": "值",
+      "vars": [
+        "motor.L32_MA_tgt_spd",
+        "motor.L32_MA_outavg_spd",
+        "motor.L32_MA_iq_ref",
+        "motor.L32_MA_iq_fbk",
+        "motor.L32_MB_tgt_ang",
+        "motor.L32_MB_out_ang",
+        "motor.L32_MB_iq_ref",
+        "motor.L32_MB_iq_fbk"
+      ],
+      "var_visibility": {},
+      "show_max": true,
+      "show_min": true,
+      "show_avg": false,
+      "show_last": false,
+      "show_table": false,
+      "show_hover": true,
+      "legend_pos": "top-right",
+      "legend_font_size": 9,
+      "legend_auto_avoid": true,
+      "hover_mode": "current",
+      "hover_show_max": true,
+      "hover_show_min": true,
+      "hover_show_avg": true,
+      "hover_show_last": true
+    }
+  ],
+  "var_meta": {
+    "motor.L30_MA_state": {
+      "color": "#569cd6",
+      "label": "VCU1 MA state",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_faultCode": {
+      "color": "#ce9178",
+      "label": "VCU1 MA faultCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_tgt_ang": {
+      "color": "#4ec9b0",
+      "label": "VCU1 MA tgt_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_out_ang": {
+      "color": "#dcdcaa",
+      "label": "VCU1 MA out_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_tgt_spd": {
+      "color": "#c586c0",
+      "label": "VCU1 MA tgt_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_outavg_spd": {
+      "color": "#f48771",
+      "label": "VCU1 MA outavg_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_iq_ref": {
+      "color": "#6a9955",
+      "label": "VCU1 MA iq_ref",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_iq_fbk": {
+      "color": "#9cdcfe",
+      "label": "VCU1 MA iq_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_id_fbk": {
+      "color": "#d16969",
+      "label": "VCU1 MA id_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_uq": {
+      "color": "#b5cea8",
+      "label": "VCU1 MA uq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_ud": {
+      "color": "#569cd6",
+      "label": "VCU1 MA ud",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_torque": {
+      "color": "#ce9178",
+      "label": "VCU1 MA torque",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_in_pwr": {
+      "color": "#4ec9b0",
+      "label": "VCU1 MA in_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_out_pwr": {
+      "color": "#dcdcaa",
+      "label": "VCU1 MA out_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MA_temp": {
+      "color": "#c586c0",
+      "label": "VCU1 MA temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_state": {
+      "color": "#f48771",
+      "label": "VCU1 MB state",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_faultCode": {
+      "color": "#6a9955",
+      "label": "VCU1 MB faultCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_tgt_ang": {
+      "color": "#9cdcfe",
+      "label": "VCU1 MB tgt_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_out_ang": {
+      "color": "#d16969",
+      "label": "VCU1 MB out_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_tgt_spd": {
+      "color": "#b5cea8",
+      "label": "VCU1 MB tgt_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_outavg_spd": {
+      "color": "#569cd6",
+      "label": "VCU1 MB outavg_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_iq_ref": {
+      "color": "#ce9178",
+      "label": "VCU1 MB iq_ref",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_iq_fbk": {
+      "color": "#4ec9b0",
+      "label": "VCU1 MB iq_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_id_fbk": {
+      "color": "#dcdcaa",
+      "label": "VCU1 MB id_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_uq": {
+      "color": "#c586c0",
+      "label": "VCU1 MB uq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_ud": {
+      "color": "#f48771",
+      "label": "VCU1 MB ud",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_torque": {
+      "color": "#6a9955",
+      "label": "VCU1 MB torque",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_in_pwr": {
+      "color": "#9cdcfe",
+      "label": "VCU1 MB in_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_out_pwr": {
+      "color": "#d16969",
+      "label": "VCU1 MB out_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L30_MB_temp": {
+      "color": "#b5cea8",
+      "label": "VCU1 MB temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_state": {
+      "color": "#569cd6",
+      "label": "VCU3 MA state",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_faultCode": {
+      "color": "#ce9178",
+      "label": "VCU3 MA faultCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_tgt_ang": {
+      "color": "#4ec9b0",
+      "label": "VCU3 MA tgt_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_out_ang": {
+      "color": "#dcdcaa",
+      "label": "VCU3 MA out_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_tgt_spd": {
+      "color": "#c586c0",
+      "label": "VCU3 MA tgt_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_outavg_spd": {
+      "color": "#f48771",
+      "label": "VCU3 MA outavg_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_iq_ref": {
+      "color": "#6a9955",
+      "label": "VCU3 MA iq_ref",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_iq_fbk": {
+      "color": "#9cdcfe",
+      "label": "VCU3 MA iq_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_id_fbk": {
+      "color": "#d16969",
+      "label": "VCU3 MA id_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_uq": {
+      "color": "#b5cea8",
+      "label": "VCU3 MA uq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_ud": {
+      "color": "#569cd6",
+      "label": "VCU3 MA ud",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_torque": {
+      "color": "#ce9178",
+      "label": "VCU3 MA torque",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_in_pwr": {
+      "color": "#4ec9b0",
+      "label": "VCU3 MA in_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_out_pwr": {
+      "color": "#dcdcaa",
+      "label": "VCU3 MA out_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MA_temp": {
+      "color": "#c586c0",
+      "label": "VCU3 MA temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_state": {
+      "color": "#f48771",
+      "label": "VCU3 MB state",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_faultCode": {
+      "color": "#6a9955",
+      "label": "VCU3 MB faultCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_tgt_ang": {
+      "color": "#9cdcfe",
+      "label": "VCU3 MB tgt_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_out_ang": {
+      "color": "#d16969",
+      "label": "VCU3 MB out_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_tgt_spd": {
+      "color": "#b5cea8",
+      "label": "VCU3 MB tgt_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_outavg_spd": {
+      "color": "#569cd6",
+      "label": "VCU3 MB outavg_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_iq_ref": {
+      "color": "#ce9178",
+      "label": "VCU3 MB iq_ref",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_iq_fbk": {
+      "color": "#4ec9b0",
+      "label": "VCU3 MB iq_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_id_fbk": {
+      "color": "#dcdcaa",
+      "label": "VCU3 MB id_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_uq": {
+      "color": "#c586c0",
+      "label": "VCU3 MB uq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_ud": {
+      "color": "#f48771",
+      "label": "VCU3 MB ud",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_torque": {
+      "color": "#6a9955",
+      "label": "VCU3 MB torque",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_in_pwr": {
+      "color": "#9cdcfe",
+      "label": "VCU3 MB in_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_out_pwr": {
+      "color": "#d16969",
+      "label": "VCU3 MB out_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L32_MB_temp": {
+      "color": "#b5cea8",
+      "label": "VCU3 MB temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.ErrCode": {
+      "color": "#569cd6",
+      "label": "ErrCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.InitState": {
+      "color": "#ce9178",
+      "label": "InitState",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.CaliFlag": {
+      "color": "#4ec9b0",
+      "label": "CaliFlag",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.PitchAngle": {
+      "color": "#dcdcaa",
+      "label": "PitchAngle",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.RollAngle": {
+      "color": "#c586c0",
+      "label": "RollAngle",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.SlopeAngle": {
+      "color": "#f48771",
+      "label": "SlopeAngle",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.AccX": {
+      "color": "#6a9955",
+      "label": "AccX",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.AccY": {
+      "color": "#9cdcfe",
+      "label": "AccY",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.AccZ": {
+      "color": "#d16969",
+      "label": "AccZ",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.GyroX": {
+      "color": "#b5cea8",
+      "label": "GyroX",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.GyroY": {
+      "color": "#569cd6",
+      "label": "GyroY",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.GyroZ": {
+      "color": "#ce9178",
+      "label": "GyroZ",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.ConvAccZ": {
+      "color": "#4ec9b0",
+      "label": "ConvAccZ",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Vx": {
+      "color": "#dcdcaa",
+      "label": "Vx",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Vx_Fbk": {
+      "color": "#c586c0",
+      "label": "Vx_Fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Vx_Msf": {
+      "color": "#f48771",
+      "label": "Vx_Msf",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Wx": {
+      "color": "#6a9955",
+      "label": "Wx",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Wx_Fbk": {
+      "color": "#9cdcfe",
+      "label": "Wx_Fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Wx_Imu": {
+      "color": "#d16969",
+      "label": "Wx_Imu",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.ImuPidOut": {
+      "color": "#b5cea8",
+      "label": "ImuPidOut",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Vx_Input": {
+      "color": "#569cd6",
+      "label": "Vx_Input",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.Wx_Input": {
+      "color": "#ce9178",
+      "label": "Wx_Input",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M1_En": {
+      "color": "#4ec9b0",
+      "label": "M1_En",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M2_En": {
+      "color": "#dcdcaa",
+      "label": "M2_En",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M3_En": {
+      "color": "#c586c0",
+      "label": "M3_En",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.T1_En": {
+      "color": "#f48771",
+      "label": "T1_En",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M1_Cmd_Spd": {
+      "color": "#6a9955",
+      "label": "M1_Cmd_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M1_Fbk_Spd": {
+      "color": "#9cdcfe",
+      "label": "M1_Fbk_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M1_Cmd_Iq": {
+      "color": "#d16969",
+      "label": "M1_Cmd_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M1_Fbk_Iq": {
+      "color": "#b5cea8",
+      "label": "M1_Fbk_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M2_Cmd_Spd": {
+      "color": "#569cd6",
+      "label": "M2_Cmd_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M2_Fbk_Spd": {
+      "color": "#ce9178",
+      "label": "M2_Fbk_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M2_Cmd_Iq": {
+      "color": "#4ec9b0",
+      "label": "M2_Cmd_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M2_Fbk_Iq": {
+      "color": "#dcdcaa",
+      "label": "M2_Fbk_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M3_Cmd_Spd": {
+      "color": "#c586c0",
+      "label": "M3_Cmd_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M3_Fbk_Spd": {
+      "color": "#f48771",
+      "label": "M3_Fbk_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M3_Cmd_Iq": {
+      "color": "#6a9955",
+      "label": "M3_Cmd_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M3_Fbk_Iq": {
+      "color": "#9cdcfe",
+      "label": "M3_Fbk_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.T1_Cmd_Angle": {
+      "color": "#d16969",
+      "label": "T1_Cmd_Angle",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.T1_Fbk_Angle": {
+      "color": "#b5cea8",
+      "label": "T1_Fbk_Angle",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.T1_Fbk_Spd": {
+      "color": "#569cd6",
+      "label": "T1_Fbk_Spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.T1_Fbk_Iq": {
+      "color": "#ce9178",
+      "label": "T1_Fbk_Iq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.M3_Temp": {
+      "color": "#4ec9b0",
+      "label": "M3_Temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.T1_Temp": {
+      "color": "#dcdcaa",
+      "label": "T1_Temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.BackMotorAssitFlag": {
+      "color": "#c586c0",
+      "label": "BackMotorAssitFlag",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.ParkingFlag": {
+      "color": "#f48771",
+      "label": "ParkingFlag",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.ModelStatus": {
+      "color": "#6a9955",
+      "label": "ModelStatus",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.TCS_Iq_Limit_M1": {
+      "color": "#9cdcfe",
+      "label": "TCS_Iq_Limit_M1",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.TCS_Iq_Limit_M2": {
+      "color": "#d16969",
+      "label": "TCS_Iq_Limit_M2",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.TCS_Iq_Limit_M3": {
+      "color": "#b5cea8",
+      "label": "TCS_Iq_Limit_M3",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_state": {
+      "color": "#569cd6",
+      "label": "VCU2 MA state",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_faultCode": {
+      "color": "#ce9178",
+      "label": "VCU2 MA faultCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_tgt_ang": {
+      "color": "#4ec9b0",
+      "label": "VCU2 MA tgt_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_out_ang": {
+      "color": "#dcdcaa",
+      "label": "VCU2 MA out_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_tgt_spd": {
+      "color": "#c586c0",
+      "label": "VCU2 MA tgt_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_outavg_spd": {
+      "color": "#f48771",
+      "label": "VCU2 MA outavg_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_iq_ref": {
+      "color": "#6a9955",
+      "label": "VCU2 MA iq_ref",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_iq_fbk": {
+      "color": "#9cdcfe",
+      "label": "VCU2 MA iq_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_id_fbk": {
+      "color": "#d16969",
+      "label": "VCU2 MA id_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_uq": {
+      "color": "#b5cea8",
+      "label": "VCU2 MA uq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_ud": {
+      "color": "#569cd6",
+      "label": "VCU2 MA ud",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_torque": {
+      "color": "#ce9178",
+      "label": "VCU2 MA torque",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_in_pwr": {
+      "color": "#4ec9b0",
+      "label": "VCU2 MA in_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_out_pwr": {
+      "color": "#dcdcaa",
+      "label": "VCU2 MA out_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MA_temp": {
+      "color": "#c586c0",
+      "label": "VCU2 MA temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_state": {
+      "color": "#f48771",
+      "label": "VCU2 MB state",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_faultCode": {
+      "color": "#6a9955",
+      "label": "VCU2 MB faultCode",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_tgt_ang": {
+      "color": "#9cdcfe",
+      "label": "VCU2 MB tgt_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_out_ang": {
+      "color": "#d16969",
+      "label": "VCU2 MB out_ang",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_tgt_spd": {
+      "color": "#b5cea8",
+      "label": "VCU2 MB tgt_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_outavg_spd": {
+      "color": "#569cd6",
+      "label": "VCU2 MB outavg_spd",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_iq_ref": {
+      "color": "#ce9178",
+      "label": "VCU2 MB iq_ref",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_iq_fbk": {
+      "color": "#4ec9b0",
+      "label": "VCU2 MB iq_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_id_fbk": {
+      "color": "#dcdcaa",
+      "label": "VCU2 MB id_fbk",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_uq": {
+      "color": "#c586c0",
+      "label": "VCU2 MB uq",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_ud": {
+      "color": "#f48771",
+      "label": "VCU2 MB ud",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_torque": {
+      "color": "#6a9955",
+      "label": "VCU2 MB torque",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_in_pwr": {
+      "color": "#9cdcfe",
+      "label": "VCU2 MB in_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_out_pwr": {
+      "color": "#d16969",
+      "label": "VCU2 MB out_pwr",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.L31_MB_temp": {
+      "color": "#b5cea8",
+      "label": "VCU2 MB temp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.state": {
+      "color": "#569cd6",
+      "label": "整车状态",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.charge_detect": {
+      "color": "#ce9178",
+      "label": "充电状态检测",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.charge_sw": {
+      "color": "#4ec9b0",
+      "label": "充电开关",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.charge_i_set": {
+      "color": "#dcdcaa",
+      "label": "设置充电电流",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.charge_v_set": {
+      "color": "#c586c0",
+      "label": "设置充电电压",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.board_v": {
+      "color": "#f48771",
+      "label": "母线电压",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.board_i": {
+      "color": "#6a9955",
+      "label": "母线电流",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.dc_in_voltage": {
+      "color": "#9cdcfe",
+      "label": "STU电压",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.discharge_i": {
+      "color": "#d16969",
+      "label": "母线放电电流",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.dc_in_temp": {
+      "color": "#b5cea8",
+      "label": "充电温度",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.LK_pwm_set": {
+      "color": "#569cd6",
+      "label": "电流环占空比",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.LKV_pwm_set": {
+      "color": "#ce9178",
+      "label": "电压环占空比",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.batSOC": {
+      "color": "#4ec9b0",
+      "label": "显示SoC",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.realSOC": {
+      "color": "#dcdcaa",
+      "label": "实际SoC",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.batSOH": {
+      "color": "#c586c0",
+      "label": "显示健康度",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.userSOH": {
+      "color": "#f48771",
+      "label": "真实健康度",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.bat_cap_cc": {
+      "color": "#6a9955",
+      "label": "剩余容量Ah",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.bat_cap_vol": {
+      "color": "#9cdcfe",
+      "label": "剩余容量V",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Pack_Voltage": {
+      "color": "#d16969",
+      "label": "包电压",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Stack_Voltage": {
+      "color": "#b5cea8",
+      "label": "电压",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Pack_Current": {
+      "color": "#569cd6",
+      "label": "包电流",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.TS1_Temperature": {
+      "color": "#ce9178",
+      "label": "电芯温度1",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.TS3_Temperature": {
+      "color": "#4ec9b0",
+      "label": "电芯温度2",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.HDQ_Temperature": {
+      "color": "#dcdcaa",
+      "label": "高温温度",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Cell_Voltage_0": {
+      "color": "#c586c0",
+      "label": "电芯电压1",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Cell_Voltage_1": {
+      "color": "#f48771",
+      "label": "电芯电压2",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Cell_Voltage_2": {
+      "color": "#6a9955",
+      "label": "电芯电压3",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Cell_Voltage_3": {
+      "color": "#9cdcfe",
+      "label": "电芯电压4",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Cell_Voltage_4": {
+      "color": "#d16969",
+      "label": "电芯电压5",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.Cell_Voltage_5": {
+      "color": "#b5cea8",
+      "label": "电芯电压6",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.cell_type": {
+      "color": "#569cd6",
+      "label": "电芯类型",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "bms.cell_parallel": {
+      "color": "#ce9178",
+      "label": "并数",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.GyroOffsetX": {
+      "color": "#4ec9b0",
+      "label": "GyroOffsetX",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.SwPitchAcc": {
+      "color": "#dcdcaa",
+      "label": "SwPitchAcc",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.GyroOffsetY": {
+      "color": "#c586c0",
+      "label": "GyroOffsetY",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.GyroOffsetZ": {
+      "color": "#f48771",
+      "label": "GyroOffsetZ",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "imu.VarGyroNorm": {
+      "color": "#6a9955",
+      "label": "VarGyroNorm",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "sin_50hz": {
+      "color": "#9cdcfe",
+      "label": "sin_50hz",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "cos_with_spikes": {
+      "color": "#d16969",
+      "label": "cos_with_spikes",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "ramp": {
+      "color": "#b5cea8",
+      "label": "ramp",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.rpm": {
+      "color": "#569cd6",
+      "label": "motor.rpm",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "motor.vbus": {
+      "color": "#ce9178",
+      "label": "motor.vbus",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "col2": {
+      "color": "#4ec9b0",
+      "label": "col2",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "col3": {
+      "color": "#dcdcaa",
+      "label": "col3",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    },
+    "col4": {
+      "color": "#c586c0",
+      "label": "col4",
+      "y_min": null,
+      "y_max": null,
+      "warn_min": null,
+      "warn_max": null
+    }
+  }
+}

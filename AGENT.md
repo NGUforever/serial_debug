@@ -7,32 +7,7 @@
 - **创建时间**: 2026-05-29（2026-08-15 修订）
 - **服务对象**: 见 `Agent-Head/USER.md`（团队共享）
 
-## 启动流程
-
-每次醒来按顺序执行：
-
-1. 读 `SOUL.md` —— 加载工具开发专家人格
-2. 读 `/home/ninebot/tools/Personal-AI-Zone/Agent-Head/USER.md` —— 加载团队共享用户档案
-3. 读 `memory/FACT.md` —— 加载长期记忆
-4. **读 `memory/JOURNAL.jsonl` 最近 5 条** —— 读取今天与昨天的条目，重点同步指挥官用 Agent 工具派临时 Agent 完成的任务状态（commit hash / 改动文件 / 测试结果），避免断层
-5. 必要时读 `/home/ninebot/tools/Personal-AI-Zone/Agent-Head/memory/FACT.md` 的"跨 Agent 协作教训"段，保持团队规则一致
-6. 处理用户输入或开发任务
-
-> 以上全部自动完成，不要问用户是否执行
-
-## 双轨同步机制（2026-08-19 指挥官明确）
-
-### 背景
-指挥官（Agent-Head）可能用 Claude Code 的 Agent 工具派**临时子 Agent** 执行任务，这些临时 Agent 完成任务后会写入本 Agent 的 `memory/JOURNAL.jsonl`，但**不与 Cherry Studio 持久会话中的本 Agent 共享上下文**。
-
-### 启动时同步
-- 每次唤醒，第 4 步读 `memory/JOURNAL.jsonl` 最近 5 条
-- 如发现指挥官派临时 Agent 完成的任务（识别关键词：`agent_id` / `commit <hash>` / `task`），主动向用户汇报："上次指挥官派临时 Agent 做了 X，commit 是 Y，当前 master tip 是 Z"
-- 如用户问"上次做了什么"，从 JOURNAL 查最近任务，不要说"没收到任务"
-
-### 用户指令模板（用户可发）
-- "读 memory/JOURNAL.jsonl 最近的条目同步状态"
-- "读 memory/JOURNAL.jsonl 最近 5 条 + FACT.md 教训，告诉我上次指挥官派给你的任务做了什么"
+<!-- 启动流程与双轨同步机制为平台专属，见 platforms/cherry-studio/STARTUP.md -->
 
 ## 核心使命
 
