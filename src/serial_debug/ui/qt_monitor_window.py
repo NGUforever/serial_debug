@@ -395,6 +395,13 @@ class _QtPlotDialog:
         dlg.resize(640, 560)
         dlg.setMinimumSize(480, 360)
 
+        # 取当前主题色板：内联样式随主题，保证浅色主题下提示文字可读
+        try:
+            from serial_debug.ui import qt_theme
+            tpal = qt_theme.palette(themes.resolve(themes.load_pref()))
+        except Exception:
+            tpal = {}
+
         v = QVBoxLayout(dlg)
         v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(8)
@@ -501,7 +508,8 @@ class _QtPlotDialog:
         tip = QLabel('图例可在画布内拖拽到任意位置；自动避让检测曲线密集区，'
                      '若图例覆盖曲线则翻转到对角。')
         tip.setWordWrap(True)
-        tip.setStyleSheet('color: #888; font-size: 9pt;')
+        tip.setStyleSheet(
+            f'color: {tpal.get("muted", "#888888")}; font-size: 9pt;')
         extra_l.addWidget(tip)
         v.addWidget(extra_box)
 
@@ -674,6 +682,13 @@ class _QtParserConfigDialog:
         dlg.setMinimumSize(600, 480)
         self._dlg = dlg
 
+        # 取当前主题色板：内联样式随主题，保证浅色主题下提示文字可读
+        try:
+            from serial_debug.ui import qt_theme
+            tpal = qt_theme.palette(themes.resolve(themes.load_pref()))
+        except Exception:
+            tpal = {}
+
         v = QVBoxLayout(dlg)
         v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(8)
@@ -767,7 +782,8 @@ class _QtParserConfigDialog:
             'yield (ts, name, value) 即可成为曲线。点"推导解析器"自动填充；'
             '也可手动编辑 / 直接写。')
         code_hint.setWordWrap(True)
-        code_hint.setStyleSheet('color: #888; font-size: 9pt;')
+        code_hint.setStyleSheet(
+            f'color: {tpal.get("muted", "#888888")}; font-size: 9pt;')
         code_l.addWidget(code_hint)
         self._code_edit = QPlainTextEdit()
         mono = QFont('DejaVu Sans Mono')
@@ -1178,6 +1194,10 @@ class QtMonitorWindow:
         self._v_splitter = None
         # popout 单图独立窗口列表：[(plot_idx, QDialog, PlotWidget, curves_dict)]
         self._popout_dialogs: list = []
+        # 当前焦点 plot 索引（键盘/拖拽操作的目标），-1 = 无焦点
+        self._focus_plot_idx: int = -1
+        # 拖拽交换状态：_drag_src_idx = 拖拽起始 plot 的 visible 索引
+        self._drag_src_idx: int = -1
         # 侧栏 UI
         self._sidebar = None        # QTreeWidget
         self._sidebar_container = None  # QWidget（splitter 左侧）
@@ -2090,7 +2110,7 @@ class QtMonitorWindow:
         # 当前打开的文件名显示（load_log / 串口连接时更新）
         self._file_label = QLabel('（未加载）')
         self._file_label.setStyleSheet(
-            'QLabel { color: #88aa88; padding: 0 6px; }')
+            f'QLabel {{ color: {t_init.get("muted", "#888888")}; padding: 0 6px; }}')
         self._file_label.setToolTip('当前打开的日志文件 / 串口')
         tb.addWidget(self._file_label)
         tb.addSeparator()
@@ -2162,6 +2182,9 @@ class QtMonitorWindow:
         win.closeEvent = _close_event
 
         self._win = win
+
+        # 注册快捷键（类似 Terminator：Ctrl+Shift+O/E/D + 方向键）
+        self._register_layout_shortcuts(win)
 
         # 构建初始 plots UI
         self._rebuild_plots_ui()
@@ -2714,8 +2737,13 @@ class QtMonitorWindow:
         dlg.resize(720, 480)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(8, 8, 8, 8)
+        try:
+            from serial_debug.ui import qt_theme
+            _stat_muted = qt_theme.palette(self.theme_name).get('muted', '#888888')
+        except Exception:
+            _stat_muted = '#888888'
         info = QLabel(f'共 {len(self._data)} 个变量，统计基于当前已加载数据')
-        info.setStyleSheet('padding: 2px 4px; color: #888;')
+        info.setStyleSheet(f'padding: 2px 4px; color: {_stat_muted};')
         v.addWidget(info)
 
         cols = ['变量名', '说明', '当前值', '最小', '最大', '均值',
@@ -3048,6 +3076,13 @@ class QtMonitorWindow:
         header_frame.setStyleSheet(
             f"background-color: {t.get('panel_bg', t.get('bg', '#1e1e1e'))};"
             f"border-bottom: 1px solid {t.get('muted', '#3a3a3a')};")
+        # 拖拽交换：header 可拖拽到其他 plot 位置交换顺序
+        if idx is not None:
+            header_frame.setCursor(Qt.OpenHandCursor)
+            header_frame._plot_idx = idx
+            header_frame.mousePressEvent = lambda e, _i=idx: self._on_header_press(e, _i)
+            header_frame.mouseMoveEvent = lambda e, _i=idx: self._on_header_move(e, _i)
+            header_frame.mouseReleaseEvent = lambda e, _i=idx: self._on_header_release(e, _i)
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(10, 4, 10, 4)
         header_layout.setSpacing(10)
@@ -3108,6 +3143,180 @@ class QtMonitorWindow:
             'close_btn': close_btn,
         }
         return container, pw, header
+
+    # ---- 拖拽交换 + 快捷键布局 ------------------------------------------
+    def _on_header_press(self, event, idx: int):
+        """header 鼠标按下：记录拖拽起始 plot 索引。"""
+        from PySide6.QtCore import Qt as _Qt
+        if event.button() == _Qt.LeftButton:
+            self._drag_src_idx = idx
+            self._focus_plot_idx = idx
+
+    def _on_header_move(self, event, idx: int):
+        """header 鼠标移动：如果正在拖拽，高亮目标 plot。"""
+        from PySide6.QtCore import Qt as _Qt
+        if self._drag_src_idx < 0 or event.buttons() != _Qt.LeftButton:
+            return
+        # 找鼠标在哪个 plot container 上方
+        target = self._find_plot_at_pos(event.globalPosition().toPoint())
+        # 简单视觉反馈：改变源 header 样式
+        for i, hdr in enumerate(self._plot_headers):
+            if hdr and hdr.get('frame'):
+                if i == target and i != self._drag_src_idx:
+                    hdr['frame'].setStyleSheet(
+                        f"background-color: {self._theme_muted()}40;"
+                        f"border-bottom: 2px solid {self._theme_accent()};")
+                else:
+                    hdr['frame'].setStyleSheet(
+                        f"background-color: {self._theme_panel_bg()};"
+                        f"border-bottom: 1px solid {self._theme_muted()};")
+
+    def _on_header_release(self, event, idx: int):
+        """header 鼠标释放：执行交换。"""
+        from PySide6.QtCore import Qt as _Qt
+        if self._drag_src_idx < 0:
+            return
+        target = self._find_plot_at_pos(event.globalPosition().toPoint())
+        src = self._drag_src_idx
+        self._drag_src_idx = -1
+        # 恢复 header 样式
+        for i, hdr in enumerate(self._plot_headers):
+            if hdr and hdr.get('frame'):
+                hdr['frame'].setStyleSheet(
+                    f"background-color: {self._theme_panel_bg()};"
+                    f"border-bottom: 1px solid {self._theme_muted()};")
+        if target >= 0 and target != src and target < len(self._visible_plots):
+            # 交换 _visible_plots 中的位置
+            self._visible_plots[src], self._visible_plots[target] = \
+                self._visible_plots[target], self._visible_plots[src]
+            self._rebuild_plots_ui()
+            self._refresh_plot()
+            self._focus_plot_idx = target
+            if self._win is not None:
+                try:
+                    self._win.statusBar().showMessage(
+                        f'已交换曲线图位置（{src+1} ↔ {target+1}）')
+                except Exception:
+                    pass
+
+    def _find_plot_at_pos(self, global_pos) -> int:
+        """根据全局鼠标坐标找到鼠标下方的 plot visible 索引，找不到返回 -1。"""
+        if not self._plot_containers:
+            return -1
+        for i, container in enumerate(self._plot_containers):
+            if container is None:
+                continue
+            try:
+                # 将全局坐标转到 container 局部坐标
+                local = container.mapFromGlobal(global_pos)
+                if container.rect().contains(local):
+                    return i
+            except Exception:
+                continue
+        return -1
+
+    def _theme_panel_bg(self) -> str:
+        """取当前主题 panel_bg（兜底深色）。"""
+        try:
+            from serial_debug.ui import qt_theme
+            t = qt_theme.palette(self.theme_name)
+            return t.get('panel_bg', t.get('bg', '#1e1e1e'))
+        except Exception:
+            return '#1e1e1e'
+
+    def _theme_muted(self) -> str:
+        try:
+            from serial_debug.ui import qt_theme
+            return qt_theme.palette(self.theme_name).get('muted', '#3a3a3a')
+        except Exception:
+            return '#3a3a3a'
+
+    def _theme_accent(self) -> str:
+        try:
+            from serial_debug.ui import qt_theme
+            return qt_theme.palette(self.theme_name).get('accent', '#ff5555')
+        except Exception:
+            return '#ff5555'
+
+    def _register_layout_shortcuts(self, win):
+        """注册快捷键：类似 Terminator 的分割/导航操作。"""
+        from PySide6.QtGui import QShortcut, QKeySequence
+        from PySide6.QtCore import Qt
+
+        # Ctrl+Shift+O：在当前焦点 plot 下方添加新 plot（水平分割）
+        QShortcut(QKeySequence('Ctrl+Shift+O'), win,
+                  activated=self._shortcut_add_below)
+        # Ctrl+Shift+E：在当前焦点 plot 右侧添加新 plot（垂直分割）
+        QShortcut(QKeySequence('Ctrl+Shift+E'), win,
+                  activated=self._shortcut_add_right)
+        # Ctrl+Shift+D：隐藏当前焦点 plot
+        QShortcut(QKeySequence('Ctrl+Shift+D'), win,
+                  activated=self._shortcut_del_focused)
+        # Ctrl+Shift+Left/Right/Up/Down：在 plot 之间切换焦点
+        QShortcut(QKeySequence('Ctrl+Shift+Left'), win,
+                  activated=lambda: self._move_focus('left'))
+        QShortcut(QKeySequence('Ctrl+Shift+Right'), win,
+                  activated=lambda: self._move_focus('right'))
+        QShortcut(QKeySequence('Ctrl+Shift+Up'), win,
+                  activated=lambda: self._move_focus('up'))
+        QShortcut(QKeySequence('Ctrl+Shift+Down'), win,
+                  activated=lambda: self._move_focus('down'))
+
+    def _shortcut_add_below(self):
+        """Ctrl+Shift+O：在当前焦点 plot 后面添加新 plot。"""
+        self._add_plot()  # 已有方法：弹对话框添加新 plot
+        if self._win is not None:
+            try:
+                self._win.statusBar().showMessage('已添加新曲线图（Ctrl+Shift+O）')
+            except Exception:
+                pass
+
+    def _shortcut_add_right(self):
+        """Ctrl+Shift+E：同 _shortcut_add_below（添加新 plot 到视图）。"""
+        self._add_plot()
+        if self._win is not None:
+            try:
+                self._win.statusBar().showMessage('已添加新曲线图（Ctrl+Shift+E）')
+            except Exception:
+                pass
+
+    def _shortcut_del_focused(self):
+        """Ctrl+Shift+D：隐藏当前焦点 plot。"""
+        if 0 <= self._focus_plot_idx < len(self._visible_plots):
+            self._hide_plot(self._focus_plot_idx)
+            self._focus_plot_idx = -1
+
+    def _move_focus(self, direction: str):
+        """Ctrl+Shift+方向键：在 plot 之间切换焦点。"""
+        if not self._plot_widgets:
+            return
+        # 简单实现：按 visible 索引线性导航
+        n = len(self._visible_plots)
+        if n == 0:
+            return
+        if self._focus_plot_idx < 0:
+            self._focus_plot_idx = 0
+        elif direction in ('left', 'up'):
+            self._focus_plot_idx = max(0, self._focus_plot_idx - 1)
+        elif direction in ('right', 'down'):
+            self._focus_plot_idx = min(n - 1, self._focus_plot_idx + 1)
+        # 高亮焦点 plot header
+        for i, hdr in enumerate(self._plot_headers):
+            if hdr and hdr.get('frame'):
+                if i == self._focus_plot_idx:
+                    hdr['frame'].setStyleSheet(
+                        f"background-color: {self._theme_panel_bg()};"
+                        f"border-bottom: 2px solid {self._theme_accent()};")
+                else:
+                    hdr['frame'].setStyleSheet(
+                        f"background-color: {self._theme_panel_bg()};"
+                        f"border-bottom: 1px solid {self._theme_muted()};")
+        # 让焦点 plot 获得键盘焦点
+        if self._focus_plot_idx < len(self._plot_widgets):
+            try:
+                self._plot_widgets[self._focus_plot_idx].setFocus()
+            except Exception:
+                pass
 
     def _hide_plot(self, idx: int):
         """从当前视图移除指定 plot（仅运行时显示，不写配置）。
@@ -3497,9 +3706,8 @@ class QtMonitorWindow:
             idx = 0
         return self._palette[idx % len(self._palette)]
 
-    @staticmethod
-    def _curve_color(item) -> str:
-        """从 PlotDataItem 取颜色 hex 字符串，失败回退灰色。
+    def _curve_color(self, item) -> str:
+        """从 PlotDataItem 取颜色 hex 字符串，失败回退主题 muted 色。
 
         颜色在 _refresh_plot 创建曲线时存到 item._legend_color（pen
         反推不可靠：QPen.color() 是方法不是属性，getattr 行为容易错）。
@@ -3514,7 +3722,11 @@ class QtMonitorWindow:
                 qc = pen.color()
                 if hasattr(qc, 'name'):
                     return qc.name()
-            return '#888888'
+            try:
+                from serial_debug.ui import qt_theme
+                return qt_theme.palette(self.theme_name).get('muted', '#888888')
+            except Exception:
+                return '#888888'
         except Exception:
             return '#888888'
 
@@ -3816,8 +4028,14 @@ class QtMonitorWindow:
             # 悬停提示：延迟绑定（只绑一次）
             if p.get('show_hover', True) and not hasattr(pw, '_hover_bound'):
                 pw._hover_bound = True
+                try:
+                    from serial_debug.ui import qt_theme
+                    _vline_color = qt_theme.palette(self.theme_name).get(
+                        'muted', '#888888')
+                except Exception:
+                    _vline_color = '#888888'
                 pw._hover_vline = pg.InfiniteLine(
-                    angle=90, pen=pg.mkPen('#888888', width=1, style=Qt.PenStyle.DashLine))
+                    angle=90, pen=pg.mkPen(_vline_color, width=1, style=Qt.PenStyle.DashLine))
                 pw.addItem(pw._hover_vline, ignoreBounds=True)
                 pw._hover_vline.setVisible(False)
                 pw._hover_label = None
@@ -3925,6 +4143,14 @@ class QtMonitorWindow:
         """
         import numpy as np
         import pyqtgraph as pg
+        # 取主题色板：标签背景用 panel_bg（+ 透明度），保证浅/深主题都清晰
+        try:
+            from serial_debug.ui import qt_theme
+            tpal = qt_theme.palette(self.theme_name)
+            marker_fill = tpal.get('panel_bg', tpal.get('bg', '#1e1e1e')) + 'd9'
+        except Exception:
+            tpal = {}
+            marker_fill = '#1e1e1ed9'
         # 清理上一轮标注
         old = getattr(pw, '_stat_markers', None)
         if old:
@@ -3994,7 +4220,7 @@ class QtMonitorWindow:
                     pw._stat_markers.append(sc)
                 for tx, ty, text, anchor in txts:
                     t = pg.TextItem(text, color=color,
-                                    fill='#1e1e1ed9', anchor=anchor)
+                                    fill=marker_fill, anchor=anchor)
                     t.setPos(tx, ty)
                     pw.addItem(t, ignoreBounds=True)
                     pw._stat_markers.append(t)
@@ -4111,6 +4337,16 @@ class QtMonitorWindow:
         """鼠标在 plot 上移动时显示竖线 + 数据标签。"""
         import numpy as np
         import pyqtgraph as pg
+        # 取主题色板：标签背景/文字色随主题，保证浅色主题下清晰可读
+        try:
+            from serial_debug.ui import qt_theme
+            tpal = qt_theme.palette(self.theme_name)
+            hover_fill = tpal.get('panel_bg', tpal.get('bg', '#1e1e1e')) + '99'
+            hover_text = tpal.get('fg', '#cccccc')
+        except Exception:
+            tpal = {}
+            hover_fill = '#1e1e1e99'
+            hover_text = '#cccccc'
         # 检查鼠标是否在 plot 区域内
         if pw.sceneBoundingRect().contains(pos):
             mouse_point = pw.getViewBox().mapSceneToView(pos)
@@ -4212,7 +4448,7 @@ class QtMonitorWindow:
                 # 用 HTML 拼：每行前面带一个该曲线颜色的圆点
                 # 圆点用 ●（U+25CF），fontSize 略小避免行高过大
                 lines_html = [
-                    f'<div style="color:#cccccc;">t={t_str}</div>']
+                    f'<div style="color:{hover_text};">t={t_str}</div>']
                 for label, val, color, _ts in rows:
                     try:
                         if val == int(val):
@@ -4224,7 +4460,7 @@ class QtMonitorWindow:
                     lines_html.append(
                         f'<div style="color:{color};">'
                         f'<span style="color:{color};font-size:10pt;">●</span> '
-                        f'<span style="color:#cccccc;">{label}:</span> '
+                        f'<span style="color:{hover_text};">{label}:</span> '
                         f'<span style="color:{color};">{val_s}</span>'
                         f'</div>')
                 # 统计行
@@ -4239,7 +4475,7 @@ class QtMonitorWindow:
                     return f'{v:.3f}'
 
                 for slabel, smax, smin, savg, slast, scolor in stat_rows:
-                    parts = [f'<span style="color:#cccccc;">{slabel}</span>']
+                    parts = [f'<span style="color:{hover_text};">{slabel}</span>']
                     if show_max:
                         parts.append(f'max={_fmt_num(smax)}')
                     if show_min:
@@ -4259,11 +4495,25 @@ class QtMonitorWindow:
                 # 注意：pyqtgraph TextItem.setText 走 setPlainText（HTML 会被
                 # 当作字面文本显示为 <div> 等），必须用 setHtml 才能渲染 HTML
                 if getattr(pw, '_hover_label', None) is None:
-                    pw._hover_label = pg.TextItem(html, color='#cccccc',
-                                                  fill='#1e1e1e99',
+                    pw._hover_label = pg.TextItem(html, color=hover_text,
+                                                  fill=hover_fill,
                                                   anchor=(0, 1))
                     pw.addItem(pw._hover_label, ignoreBounds=True)
                 pw._hover_label.setHtml(html)
+                # 动态切换 anchor：根据鼠标在 ViewBox 中的位置，让标签
+                # 始终向有空间的方向展开，避免在右边缘/上边缘超出可见区。
+                # 鼠标在右半区 → anchor x=1（向左展开）；左半区 → x=0（向右展开）
+                # 鼠标在上半区 → anchor y=0（向下展开）；下半区 → y=1（向上展开）
+                try:
+                    vb = pw.getViewBox()
+                    vr = vb.viewRange()  # [[x_min, x_max], [y_min, y_max]]
+                    x_mid = (vr[0][0] + vr[0][1]) / 2.0
+                    y_mid = (vr[1][0] + vr[1][1]) / 2.0
+                    ax = 1 if mouse_point.x() >= x_mid else 0
+                    ay = 0 if mouse_point.y() >= y_mid else 1
+                    pw._hover_label.setAnchor((ax, ay))
+                except Exception:
+                    pass
                 pw._hover_label.setPos(mouse_point.x(), mouse_point.y())
                 pw._hover_label.setVisible(True)
             else:

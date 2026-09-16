@@ -71,7 +71,7 @@ SEARCH_MAX_LINE_LEN = 8000      # 单行搜索截断上限：避免超长行 + �
 FILTER_RESULT_MAX = 50000       # 旧默认值，保留作为兜底常量；运行时实际
                                 # 上限读 config['log_view_filter_result_max']
                                 # （默认 500000），见 _QtFilterPanel._get_filter_max
-FILTER_INSERT_BATCH = 5000
+FILTER_INSERT_BATCH = 200   # 分批插入 QTreeWidgetItem 的批次大小（小批次 + 事件循环呼吸）
 FILTER_MAX_LINE_LEN = 8000  # 单行搜索时截断上限：避免超长行 + 灾难性正则回溯
 FILTER_SCAN_TIMEOUT_MS = 800  # 单次筛选扫描超时（墙钟）：超过就中断 + 报警
 # 显示懒加载：筛选命中总数可达数十万行（无限制模式），但 QTreeWidget 一次性
@@ -79,7 +79,7 @@ FILTER_SCAN_TIMEOUT_MS = 800  # 单次筛选扫描超时（墙钟）：超过就
 # （int 列表，50万行约 4MB，无压力），但树只插入前 FILTER_DISPLAY_MAX 行，状态栏
 # 提示"命中 X 行，仅显示前 N 行"，并提供"加载更多"按钮与 locate_line 按需加载窗口。
 # 见 _render_results / _load_more / locate_line。
-FILTER_DISPLAY_MAX = 50000   # 树初始显示行数上限
+FILTER_DISPLAY_MAX = 5000    # 树初始显示行数上限（降低以避免主线程创建过多 QTreeWidgetItem 卡死）
 FILTER_LOAD_MORE_BATCH = 50000  # "加载更多" / locate_line 按需加载时每批行数
 LIVE_POLL_MS = 500
 LIVE_IDLE_POLL_MS = 2000
@@ -90,6 +90,10 @@ LIVE_IDLE_THRESHOLD = 6
 # 打包版即使无 tzdata（无 Asia/Shanghai 字符串）也能正确显示北京时间，
 # 不会 fallback 到 UTC。见 _convert_ts / qt_monitor_window 时间轴/曲线。
 BEIJING_TZ = timezone(timedelta(hours=8))
+
+# 已转换的时间戳前缀：[MM-DD HH:MM:SS.mmm] 或 [MM-DD HH:MM:SS]
+# 用于检测日志文件是否已含北京时间格式的时间戳，避免重复转换
+_CONVERTED_TS_RE = re.compile(r'^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?\]')
 
 _NOTE_KEYWORDS = ('error', 'fail', 'warn', 'exception', 'critical')
 
@@ -114,7 +118,13 @@ def _convert_ts(line: str) -> str:
 
     格式：月-日 时:分:秒.毫秒。毫秒手拼以避免 strftime %f 位数不可控
     和 Windows 上 strftime 对 %f 支持不一致的问题。
+
+    如果行首已有 [MM-DD HH:MM:SS.mmm] 格式的前缀（说明日志文件已经
+    被转换过），则不再重复转换，返回空串。
     """
+    # 已有转换后的时间戳前缀则跳过，避免重复转换
+    if _CONVERTED_TS_RE.match(line):
+        return ''
     m = _LOG_TS_RE.search(line)
     if not m:
         return ''
@@ -2331,34 +2341,85 @@ class _QtFilterPanel(QDockWidget):
         self._info_lbl.setText(info)
 
     def _render_results(self, filtered: list[int], total: int = 0):
-        """全量渲染：清 Tree + 只插前 FILTER_DISPLAY_MAX 行（显示懒加载）。
+        """全量渲染：清 Tree + 异步分批插入命中行（显示懒加载）。
 
-        _filtered_idx 存全部命中（int 列表），但 QTreeWidget 一次性插入几十万
-        QTreeWidgetItem 会让每个对象占内存 + 渲染卡死。故树只插前 N 行，状态栏
-        提示"命中 X 行，仅显示前 N 行"，提供「加载更多」按钮，locate_line 按需加载。
+        _filtered_idx 存全部命中（int 列表），但 QTreeWidget 一次性插入大量
+        QTreeWidgetItem 会冻 UI。改为 QTimer 分批插入（每批 FILTER_INSERT_BATCH
+        行，批次间 processEvents 让 UI 呼吸），避免主线程长阻塞。
         """
-        self._tree.setUpdatesEnabled(False)
-        try:
-            self._tree.clear()
-            display_slice = filtered[:FILTER_DISPLAY_MAX]
-            self._insert_into_tree(display_slice)
-            self._displayed_count = len(display_slice)
-        finally:
-            self._tree.setUpdatesEnabled(True)
-        if total == 0:
-            total = len(self._tab.all_lines()) if self._tab else 0
-        self._update_load_more_btn()
-        self._update_info_text(total)
+        # 取消上一次异步插入（如果有）
+        if hasattr(self, '_render_timer') and self._render_timer is not None:
+            self._render_timer.stop()
+        self._tree.clear()
+        self._displayed_count = 0
+        display_slice = filtered[:FILTER_DISPLAY_MAX]
+        if not display_slice:
+            if total == 0:
+                total = len(self._tab.all_lines()) if self._tab else 0
+            self._update_load_more_btn()
+            self._update_info_text(total)
+            return
+        # 缓存渲染参数，供 _render_next_batch 使用
+        self._render_pending = list(display_slice)
+        self._render_done = False
+        self._render_total = total
+        # 用 QTimer 零延迟分批插入（每批回来让事件循环处理 UI 事件）
+        if not hasattr(self, '_render_timer') or self._render_timer is None:
+            self._render_timer = QTimer(self)
+            self._render_timer.setSingleShot(True)
+            self._render_timer.timeout.connect(self._render_next_batch)
+        self._render_timer.start(0)
+
+    def _render_next_batch(self):
+        """QTimer 回调：插入下一批 QTreeWidgetItem，批次间让 UI 呼吸。"""
+        if not hasattr(self, '_render_pending') or not self._render_pending:
+            return
+        lines = self._tab.all_lines() if self._tab else []
+        tags = self._tab._line_tags if self._tab else []
+        # 预取颜色，避免每行调 dict.get + 创建 QColor
+        c_log = QColor(self._color_for_tag('log'))
+        c_resp = QColor(self._color_for_tag('resp'))
+        c_note = QColor(self._color_for_tag('note'))
+        color_map = {'log': c_log, 'resp': c_resp, 'note': c_note}
+        batch = self._render_pending[:FILTER_INSERT_BATCH]
+        self._render_pending = self._render_pending[FILTER_INSERT_BATCH:]
+        items = []
+        for line_idx in batch:
+            ln = lines[line_idx] if line_idx < len(lines) else ''
+            tag = tags[line_idx] if line_idx < len(tags) else 'log'
+            item = QTreeWidgetItem([str(line_idx + 1), ln])
+            item.setData(0, Qt.UserRole, line_idx)
+            c = color_map.get(tag, c_log)
+            item.setForeground(0, c)
+            item.setForeground(1, c)
+            items.append(item)
+        self._tree.addTopLevelItems(items)
+        self._displayed_count += len(batch)
+        if not self._render_pending:
+            # 全部插入完成
+            self._render_done = True
+            if self._tree.topLevelItemCount() > 0:
+                self._tree.setCurrentItem(self._tree.topLevelItem(0))
+            self._update_load_more_btn()
+            self._update_info_text(self._render_total)
+        else:
+            # 还有批次待插入，继续
+            self._render_timer.start(0)
 
     def _insert_into_tree(self, idx_list: list[int]):
-        """分批插入 QTreeWidgetItem（FILTER_INSERT_BATCH=5000）。
+        """同步分批插入 QTreeWidgetItem（用于 load_more / locate_line）。
 
         idx_list 是要插入的 line_idx 列表（已截断到显示范围，由调用方负责）。
+        批量小（FILTER_INSERT_BATCH=200），主线程每次插入不超过 200 行。
         """
         if not idx_list:
             return
         lines = self._tab.all_lines() if self._tab else []
         tags = self._tab._line_tags if self._tab else []
+        c_log = QColor(self._color_for_tag('log'))
+        c_resp = QColor(self._color_for_tag('resp'))
+        c_note = QColor(self._color_for_tag('note'))
+        color_map = {'log': c_log, 'resp': c_resp, 'note': c_note}
         start = 0
         while start < len(idx_list):
             end = min(start + FILTER_INSERT_BATCH, len(idx_list))
@@ -2369,10 +2430,9 @@ class _QtFilterPanel(QDockWidget):
                 tag = tags[line_idx] if line_idx < len(tags) else 'log'
                 item = QTreeWidgetItem([str(line_idx + 1), ln])
                 item.setData(0, Qt.UserRole, line_idx)
-                # tag 颜色
-                color = self._color_for_tag(tag)
-                item.setForeground(0, QColor(color))
-                item.setForeground(1, QColor(color))
+                c = color_map.get(tag, c_log)
+                item.setForeground(0, c)
+                item.setForeground(1, c)
                 items.append(item)
             self._tree.addTopLevelItems(items)
             start = end
