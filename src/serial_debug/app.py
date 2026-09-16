@@ -87,8 +87,31 @@ def _run_log_viewer_only(files: list[str]):
     由 qt_app._open_log_viewer 子进程注入，PyInstaller 打包后
     sys.executable -m 不识别，改用环境变量区分入口。
 
-    Qt 不可用时打印 stderr 退出（不再回退 tkinter，v1.1.0 起无 tk 路径）。
+    单实例：通过 QLocalServer 检测是否已有日志查看器实例在运行。
+    已有实例时，通过 IPC 发送文件路径让已有实例打开文件，不启动新进程。
     """
+    # ---- 单实例检查：已有实例则转发文件路径，不启动新进程 ----
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    _IPC_NAME = 'serial_debug_log_single_instance'
+    _socket = QLocalSocket()
+    _socket.connectToServer(_IPC_NAME)
+    if _socket.waitForConnected(300):
+        # 已有实例在运行：发送文件路径（每行一个）
+        if files:
+            msg = '\n'.join(os.path.abspath(f) for f in files) + '\n'
+        else:
+            msg = '\n'  # 空消息 = 激活已有实例窗口
+        _socket.write(msg.encode('utf-8'))
+        _socket.flush()
+        _socket.waitForBytesWritten(1000)
+        _socket.disconnectFromServer()
+        sys.exit(0)
+    _socket.close()
+    # 没有已有实例：启动 QLocalServer 监听后续实例的连接
+    QLocalServer.removeServer(_IPC_NAME)
+    _server = QLocalServer()
+    _server.listen(_IPC_NAME)
+
     from serial_debug.infra import themes
     pref = themes.load_pref()
     resolved = themes.resolve(pref)
@@ -119,6 +142,27 @@ def _run_log_viewer_only(files: list[str]):
     from serial_debug.ui import qt_theme
     qt_theme.apply_qss(app, resolved)
     win = QtLogViewerWindow(theme_name=resolved)
+
+    # ---- IPC 信号处理：收到文件路径时打开文件 + 激活窗口 ----
+    def _on_ipc_connection():
+        client = _server.nextPendingConnection()
+        if client is None:
+            return
+        client.waitForReadyRead(500)
+        data = bytes(client.readAll()).decode('utf-8', errors='replace').strip()
+        client.disconnectFromServer()
+        if data:
+            for line in data.split('\n'):
+                line = line.strip()
+                if line and os.path.isfile(line):
+                    win.open_file(line)
+        # 激活窗口（从最小化/后台拉到前台）
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+    _server.newConnection.connect(_on_ipc_connection)
+
     # 独立图标
     try:
         icon_path = resource_path(os.path.join('assets', 'icon_view.png'))

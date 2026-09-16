@@ -1386,7 +1386,11 @@ class QtSerialDebugApp:
             self._log_status.setText('已停止')
 
     def _open_log_viewer(self):
-        """子进程启动 Qt 日志查看器窗口。
+        """子进程启动 Qt 日志查看器窗口（单实例）。
+
+        用 QLocalSocket 检查是否已有日志查看器实例在运行：
+          - 已有实例：发送 IPC 消息激活已有实例（不启动新进程）
+          - 无实例：subprocess.Popen 启动新进程
 
         用 sys.executable + 环境变量 SERIAL_DEBUG_LOG_VIEWER=1 走 main()
         里的 _run_log_viewer_only([]) 路径，子进程内启动 QtLogViewerWindow
@@ -1399,6 +1403,23 @@ class QtSerialDebugApp:
           - 源码版（sys.frozen=False）：sys.executable 是解释器，必须加
             -m serial_debug 才会跑 main()，否则裸解释器瞬间退出子窗口打不开。
         """
+        # 先检查是否已有实例在运行
+        try:
+            from PySide6.QtNetwork import QLocalSocket
+            _IPC_NAME = 'serial_debug_log_single_instance'
+            sock = QLocalSocket()
+            sock.connectToServer(_IPC_NAME)
+            if sock.waitForConnected(300):
+                # 已有实例：发送空消息激活窗口，不启动新进程
+                sock.write(b'\n')
+                sock.flush()
+                sock.waitForBytesWritten(1000)
+                sock.disconnectFromServer()
+                return
+            sock.close()
+        except Exception:
+            pass  # IPC 检查失败时降级为启动新进程（兼容无 QtNetwork 环境）
+        # 无已有实例：启动新进程
         import subprocess
         env = dict(os.environ)
         env['SERIAL_DEBUG_LOG_VIEWER'] = '1'
