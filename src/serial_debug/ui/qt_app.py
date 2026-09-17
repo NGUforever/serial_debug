@@ -164,7 +164,7 @@ class QtSerialDebugApp:
         # 工具栏引用（视图菜单显隐用）
         self._toolbar = None
         # AT 命令面板嵌入/独立/隐藏
-        self._at_mode: str = self.cfg.get('at_window_mode', 'detached')
+        self._at_mode: str = self.cfg.get('at_window_mode', 'embedded')
         self._at_panel_qt = None     # AtCmdPanelQt 实例（嵌入或独立）
         self._at_panel_widget = None # 嵌入时的 QWidget
         self._main_splitter = None   # QSplitter（日志 | AT 面板）
@@ -754,6 +754,20 @@ class QtSerialDebugApp:
             return
         from serial_debug.ui.qt_at_cmd_window import AtCmdPanelQt
         initial = self.cfg.get('at_commands', [])
+        # 首次启动(at_commands 为空)时自动加载内置默认 AT 命令列表
+        if not initial:
+            try:
+                from serial_debug.resources import common_at as _ca
+                import json as _json
+                _path = os.path.join(os.path.dirname(_ca.__file__), 'common_at.json')
+                with open(_path, encoding='utf-8') as _f:
+                    _data = _json.load(_f)
+                if isinstance(_data, list):
+                    initial = _data
+                    self.cfg['at_commands'] = initial
+                    config.save(self.cfg)
+            except Exception:
+                pass
 
         def _on_change(cmds: list):
             try:
@@ -1284,6 +1298,20 @@ class QtSerialDebugApp:
                 pass
         from serial_debug.ui.qt_at_cmd_window import AtCmdWindowQt
         initial = self.cfg.get('at_commands', [])
+        # 首次启动(at_commands 为空)时自动加载内置默认 AT 命令列表
+        if not initial:
+            try:
+                from serial_debug.resources import common_at as _ca
+                import json as _json
+                _path = os.path.join(os.path.dirname(_ca.__file__), 'common_at.json')
+                with open(_path, encoding='utf-8') as _f:
+                    _data = _json.load(_f)
+                if isinstance(_data, list):
+                    initial = _data
+                    self.cfg['at_commands'] = initial
+                    config.save(self.cfg)
+            except Exception:
+                pass
 
         def _on_change(cmds: list):
             try:

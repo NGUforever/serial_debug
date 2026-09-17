@@ -39,7 +39,7 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 # 默认值，新装机或首次启动用
 DEFAULTS = {
     'port': '',
-    'baudrate': 115200,
+    'baudrate': 921600,
     'append_crlf': False,
     'auto_scroll': True,
     'log_path': '',
@@ -51,7 +51,7 @@ DEFAULTS = {
     'filter_enabled': False,
     'ts_convert_enabled': False,
     'show_at_interactive': True,
-    'at_window_mode': 'detached',     # detached / embedded / hidden
+    'at_window_mode': 'embedded',   # detached / embedded / hidden
     'geometry': '1100x680',
     'at_geometry': '720x520',
     'font_size': 10,
