@@ -158,6 +158,15 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
+          # choco 装的 Inno Setup 核心版不带中文简体语言文件，从官方仓库补一份。
+          # 否则 iss 里 MessagesFile: "compiler:Languages\ChineseSimplified.isl" 编译失败。
+          $innoLangDir = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          if (-not (Test-Path "$innoLangDir\ChineseSimplified.isl")) {
+            New-Item -ItemType Directory -Force -Path $innoLangDir | Out-Null
+            $url = "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl"
+            Invoke-WebRequest -Uri $url -OutFile "$innoLangDir\ChineseSimplified.isl"
+            Write-Host "已补装 ChineseSimplified.isl"
+          }
 
       - name: Build Windows installer (Inno Setup)
         if: matrix.platform == 'windows'
