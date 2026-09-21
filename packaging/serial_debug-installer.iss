@@ -32,7 +32,7 @@ AppUpdatesURL=https://www.ninebot.com
 DefaultDirName={localappdata}\serial_debug
 DefaultGroupName=串口调试助手
 DisableProgramGroupPage=yes
-OutputDir=dist
+OutputDir=..\dist
 OutputBaseFilename=serial_debug-windows-x64-setup
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -55,8 +55,8 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "associate"; Description: "关联 .log/.txt 文件到日志查看器"; GroupDescription: "附加选项:"; Flags: checkedonce
 
 [Files]
-; 整个 dist\serial_debug 目录
-Source: "dist\serial_debug\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 整个 dist\serial_debug 目录（iss 在 packaging/ 下，相对路径回到仓库根）
+Source: "..\dist\serial_debug\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; 开始菜单：串口调试助手
