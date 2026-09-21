@@ -169,6 +169,10 @@ _platform = sys.platform
 
 if _platform == 'darwin':
     # macOS: .app bundle
+    # macos-latest runner 现为 Apple Silicon (arm64)。target_arch='arm64' 明确只产 arm64，
+    # 产物文件名带 arm64（见 .github/workflows/release.yml）。
+    # 不再声称 universal2 —— PyInstaller 在只有 arm64 解释器的 runner 上产 universal2
+    # 会失败或实际只产 arm64（误导用户）。Intel 用户方案见 packaging/README.md。
     exe = EXE(
         pyz, a.scripts, [],
         exclude_binaries=True,
@@ -178,7 +182,7 @@ if _platform == 'darwin':
         upx=False,
         console=False,
         icon=_icon_path,
-        target_arch='universal2',
+        target_arch='arm64',
         codesign_identity=None,
         entitlements_file=None,
     )
@@ -192,7 +196,8 @@ if _platform == 'darwin':
         icon=_icon_path,
         bundle_identifier='com.serial-debug.app',
         info_plist={
-            'CFBundleShortVersionString': '1.0.0',
+            # 与 pyproject.toml [project].version 保持一致
+            'CFBundleShortVersionString': '1.1.0',
             'CFBundleName': '串口调试助手',
             'NSHighResolutionCapable': True,
         },

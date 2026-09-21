@@ -1,10 +1,15 @@
 ; Inno Setup 脚本 - 串口调试助手 Windows 安装包
 ;
 ; 用法：
-;   1. 先运行 build_win.bat 生成 dist\serial_debug\ 目录
-;   2. 安装 Inno Setup: https://jrsoftware.org/isdl.php
+;   1. 先运行 build_win.bat（或 pyinstaller --clean packaging/serial_debug.spec）生成 dist\serial_debug\ 目录
+;   2. 安装 Inno Setup 6: https://jrsoftware.org/isdl.php
 ;   3. 用 Inno Setup Compiler 打开此 .iss 文件，编译生成安装 exe
-;   4. 输出：dist\serial_debug-setup.exe
+;      命令行: iscc packaging\serial_debug-installer.iss
+;   4. 输出：dist\serial_debug-windows-x64-setup.exe
+;
+; CI 用法（GitHub Actions windows-latest）：
+;   choco install innosetup -y --no-progress
+;   iscc packaging\serial_debug-installer.iss
 ;
 ; 功能：
 ;   - 安装到 %LOCALAPPDATA%\serial_debug（无需管理员权限）
@@ -12,10 +17,14 @@
 ;   - 自动注册 PATH，命令行 serial_debug 可用
 ;   - 文件管理器右键 .log/.txt → 打开方式 → 日志查看器
 ;   - 控制面板可卸载
+;
+; 版本对齐：AppVersion 必须与 pyproject.toml [project].version 一致（当前 1.1.0）
+; AppId（GUID）一经发布固定不变，升级安装时 Inno Setup 据此识别同一应用
 
 [Setup]
 AppName=串口调试助手
-AppVersion=1.0.0
+AppVersion=1.1.0
+AppId={{B8F3A1D2-7E5C-4F9A-9B6E-3D2C1A0B5E7F}
 AppPublisher=Ninebot
 AppPublisherURL=https://www.ninebot.com
 AppSupportURL=https://www.ninebot.com
@@ -24,7 +33,7 @@ DefaultDirName={localappdata}\serial_debug
 DefaultGroupName=串口调试助手
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=serial_debug-setup
+OutputBaseFilename=serial_debug-windows-x64-setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesAllowed=x64
@@ -32,6 +41,8 @@ ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\serial_debug.exe
 UninstallDisplayName=串口调试助手
+VersionInfoVersion=1.1.0.0
+VersionInfoProductVersion=1.1.0.0
 LicenseFile=
 InfoBeforeFile=
 

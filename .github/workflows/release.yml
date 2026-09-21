@@ -17,17 +17,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Linux 固定 ubuntu-22.04（glibc 2.35 兼容基线，见 packaging/README.md）。
+        #   ubuntu-latest 当前是 24.04（glibc 2.39），其上构建的二进制在 22.04 上跑不了，
+        #   会破坏"目标机 glibc >= 2.35"承诺。
+        # macOS 固定 macos-latest（当前 macOS 26 Arm64 / Apple Silicon）。
+        #   先只产 arm64，产物名带 arm64；不做 universal2（PyInstaller 在只有 arm64
+        #   解释器的 runner 上产 universal2 会失败或实际只产 arm64，误导用户）。
+        #   Intel 用户方案见 packaging/README.md（后续单独 macos-13 x86_64 job 或 universal 构建）。
+        # Windows 用 windows-latest（Windows Server 2025 x64，向后兼容 Win10/11）。
+        os: [ubuntu-22.04, windows-latest, macos-latest]
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: linux
-            artifact: serial_debug-linux-x86_64.tar.gz
           - os: windows-latest
             platform: windows
-            artifact: serial_debug-windows-x64.zip
           - os: macos-latest
             platform: macos
-            artifact: serial_debug-macos-universal.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -44,47 +49,170 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller pyserial PySide6 pyqtgraph numpy PyOpenGL PyOpenGL-accelerate
+          # 锁定到本地实测快照版本（2026-09-21），避免 CI 与本地漂移。
+          # 升级依赖前务必同步更新此锁版本与 packaging/README.md 实测快照。
+          pip install \
+            pyinstaller==6.22.2 \
+            pyserial==3.5 \
+            PySide6==6.11.1 \
+            pyqtgraph==0.14.0 \
+            numpy==2.5.2 \
+            PyOpenGL==3.1.10 \
+            PyOpenGL-accelerate==3.1.10
 
       - name: Build with PyInstaller
         shell: bash
         run: pyinstaller --clean --noconfirm packaging/serial_debug.spec
 
-      - name: Package Linux
+      # ============================================================
+      # Linux：免安装便携 tar.gz + AppImage
+      # ============================================================
+      - name: Package Linux (tar.gz + AppImage)
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          set -x
           ARCH=$(uname -m)
-          # 创建便携启动脚本
+          # 便携启动脚本（解压后 ./run.sh 或 ./serial_debug 直接运行）
           cat > dist/serial_debug/run.sh << 'EOF'
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
           exec "${HERE}/serial_debug" "$@"
           EOF
           chmod +x dist/serial_debug/run.sh
-          tar -czf "dist/serial_debug-linux-${ARCH}.tar.gz" -C dist serial_debug
 
-      - name: Package Windows
+          # 免安装便携 tar.gz
+          tar -czf "dist/serial_debug-linux-${ARCH}.tar.gz" -C dist serial_debug
+          echo "==> tar.gz 完成: dist/serial_debug-linux-${ARCH}.tar.gz"
+          ls -lh "dist/serial_debug-linux-${ARCH}.tar.gz"
+
+          # AppImage（安装版式分发，拖拽即用）
+          # linuxdeploy-x86_64.AppImage 被 .gitignore 忽略，CI 里重新下载
+          echo "==> 构建 AppImage..."
+          rm -rf AppDir
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/48x48/apps
+
+          cp -r dist/serial_debug/* AppDir/usr/bin/
+          cp desktop/serial_debug.desktop AppDir/usr/share/applications/
+          cp src/serial_debug/resources/assets/icon_debug.png AppDir/usr/share/icons/hicolor/256x256/apps/serial_debug.png
+          if [ -f src/serial_debug/resources/assets/icon_debug-48.png ]; then
+            cp src/serial_debug/resources/assets/icon_debug-48.png AppDir/usr/share/icons/hicolor/48x48/apps/serial_debug.png
+          else
+            cp src/serial_debug/resources/assets/icon_debug.png AppDir/usr/share/icons/hicolor/48x48/apps/serial_debug.png
+          fi
+
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export PATH="${HERE}/usr/bin:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+          exec "${HERE}/usr/bin/serial_debug" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 下载 linuxdeploy（CI 环境无此文件）
+          wget -q --timeout=60 \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -O linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+          # CI 环境 FUSE 偶有不稳，用 extract-and-run 兜底
+          # NO_STRIP=true 防止 strip 破坏 PyInstaller 打包的 ELF
+          ARCH=x86_64 NO_STRIP=true ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+            --appdir AppDir \
+            --desktop-file AppDir/usr/share/applications/serial_debug.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/serial_debug.png \
+            --output appimage \
+            || {
+              echo "::warning::AppImage 构建失败，仅保留 tar.gz"
+              rm -rf AppDir linuxdeploy-x86_64.AppImage
+              exit 0
+            }
+
+          # linuxdeploy --output appimage 产物在当前目录。
+          # 文件名通常由 .desktop basename + arch 派生（serial_debug-x86_64.AppImage），
+          # 但非 API 保证，用 find 兜底而非硬编码文件名，并统一改名为规范名。
+          find . -maxdepth 1 -name "*.AppImage" -not -name "linuxdeploy-x86_64.AppImage" \
+            -exec mv {} dist/serial_debug-x86_64.AppImage \; 2>/dev/null || true
+          rm -rf AppDir linuxdeploy-x86_64.AppImage squashfs-root
+          echo "==> AppImage 完成: dist/serial_debug-x86_64.AppImage"
+          ls -lh dist/serial_debug-x86_64.AppImage 2>/dev/null || \
+            echo "::warning::AppImage 未生成，仅保留 tar.gz"
+
+      # ============================================================
+      # Windows：免安装便携 zip + Inno Setup 安装包
+      # ============================================================
+      - name: Package Windows (portable zip)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/serial_debug/* -DestinationPath dist/serial_debug-windows-x64.zip
+          # 便携 zip：解压后进入 serial_debug\ 双击 serial_debug.exe 即用
+          Compress-Archive -Path dist/serial_debug -DestinationPath dist/serial_debug-windows-x64-portable.zip
+          Write-Host "==> portable zip 完成: dist/serial_debug-windows-x64-portable.zip"
+          Get-Item dist/serial_debug-windows-x64-portable.zip | Format-List Name,Length
 
-      - name: Package macOS
+      - name: Install Inno Setup
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+
+      - name: Build Windows installer (Inno Setup)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          # iss 里 OutputDir=dist, OutputBaseFilename=serial_debug-windows-x64-setup
+          # 产物：dist/serial_debug-windows-x64-setup.exe
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          Write-Host "使用 ISCC: $iscc"
+          & $iscc "packaging\serial_debug-installer.iss"
+          Get-Item dist\serial_debug-windows-x64-setup.exe | Format-List Name,Length
+
+      # ============================================================
+      # macOS：免安装便携 zip + dmg 安装包
+      # ============================================================
+      - name: Package macOS (dmg + portable zip)
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          # .app bundle 已由 spec 生成
-          cd dist && zip -r -y serial_debug-macos-universal.zip serial_debug.app
+          set -x
+          # .app bundle 已由 spec 生成（target_arch=arm64）
+          # macos-latest 是 Apple Silicon，产物名带 arm64
+          # 免安装便携 zip：mac 用 ditto 比 zip 更好保留 .app 结构
+          #   （资源 fork/权限/符号链接），解压后双击 serial_debug.app，
+          #   首次右键打开绕 Gatekeeper（install_mac.sh 自动 xattr 去隔离）
+          ditto -c -k --keepParent dist/serial_debug.app dist/serial_debug-macos-arm64-portable.zip
+          echo "==> portable zip 完成: dist/serial_debug-macos-arm64-portable.zip"
+          ls -lh dist/serial_debug-macos-arm64-portable.zip
 
+          # 安装包 dmg（拖拽安装到 /Applications）
+          hdiutil create -volname serial_debug \
+            -srcfolder dist/serial_debug.app \
+            -ov -format UDZO \
+            dist/serial_debug-macos-arm64.dmg
+          echo "==> dmg 完成: dist/serial_debug-macos-arm64.dmg"
+          ls -lh dist/serial_debug-macos-arm64.dmg
+
+      # ============================================================
+      # 上传构建产物（每平台一个 artifact）
+      # ============================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}-build
           path: |
             dist/serial_debug-linux-*.tar.gz
-            dist/serial_debug-windows-x64.zip
-            dist/serial_debug-macos-universal.zip
+            dist/serial_debug-x86_64.AppImage
+            dist/serial_debug-windows-x64-portable.zip
+            dist/serial_debug-windows-x64-setup.exe
+            dist/serial_debug-macos-arm64-portable.zip
+            dist/serial_debug-macos-arm64.dmg
+          if-no-files-found: warn
           retention-days: 30
 
   release:
@@ -101,12 +229,43 @@ jobs:
         with:
           path: artifacts
 
-      - name: List artifacts
+      - name: Flatten artifacts
         run: |
-          ls -laR artifacts/
-          mv artifacts/linux/* artifacts/ 2>/dev/null || true
-          mv artifacts/windows/* artifacts/ 2>/dev/null || true
-          mv artifacts/macos/* artifacts/ 2>/dev/null || true
+          # download-artifact 按 artifact name 建子目录：
+          #   artifacts/linux-build/    artifacts/windows-build/    artifacts/macos-build/
+          # 把所有发布产物展平到 artifacts/ 根目录
+          find artifacts -type f \
+            \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.exe" \
+               -o -name "*.dmg" -o -name "*.AppImage" \) \
+            -exec mv {} artifacts/ \;
+          # 清理空子目录
+          rmdir artifacts/*-build 2>/dev/null || true
+          echo "==> 待发布产物清单:"
+          ls -lh artifacts/
+
+      - name: Verify critical artifacts
+        # 关键安装包缺失则阻断 release（AppImage 为可选，不校验）。
+        # 对应 build job 的 Windows setup.exe / macOS dmg / Linux tar.gz 三平台主产物。
+        # 若某平台 build step 失败，其 artifact 不存在，此处 fail 阻止发不完整 release。
+        run: |
+          missing=0
+          for f in \
+            serial_debug-linux-x86_64.tar.gz \
+            serial_debug-windows-x64-setup.exe \
+            serial_debug-windows-x64-portable.zip \
+            serial_debug-macos-arm64.dmg \
+            serial_debug-macos-arm64-portable.zip; do
+            if [ ! -f "artifacts/$f" ]; then
+              echo "::error::缺失关键产物: $f"
+              missing=1
+            else
+              echo "OK: $f ($(stat -c%s artifacts/$f) bytes)"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::关键产物缺失，阻断 release。请检查对应平台 build job。"
+            exit 1
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -114,5 +273,8 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
+            artifacts/*.exe
+            artifacts/*.dmg
+            artifacts/*.AppImage
           generate_release_notes: true
           draft: true
