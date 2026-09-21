@@ -63,9 +63,9 @@ Source: "..\dist\serial_debug\*"; DestDir: "{app}"; Flags: ignoreversion recurse
 Name: "{group}\串口调试助手"; Filename: "{app}\serial_debug.exe"; IconFilename: "{app}\_internal\serial_debug\resources\assets\icon_debug.ico"; Comment: "串口调试工具：CH343 实时收发 / AT 命令管理 / 日志存储"
 ; 开始菜单：日志查看器（通过 --view 参数）
 Name: "{group}\日志查看器"; Filename: "{app}\serial_debug.exe"; Parameters: "--view"; IconFilename: "{app}\_internal\serial_debug\resources\assets\icon_view.ico"; Comment: "日志文件查看工具：多文件 Tab + 筛选面板 + 全局搜索"
-; 桌面快捷方式（可选）
-Name: "{commondesktop}\串口调试助手"; Filename: "{app}\serial_debug.exe"; IconFilename: "{app}\_internal\serial_debug\resources\assets\icon_debug.ico"; Tasks: desktopicon
-Name: "{commondesktop}\日志查看器"; Filename: "{app}\serial_debug.exe"; Parameters: "--view"; IconFilename: "{app}\_internal\serial_debug\resources\assets\icon_view.ico"; Tasks: desktopicon
+; 桌面快捷方式（可选，{userdesktop} 对应 PrivilegesRequired=lowest 用户级安装）
+Name: "{userdesktop}\串口调试助手"; Filename: "{app}\serial_debug.exe"; IconFilename: "{app}\_internal\serial_debug\resources\assets\icon_debug.ico"; Tasks: desktopicon
+Name: "{userdesktop}\日志查看器"; Filename: "{app}\serial_debug.exe"; Parameters: "--view"; IconFilename: "{app}\_internal\serial_debug\resources\assets\icon_view.ico"; Tasks: desktopicon
 
 [Registry]
 ; 注册 PATH（用户级，无需管理员）
