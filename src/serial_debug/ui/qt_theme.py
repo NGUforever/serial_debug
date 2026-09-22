@@ -26,6 +26,11 @@ def _qss_color(c: str) -> str:
     return c
 
 
+def _qss_url_color(c: str) -> str:
+    """把 #rrggbb 转成 url-encoded 颜色（SVG data URI 里用，# → %23）。"""
+    return c.replace('#', '%23') if c else '%23888888'
+
+
 def build_qss(theme_name: str) -> str:
     """根据主题名生成全局 QSS 样式表。
 
@@ -206,13 +211,22 @@ def build_qss(theme_name: str) -> str:
 
     /* ComboBox 下拉 */
     QComboBox::drop-down {{
-        border: none;
-        width: 18px;
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 22px;
+        border-left: 1px solid {border};
+        border-top-right-radius: 4px;
+        border-bottom-right-radius: 4px;
     }}
+    QComboBox::drop-down:hover {{
+        background-color: {btn_hover};
+    }}
+    /* 向下三角箭头：内嵌 SVG（url-encoded），颜色用主题前景色。
+       QSS 的 ::down-arrow 用 background 画不出三角，image 才行。 */
     QComboBox::down-arrow {{
-        width: 8px;
-        height: 8px;
-        background: transparent;
+        width: 10px;
+        height: 10px;
+        image: url(data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cpath%20d%3D%22M2%203%20L8%203%20L5%207%20Z%22%20fill%3D%22{_qss_url_color(fg)}%22/%3E%3C/svg%3E);
     }}
     QComboBox QAbstractItemView {{
         background-color: {panel_bg};
