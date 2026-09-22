@@ -2018,11 +2018,43 @@ class QtMonitorWindow:
                 QMessageBox.critical(win, '导出失败', str(e))
 
         def _connect_serial():
-            from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QMessageBox
+            from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox
+            import serial.tools.list_ports
+            from serial_debug.core.serial_backend import SerialBackend
             dlg = QDialog(win)
             dlg.setWindowTitle('连接串口（实时 feed）')
             form = QFormLayout(dlg)
-            port_edit = QLineEdit('/dev/ttyCH343USB0')
+            port_edit = QComboBox()
+            port_edit.setEditable(True)
+            port_edit.setToolTip('选择串口或手动输入设备路径')
+            # comports() 提供 description，用于 CH343/CH340 默认匹配
+            # 权限/驱动异常时 comports 可能抛，包 try/except 回退到 SerialBackend 兜底
+            desc_map = {}
+            try:
+                for p in serial.tools.list_ports.comports():
+                    port_edit.addItem(p.device)
+                    desc_map[p.device] = p.description or ''
+            except Exception as e:
+                log_exc('warning', f'{__file__}:_connect_serial comports failed', e)
+            # 兜底补齐 pyserial 漏扫的非标准 WCH 端口（与主程序 list_ports 一致）
+            for dev in SerialBackend.list_ports():
+                if port_edit.findText(dev) == -1:
+                    port_edit.addItem(dev)
+            # 默认选第一个 CH343/CH340 端口（大小写不敏感匹配 description 或设备名），否则选第一个
+            default_idx = -1
+            for i in range(port_edit.count()):
+                dev = port_edit.itemText(i).upper()
+                desc = desc_map.get(port_edit.itemText(i), '').upper()
+                if ('CH343' in dev or 'CH340' in dev
+                        or 'CH343' in desc or 'CH340' in desc):
+                    default_idx = i
+                    break
+            if default_idx == -1 and port_edit.count() > 0:
+                default_idx = 0
+            if default_idx >= 0:
+                port_edit.setCurrentIndex(default_idx)
+            else:
+                port_edit.setPlaceholderText('未发现串口，请手动输入设备路径')
             baud_box = QComboBox()
             for b in ('115200', '230400', '460800', '921600', '9600', '57600'):
                 baud_box.addItem(b)
@@ -2036,7 +2068,7 @@ class QtMonitorWindow:
             btns.rejected.connect(dlg.reject)
             if dlg.exec() != QDialog.Accepted:
                 return
-            port = port_edit.text().strip()
+            port = port_edit.currentText().strip()
             baud = int(baud_box.currentText())
             try:
                 self.start_serial(port, baud)
