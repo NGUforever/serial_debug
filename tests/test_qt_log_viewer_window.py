@@ -21,6 +21,17 @@ def _mock_qtimer_single_shot(monkeypatch):
     monkeypatch.setattr(QTimer, 'singleShot', lambda *a, **kw: None)
 
 
+class _MockTab:
+    """测试用 mock tab：模拟 _QtLogViewTab 的 all_lines() + _line_tags。"""
+
+    def __init__(self, lines, tags=None):
+        self._lines = lines
+        self._line_tags = tags or ['log'] * len(lines)
+
+    def all_lines(self):
+        return self._lines
+
+
 # ---- _classify ----
 
 def test_classify_resp():
@@ -485,7 +496,8 @@ def test_filter_worker_filters_by_regex(qtbot):
     w.error.connect(on_error, Qt.QueuedConnection)
     lines = ['hello world', 'foo', 'hello again', 'bar']
     tags = ['log', 'log', 'log', 'log']
-    w.start_run.emit(1, lines, tags, 'hello', 0, 100)
+    w.set_tab(_MockTab(lines, tags))
+    w.start_run.emit(1, 'hello', 0, 100)
     qtbot.wait(80)
     assert 'matches' in results
     assert results['matches'] == [0, 2]
@@ -507,7 +519,8 @@ def test_filter_worker_without_regex_passes_all(qtbot):
     w.done.connect(on_done, Qt.QueuedConnection)
     lines = ['a', 'b', 'c']
     tags = ['log', 'log', 'log']
-    w.start_run.emit(1, lines, tags, '', 0, 100)
+    w.set_tab(_MockTab(lines, tags))
+    w.start_run.emit(1, '', 0, 100)
     qtbot.wait(80)
     assert results.get('matches') == [0, 1, 2]
 
@@ -527,7 +540,8 @@ def test_filter_worker_level_filter(qtbot):
     w.done.connect(on_done, Qt.QueuedConnection)
     lines = ['log1', 'OK resp', 'log2', 'ERROR note']
     tags = ['log', 'resp', 'log', 'note']
-    w.start_run.emit(1, lines, tags, '', 1, 100)
+    w.set_tab(_MockTab(lines, tags))
+    w.start_run.emit(1, '', 1, 100)
     qtbot.wait(80)
     # 只过 log 类的索引
     assert results.get('matches') == [0, 2]
@@ -548,7 +562,8 @@ def test_filter_worker_rejects_dangerous_regex(qtbot):
     w.error.connect(on_error, Qt.QueuedConnection)
     lines = ['a' * 100]
     tags = ['log']
-    w.start_run.emit(1, lines, tags, r'(a+)+', 0, 100)
+    w.set_tab(_MockTab(lines, tags))
+    w.start_run.emit(1, r'(a+)+', 0, 100)
     qtbot.wait(80)
     assert 'msg' in errors
     assert '回溯' in errors['msg'] or '嵌套' in errors['msg']
@@ -569,7 +584,8 @@ def test_filter_worker_handles_invalid_regex(qtbot):
     w.error.connect(on_error, Qt.QueuedConnection)
     lines = ['abc']
     tags = ['log']
-    w.start_run.emit(1, lines, tags, r'(unclosed', 0, 100)
+    w.set_tab(_MockTab(lines, tags))
+    w.start_run.emit(1, r'(unclosed', 0, 100)
     qtbot.wait(80)
     assert 'msg' in errors
     assert '正则' in errors['msg']
@@ -590,7 +606,8 @@ def test_filter_worker_respects_result_cap(qtbot):
     w.done.connect(on_done, Qt.QueuedConnection)
     lines = ['hit'] * 20
     tags = ['log'] * 20
-    w.start_run.emit(1, lines, tags, 'hit', 0, 5)
+    w.set_tab(_MockTab(lines, tags))
+    w.start_run.emit(1, 'hit', 0, 5)
     qtbot.wait(80)
     assert len(results.get('matches', [])) == 5
 

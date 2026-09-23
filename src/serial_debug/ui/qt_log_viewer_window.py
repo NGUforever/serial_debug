@@ -1742,24 +1742,35 @@ class _FilterWorker(QObject):
 
     通过 done 信号把结果回传主线程；通过 epoch 序号让主线程丢弃过期结果。
     运行在独立 QThread 中，避免正则灾难性回溯冻结 UI。
+
+    关键：lines/tags 不通过 signal 传递（跨线程 QueuedConnection 会深拷贝整个
+    list，大文件几十万行直接卡死主线程）。改为 worker 持有 tab 引用，signal
+    只传轻量参数（epoch + regex_text + level_idx + result_cap），worker 直接
+    读 tab 的 lines/tags 引用——Python 对象跨线程共享引用不拷贝。
     """
-    # 触发 worker：用 Signal（跨线程自动 QueuedConnection），不用
-    # QMetaObject.invokeMethod + Q_ARG(list)——PySide6 不支持 Python list
-    # 作为 QMetaType（打包后 RuntimeError: qArgDataFromPyType）
-    start_run = Signal(int, object, object, str, int, int)
-    done = Signal(int, object, int, str)  # epoch, filtered_idx, total, info
-    error = Signal(int, str)              # epoch, error_msg
+    start_run = Signal(int, str, int, int)  # epoch, regex_text, level_idx, cap
+    done = Signal(int, object, int, str)   # epoch, filtered_idx, total, info
+    error = Signal(int, str)                # epoch, error_msg
 
     def __init__(self):
         super().__init__()
         self._epoch = 0
+        self._tab = None  # 由主线程 set_tab() 注入，共享引用不拷贝
         self.start_run.connect(self.run, Qt.QueuedConnection)
 
-    @Slot(int, object, object, str, int, int)
-    def run(self, epoch: int, lines: list, tags: list,
-             regex_text: str, level_idx: int, result_cap: int):
+    def set_tab(self, tab):
+        """主线程切换文件时调用，注入当前 tab 引用（轻量，不拷贝数据）。"""
+        self._tab = tab
+
+    @Slot(int, str, int, int)
+    def run(self, epoch: int, regex_text: str, level_idx: int, result_cap: int):
         """单次筛选扫描。主线程通过 epoch 序号取消过期结果。"""
         try:
+            if self._tab is None:
+                self.error.emit(epoch, '无活动日志')
+                return
+            lines = self._tab.all_lines()
+            tags = self._tab._line_tags
             if regex_text:
                 if _is_dangerous_regex(regex_text):
                     self.error.emit(epoch, '正则存在灾难性回溯风险（嵌套量词）'
@@ -2228,11 +2239,12 @@ class _QtFilterPanel(QDockWidget):
         反复修改关键字时，前一次扫描还没完，又一次触发——
         主线程立即返回，worker 用新 epoch 启动新扫描，旧 epoch 的结果
         在 _on_filter_done 中被丢弃。这样 UI 线程永远不阻塞。
+
+        关键优化：lines/tags 不通过 signal 传（跨线程深拷贝大 list 会卡死主线程），
+        改为 set_tab 注入 tab 引用，worker 直接读 tab.all_lines()，共享引用零拷贝。
         """
         if self._tab is None:
             return
-        lines = self._tab.all_lines()
-        tags = self._tab._line_tags
         text = self._regex_edit.text()
         # 静态预检：语法错误立即显示，无需丢给 worker
         if text:
@@ -2254,9 +2266,11 @@ class _QtFilterPanel(QDockWidget):
         ep = self._filter_epoch
         level_idx = self._level_box.currentIndex()
         self._info_lbl.setText('筛选中…')
-        # Signal 自动跨线程派发到 worker 所在线程的事件循环
+        # 注入当前 tab 引用（轻量，不拷贝数据），worker 直接读 lines/tags
+        self._filter_worker.set_tab(self._tab)
+        # Signal 只传轻量参数（epoch + regex_text + level_idx + cap），不传大 list
         self._filter_worker.start_run.emit(
-            ep, lines, tags, text, level_idx, self._get_filter_max())
+            ep, text, level_idx, self._get_filter_max())
 
     @Slot(int, list, int, str)
     def _on_filter_done(self, epoch: int, filtered: list, total: int, info: str):
