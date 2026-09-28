@@ -209,6 +209,9 @@ class _PlainTextEdit(QPlainTextEdit):
         # 不限块数（大文件按需渲染，setMaximumBlockCount 会截断旧内容）
         self.setMaximumBlockCount(0)
         self.setCenterOnScroll(False)
+        # 日志查看器是只读工具：禁止编辑/拖拽移动文字，防止误改原始日志内容。
+        # 用户误拖拽选中文字会移动/删除内容且无法撤销，设只读从根本杜绝。
+        self.setReadOnly(True)
         self.blockCountChanged.connect(self._update_line_area_width)
         self.updateRequest.connect(self._update_line_area)
         self._update_line_area_width()
@@ -1680,6 +1683,27 @@ class QtLogViewerWindow(QMainWindow):
             tab.stop_live()
 
     def closeEvent(self, event):
+        # 检查是否有 tab 的日志内容被修改（只读模式下正常不会修改，此为安全网）
+        modified_tabs = []
+        for i in range(self._tab_widget.count()):
+            tab = self._tab_widget.widget(i)
+            if isinstance(tab, _QtLogViewTab) and tab._editor.document().isModified():
+                label = self._tab_widget.tabText(i)
+                modified_tabs.append(label)
+        if modified_tabs:
+            from PySide6.QtWidgets import QMessageBox
+            names = '\n'.join(modified_tabs[:5])
+            if len(modified_tabs) > 5:
+                names += f'\n...（共 {len(modified_tabs)} 个）'
+            reply = QMessageBox.question(
+                self, '内容已修改',
+                f'以下日志内容已被修改：\n\n{names}\n\n'
+                f'日志查看器是只读工具，修改不会写回原始文件。\n'
+                f'是否放弃修改并关闭？（点"取消"返回不关闭）',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
         if self._filter_panel is not None:
             try:
                 self._filter_panel.shutdown_filter_thread()
