@@ -1772,7 +1772,7 @@ class _FilterWorker(QObject):
     只传轻量参数（epoch + regex_text + level_idx + result_cap），worker 直接
     读 tab 的 lines/tags 引用——Python 对象跨线程共享引用不拷贝。
     """
-    start_run = Signal(int, str, int, int)  # epoch, regex_text, level_idx, cap
+    start_run = Signal(int, str, int, int, str)  # epoch, text, level_idx, cap, match_mode
     done = Signal(int, object, int, str)   # epoch, filtered_idx, total, info
     error = Signal(int, str)                # epoch, error_msg
 
@@ -1786,27 +1786,32 @@ class _FilterWorker(QObject):
         """主线程切换文件时调用，注入当前 tab 引用（轻量，不拷贝数据）。"""
         self._tab = tab
 
-    @Slot(int, str, int, int)
-    def run(self, epoch: int, regex_text: str, level_idx: int, result_cap: int):
-        """单次筛选扫描。主线程通过 epoch 序号取消过期结果。"""
+    @Slot(int, str, int, int, str)
+    def run(self, epoch: int, text: str, level_idx: int, result_cap: int,
+            match_mode: str):
+        """单次筛选扫描。主线程通过 epoch 序号取消过期结果。
+
+        match_mode: 'fuzzy'=子串包含, 'exact'=整行精确相等, 'regex'=正则搜索
+        """
         try:
             if self._tab is None:
                 self.error.emit(epoch, '无活动日志')
                 return
             lines = self._tab.all_lines()
             tags = self._tab._line_tags
-            if regex_text:
-                if _is_dangerous_regex(regex_text):
-                    self.error.emit(epoch, '正则存在灾难性回溯风险（嵌套量词）'
-                                    '，已拒绝执行。请简化正则。')
-                    return
-                try:
-                    regex = re.compile(regex_text)
-                except re.error as e:
-                    self.error.emit(epoch, f'正则错误：{e}')
-                    return
-            else:
-                regex = None
+            regex = None
+            if text:
+                if match_mode == 'regex':
+                    if _is_dangerous_regex(text):
+                        self.error.emit(epoch, '正则存在灾难性回溯风险（嵌套量词）'
+                                        '，已拒绝执行。请简化正则。')
+                        return
+                    try:
+                        regex = re.compile(text)
+                    except re.error as e:
+                        self.error.emit(epoch, f'正则错误：{e}')
+                        return
+                # fuzzy / exact 不需要编译正则，直接用字符串操作
             start_ts = time.monotonic()
             deadline = start_ts + FILTER_SCAN_TIMEOUT_MS / 1000.0
             total = len(lines)
@@ -1826,11 +1831,18 @@ class _FilterWorker(QObject):
                     tag = tags[i] if i < len(tags) else 'log'
                     if not _level_filter_static(last_level, ln, tag):
                         continue
-                if regex is not None:
+                if text:
                     scan_ln = ln if len(ln) <= FILTER_MAX_LINE_LEN \
                         else ln[:FILTER_MAX_LINE_LEN]
-                    if not regex.search(scan_ln):
-                        continue
+                    if match_mode == 'fuzzy':
+                        if text not in scan_ln:
+                            continue
+                    elif match_mode == 'exact':
+                        if scan_ln.strip() != text:
+                            continue
+                    else:  # regex
+                        if not regex.search(scan_ln):
+                            continue
                 filtered.append(i)
             self.done.emit(epoch, filtered, total,
                             f'{len(filtered)} / {total} 行')
@@ -2108,15 +2120,29 @@ class _QtFilterPanel(QDockWidget):
         ll.addWidget(QLabel('级别'))
         ll.addWidget(self._level_box, 1)
         v.addWidget(level_row)
-        # 正则 Entry + Label 同行
+        # 匹配模式 Combobox + Label 同行
+        self._match_mode_box = QComboBox()
+        self._match_mode_box.addItem('模糊匹配', 'fuzzy')
+        self._match_mode_box.addItem('精确匹配', 'exact')
+        self._match_mode_box.addItem('正则匹配', 'regex')
+        self._match_mode_box.setCurrentIndex(0)
+        self._match_mode_box.currentIndexChanged.connect(self._apply_filter)
+        mode_row = QWidget()
+        ml = QHBoxLayout(mode_row)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(6)
+        ml.addWidget(QLabel('匹配'))
+        ml.addWidget(self._match_mode_box, 1)
+        v.addWidget(mode_row)
+        # 关键字 Entry + Label 同行
         self._regex_edit = QLineEdit()
-        self._regex_edit.setPlaceholderText('正则筛选（回车应用）')
+        self._regex_edit.setPlaceholderText('输入关键字（回车应用）')
         self._regex_edit.returnPressed.connect(self._apply_filter)
         regex_row = QWidget()
         rl = QHBoxLayout(regex_row)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(6)
-        rl.addWidget(QLabel('正则'))
+        rl.addWidget(QLabel('关键字'))
         rl.addWidget(self._regex_edit, 1)
         v.addWidget(regex_row)
         # 按钮
@@ -2270,8 +2296,9 @@ class _QtFilterPanel(QDockWidget):
         if self._tab is None:
             return
         text = self._regex_edit.text()
-        # 静态预检：语法错误立即显示，无需丢给 worker
-        if text:
+        match_mode = self._match_mode_box.currentData() or 'fuzzy'
+        # 正则模式才做语法预检；模糊/精确匹配不需要编译正则
+        if text and match_mode == 'regex':
             if _is_dangerous_regex(text):
                 self._info_lbl.setText(
                     '正则存在嵌套量词，可能引发灾难性回溯，已拒绝执行')
@@ -2292,9 +2319,9 @@ class _QtFilterPanel(QDockWidget):
         self._info_lbl.setText('筛选中…')
         # 注入当前 tab 引用（轻量，不拷贝数据），worker 直接读 lines/tags
         self._filter_worker.set_tab(self._tab)
-        # Signal 只传轻量参数（epoch + regex_text + level_idx + cap），不传大 list
+        # Signal 只传轻量参数（epoch + text + level_idx + cap + match_mode），不传大 list
         self._filter_worker.start_run.emit(
-            ep, text, level_idx, self._get_filter_max())
+            ep, text, level_idx, self._get_filter_max(), match_mode)
 
     @Slot(int, list, int, str)
     def _on_filter_done(self, epoch: int, filtered: list, total: int, info: str):
@@ -2331,11 +2358,14 @@ class _QtFilterPanel(QDockWidget):
             return
         lines = self._tab.all_lines()
         tags = self._tab._line_tags
-        try:
-            text = self._regex_edit.text()
-            regex = re.compile(text) if text else None
-        except re.error:
-            return
+        text = self._regex_edit.text()
+        match_mode = self._match_mode_box.currentData() or 'fuzzy'
+        regex = None
+        if text and match_mode == 'regex':
+            try:
+                regex = re.compile(text)
+            except re.error:
+                return
         result_cap = self._get_filter_max()
         if len(self._filtered_idx) >= result_cap:
             self._last_scanned_idx = len(lines)
@@ -2350,11 +2380,18 @@ class _QtFilterPanel(QDockWidget):
             tag = tags[i] if i < len(tags) else 'log'
             if not self._level_filter(ln, tag):
                 continue
-            if regex is not None:
+            if text:
                 scan_ln = ln if len(ln) <= FILTER_MAX_LINE_LEN \
                     else ln[:FILTER_MAX_LINE_LEN]
-                if not regex.search(scan_ln):
-                    continue
+                if match_mode == 'fuzzy':
+                    if text not in scan_ln:
+                        continue
+                elif match_mode == 'exact':
+                    if scan_ln.strip() != text:
+                        continue
+                else:  # regex
+                    if not regex.search(scan_ln):
+                        continue
             new_filtered.append(i)
         if new_filtered:
             self._filtered_idx.extend(new_filtered)

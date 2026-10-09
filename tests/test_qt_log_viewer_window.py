@@ -497,7 +497,7 @@ def test_filter_worker_filters_by_regex(qtbot):
     lines = ['hello world', 'foo', 'hello again', 'bar']
     tags = ['log', 'log', 'log', 'log']
     w.set_tab(_MockTab(lines, tags))
-    w.start_run.emit(1, 'hello', 0, 100)
+    w.start_run.emit(1, 'hello', 0, 100, 'regex')
     qtbot.wait(80)
     assert 'matches' in results
     assert results['matches'] == [0, 2]
@@ -520,7 +520,7 @@ def test_filter_worker_without_regex_passes_all(qtbot):
     lines = ['a', 'b', 'c']
     tags = ['log', 'log', 'log']
     w.set_tab(_MockTab(lines, tags))
-    w.start_run.emit(1, '', 0, 100)
+    w.start_run.emit(1, '', 0, 100, 'regex')
     qtbot.wait(80)
     assert results.get('matches') == [0, 1, 2]
 
@@ -541,7 +541,7 @@ def test_filter_worker_level_filter(qtbot):
     lines = ['log1', 'OK resp', 'log2', 'ERROR note']
     tags = ['log', 'resp', 'log', 'note']
     w.set_tab(_MockTab(lines, tags))
-    w.start_run.emit(1, '', 1, 100)
+    w.start_run.emit(1, '', 1, 100, 'regex')
     qtbot.wait(80)
     # 只过 log 类的索引
     assert results.get('matches') == [0, 2]
@@ -563,7 +563,7 @@ def test_filter_worker_rejects_dangerous_regex(qtbot):
     lines = ['a' * 100]
     tags = ['log']
     w.set_tab(_MockTab(lines, tags))
-    w.start_run.emit(1, r'(a+)+', 0, 100)
+    w.start_run.emit(1, r'(a+)+', 0, 100, 'regex')
     qtbot.wait(80)
     assert 'msg' in errors
     assert '回溯' in errors['msg'] or '嵌套' in errors['msg']
@@ -585,7 +585,7 @@ def test_filter_worker_handles_invalid_regex(qtbot):
     lines = ['abc']
     tags = ['log']
     w.set_tab(_MockTab(lines, tags))
-    w.start_run.emit(1, r'(unclosed', 0, 100)
+    w.start_run.emit(1, r'(unclosed', 0, 100, 'regex')
     qtbot.wait(80)
     assert 'msg' in errors
     assert '正则' in errors['msg']
@@ -607,9 +607,54 @@ def test_filter_worker_respects_result_cap(qtbot):
     lines = ['hit'] * 20
     tags = ['log'] * 20
     w.set_tab(_MockTab(lines, tags))
-    w.start_run.emit(1, 'hit', 0, 5)
+    w.start_run.emit(1, 'hit', 0, 5, 'regex')
     qtbot.wait(80)
     assert len(results.get('matches', [])) == 5
+
+
+def test_filter_worker_fuzzy_match(qtbot):
+    """模糊匹配：子串包含（text in scan_ln）。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from serial_debug.ui.qt_log_viewer_window import _FilterWorker
+    w = _FilterWorker()
+    results = {}
+
+    def on_done(epoch, matches, total, info):
+        results['matches'] = matches
+        results['total'] = total
+
+    w.done.connect(on_done, Qt.QueuedConnection)
+    lines = ['hello world', 'goodbye world', 'HELLO there', 'no match']
+    w.set_tab(_MockTab(lines))
+    w.start_run.emit(1, 'hello', 0, 100, 'fuzzy')
+    qtbot.wait(80)
+    assert results.get('matches') == [0]  # 只匹配 'hello world'（大小写敏感）
+    assert results['total'] == 4
+
+
+def test_filter_worker_exact_match(qtbot):
+    """精确匹配：整行 strip() == text。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from serial_debug.ui.qt_log_viewer_window import _FilterWorker
+    w = _FilterWorker()
+    results = {}
+
+    def on_done(epoch, matches, total, info):
+        results['matches'] = matches
+        results['total'] = total
+
+    w.done.connect(on_done, Qt.QueuedConnection)
+    lines = ['hello', '  hello  ', 'hello world', 'hello world']
+    w.set_tab(_MockTab(lines))
+    w.start_run.emit(1, 'hello', 0, 100, 'exact')
+    qtbot.wait(80)
+    # 'hello' 和 '  hello  '（strip 后 == 'hello'）匹配，'hello world' 不匹配
+    assert results.get('matches') == [0, 1]
+    assert results['total'] == 4
 
 
 # ---- _LineNumberArea / _PlainTextEdit ----
