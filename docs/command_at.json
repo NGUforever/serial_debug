@@ -12,12 +12,6 @@
     "period_ms": 0
   },
   {
-    "cmd": "AT+EENFAC%",
-    "desc": "ECU进入工厂模式",
-    "seq": 0,
-    "period_ms": 100
-  },
-  {
     "cmd": "AT+EEXFAC%",
     "desc": "ECU退出工厂模式",
     "seq": 0,
@@ -144,7 +138,43 @@
     "period_ms": 0
   },
   {
-    "cmd": "AT+EBUZZER=0%",
+    "cmd": "AT+EMOTORRPM=6,3000,1%",
+    "desc": "",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EMOTORREAD=6%",
+    "desc": "",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EBDCMOTORPOS=1,500,0,100,0%",
+    "desc": "控制外展电机",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "AT+EBDCMOTORSETOFFSET=1,4,0%",
+    "desc": "",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "",
+    "desc": "",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "",
+    "desc": "",
+    "seq": 0,
+    "period_ms": 0
+  },
+  {
+    "cmd": "",
     "desc": "",
     "seq": 0,
     "period_ms": 0
