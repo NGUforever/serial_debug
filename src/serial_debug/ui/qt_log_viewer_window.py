@@ -63,7 +63,7 @@ from serial_debug.ui.qt_monitor_window import _iter_panel_vars
 
 # ---- 常量（与 tkinter 版一致）----------------------------------------
 RESP_RE = re.compile(r'^(OK[%,]|ERROR|\+)')
-RENDER_BATCH = 50000
+RENDER_BATCH = 5000   # 单批插入行数：批内主线程忙 ~几十ms，批间让出事件循环保持响应
 SEARCH_SCAN_LIMIT = 2_000_000
 GLOBAL_SEARCH_MAX = 500
 SEARCH_SCAN_TIMEOUT_MS = 5000   # 单次搜索墙钟超时
@@ -292,6 +292,7 @@ class _QtLogViewTab(QWidget):
         self._auto_load = True
         self._loading = False
         self._placeholder_block: int = -1  # 占位符 block number
+        self._pending_goto = -1  # goto_line 异步加载目标行（-1 = 无）
         # 实时刷新
         self._live_mode = False
         self._live_timer: QTimer | None = None
@@ -542,9 +543,17 @@ class _QtLogViewTab(QWidget):
             QTimer.singleShot(0, lambda: self._chain_load(budget - 1))
 
     def _jump_to_end(self):
-        """跳到末尾：先加载完所有内容，再滚到底。"""
-        if self._rendered_count < len(self._all_lines):
-            self._chain_load(budget=9999)
+        """跳到末尾：异步分批加载完所有内容后再滚到底（不冻结 UI）。"""
+        target = len(self._all_lines) - 1
+        if target < 0:
+            return
+        if self._rendered_count <= target:
+            self._pending_goto = target
+            if not self._loading:
+                self._goto_step()
+            # 滚到底在 _goto_step 完成后由 _goto_rendered 之前的最后一步处理：
+            # 直接复用：加载完后 ensureCursorVisible
+            return
         sb = self._editor.verticalScrollBar()
         sb.setValue(sb.maximum())
         self._editor.ensureCursorVisible()
@@ -577,21 +586,53 @@ class _QtLogViewTab(QWidget):
         return os.path.basename(self._path)
 
     def goto_line(self, line_idx: int):
-        """跳转到指定行：未渲染则按 RENDER_BATCH 块加载到包含该行，see + 高亮。"""
+        """跳转到指定行：未渲染则异步分批加载到包含该行（不冻结 UI）。
+
+        同步 while 循环一次插几十万行会冻结主线程（Ubuntu 弹"强制关闭/等待"），
+        改为 QTimer.singleShot 分批推进，每批间让事件循环呼吸。
+        """
         if line_idx < 0 or line_idx >= len(self._all_lines):
             return
         if line_idx >= self._rendered_count:
-            # 加载到包含该行
-            while self._rendered_count <= line_idx:
-                self._render_batch(self._rendered_count, RENDER_BATCH)
-                if self._rendered_count >= len(self._all_lines):
-                    break
+            self._load_until(line_idx)
+            return
+        self._goto_rendered(line_idx)
+
+    def _load_until(self, target: int):
+        """异步分批渲染到 target 行（含），完成后高亮跳转。"""
+        self._pending_goto = target
+        if self._loading:
+            return
+        self._goto_step()
+
+    def _goto_step(self):
+        """单步：渲染一批，未到目标则 singleShot(0) 继续。"""
+        if self._pending_goto < 0:
+            return
+        if self._rendered_count > self._pending_goto:
+            target = self._pending_goto
+            self._pending_goto = -1
+            self._goto_rendered(target)
+            return
+        self._render_batch(self._rendered_count, RENDER_BATCH)
+        if self._rendered_count > self._pending_goto:
+            target = self._pending_goto
+            self._pending_goto = -1
+            self._goto_rendered(target)
+        else:
+            QTimer.singleShot(0, self._goto_step)
+
+    def _goto_rendered(self, line_idx: int):
+        """目标行已渲染：光标定位 + 可见 + goto_hit 高亮 3s。"""
         block = self._editor.document().findBlockByNumber(line_idx)
         if not block.isValid():
             return
         cursor = QTextCursor(block)
         self._editor.setTextCursor(cursor)
         self._editor.ensureCursorVisible()
+        if line_idx >= len(self._all_lines) - 1:
+            sb = self._editor.verticalScrollBar()
+            sb.setValue(sb.maximum())
         # goto_hit 高亮 3s
         fmt = QTextCharFormat()
         fmt.setBackground(QColor(self._theme.get('select_bg', '#264f78')))
@@ -670,7 +711,7 @@ class _QtLogViewTab(QWidget):
         # 用 Signal 触发 worker（跨线程 QueuedConnection 自动派发）；
         # 不用 Q_ARG(list) —— PySide6 打包后 qArgDataFromPyType 崩
         self._search_worker.start_run_single.emit(
-            ep, list(self._all_lines), text)
+            ep, self._all_lines, text)
 
     def _do_search_sync(self):
         """回退路径：UI 线程同步搜索（无 worker 时）。"""
@@ -986,12 +1027,13 @@ class _QtGlobalSearchBar(QDockWidget):
         if self._search_worker is None or self._tabs_list_fn is None:
             self._info_lbl.setText('搜索未就绪')
             return
-        # 取 tabs 快照（只复制 lines + filename，避免 worker 线程访问 Qt 对象）
+        # 取 tabs 快照（只传 lines 引用 + filename，避免 worker 线程访问 Qt 对象；
+        # 引用共享不拷贝——list(...) 浅拷贝几十万行在主线程有明显停顿）
         tabs_snap = []
         for i, tab in enumerate(self._tabs_list_fn()):
             if not isinstance(tab, _QtLogViewTab):
                 continue
-            tabs_snap.append((i, list(tab.all_lines()), tab.filename()))
+            tabs_snap.append((i, tab.all_lines(), tab.filename()))
         self._search_epoch += 1
         ep = self._search_epoch
         self._tree.clear()

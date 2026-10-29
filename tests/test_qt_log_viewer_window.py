@@ -926,7 +926,7 @@ def test_tab_chain_load_progressively(qtbot, tmp_path):
 
 
 def test_tab_jump_to_end(qtbot, tmp_path):
-    """_jump_to_end 应加载完所有内容并滚到底。"""
+    """_jump_to_end 应异步加载完所有内容并滚到底。"""
     _make_qapp()
     from PySide6.QtWidgets import QApplication
 
@@ -939,6 +939,11 @@ def test_tab_jump_to_end(qtbot, tmp_path):
     qtbot.addWidget(tab)
     tab._load_file()
     tab._jump_to_end()
+    # 异步分批推进：手动驱动 _goto_step 直到加载完
+    for _ in range(2000):
+        if tab._rendered_count >= len(lines):
+            break
+        tab._goto_step()
     # 应加载完全部
     assert tab._rendered_count == len(lines)
 
@@ -960,6 +965,11 @@ def test_tab_goto_line_loads_then_highlights(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(QTimer, 'singleShot', lambda *a, **kw: None)
     target = RENDER_BATCH + 10
     tab.goto_line(target)
+    # 异步分批推进：手动驱动 _goto_step 直到加载到 target
+    for _ in range(2000):
+        if tab._rendered_count > target:
+            break
+        tab._goto_step()
     # 应已加载到 target+1
     assert tab._rendered_count > target
     # 越界：goto 不抛
