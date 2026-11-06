@@ -1793,7 +1793,9 @@ class QtMonitorWindow:
         t_init = qt_theme.palette(self.theme_name)
         pg.setConfigOption('background', t_init.get('panel_bg', '#1e1e1e'))
         pg.setConfigOption('foreground', t_init.get('fg', '#cccccc'))
-        pg.setConfigOption('antialias', True)
+        # 性能：antialias=True 在大数据量下显著拖慢绘制，关闭（降采样后
+        # 点数已少，锯齿可忽略）。
+        pg.setConfigOption('antialias', False)
         try:
             pg.setConfigOption('useOpenGL', True)
             pg.setConfigOption('enableExperimental', True)
@@ -3082,6 +3084,10 @@ class QtMonitorWindow:
         from serial_debug.ui.qt_flow_layout import QFlowLayout
 
         pw = pg.PlotWidget(axisItems={'bottom': _make_time_axis(t)})
+        # 大数据量性能：pyqtgraph 内建峰值降采样 + 视野裁剪，只画可见区
+        # 采样点，曲线形状（包络）保持不变，绘制耗时从数据量解耦。
+        pw.setDownsampling(auto=True, mode='peak')
+        pw.setClipToView(True)
         pw.showGrid(x=True, y=True, alpha=0.2)
         pw.setLabel('left', p.get('y_label', '值'))
         pw.setLabel('bottom', '时间')

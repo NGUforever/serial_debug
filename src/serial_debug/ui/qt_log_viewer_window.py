@@ -1622,8 +1622,11 @@ class QtLogViewerWindow(QMainWindow):
                         monitor._data.setdefault(name, []).append((ts, val))
                 except Exception:
                     pass
-            monitor._refresh_plot()
-            if end < total:
+            # 性能：分批期间不调 _refresh_plot（每次全量 _get_xy + setData
+            # 为 O(n²)），只在加载完成后整体刷新一次。
+            if end >= total:
+                monitor._refresh_plot()
+            else:
                 QTimer.singleShot(0, lambda: _replay_batch(end))
 
         _replay_batch(0)
