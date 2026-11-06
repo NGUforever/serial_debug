@@ -197,7 +197,7 @@ if _platform == 'darwin':
         bundle_identifier='com.serial-debug.app',
         info_plist={
             # 与 pyproject.toml [project].version 保持一致
-            'CFBundleShortVersionString': '1.1.0',
+            'CFBundleShortVersionString': '1.2.0',
             'CFBundleName': '串口调试助手',
             'NSHighResolutionCapable': True,
         },

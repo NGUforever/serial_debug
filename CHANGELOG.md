@@ -2,6 +2,20 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] — 2026-11-06
+
+### 新增
+
+- **原始数据显示模式**：主程序底栏新增「原始模式」checkbox，开启后串口收到的行原样追加到日志区，不解析 LOG_TS、不识别响应、不过滤。专为开机阶段固件 printf 打印的纯文本日志设计——此时 RTOS 还未启动 ringbuffer+DMA 异步传输，日志无 13 位 ms 时间戳和类型前缀，解析模式会丢失可读性。新增 `core/raw_renderer.py`（`RawBuffer` 有界缓冲 + `format_raw_line` 行尾归一化 + `decode_chunk` utf-8 兜底解码），配置 schema 新增 `raw_display_enabled`。落盘 log_writer 在两种模式下都正常工作，开机日志可追溯。
+- **筛选面板三种匹配模式**：支持模糊/精确/正则切换。
+- **端口下拉选择**：数据监视窗口与主程序的串口端口框改为下拉菜单（枚举串口 + CH343/CH340 默认选中 + 可手填），QComboBox 下拉箭头明显化。
+
+### 修复
+
+- **数据监视曲线加载性能（本版重点）**：日志查看器调用数据监视后，大数据量加载曲线从分钟级优化到秒级——replay 分批期间不再每次全量重画（O(n²)→O(n)），开启 pyqtgraph 峰值降采样+视野裁剪，关闭全局抗锯齿。实测 30 万行 3 曲线加载+渲染 0.85s。
+- 日志查看器搜索跳转异步分批渲染，不再冻结 UI；筛选大文件不再卡死（signal 不再深拷贝整个 lines 列表）。
+- 日志查看器设为只读并关闭未保存提示，防止误改原始日志。
+
 ## [Unreleased]
 
 ### 新增

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serial_debug"
-version = "1.1.0"
+version = "1.2.0"
 description = "串口调试助手 + 日志查看器：CH343 实时收发 / AT 命令管理 / 日志存储与查看 / 实时数据监视"
 readme = "docs/README.md"
 requires-python = ">=3.9"

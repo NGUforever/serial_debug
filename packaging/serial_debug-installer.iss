@@ -18,12 +18,12 @@
 ;   - 文件管理器右键 .log/.txt → 打开方式 → 日志查看器
 ;   - 控制面板可卸载
 ;
-; 版本对齐：AppVersion 必须与 pyproject.toml [project].version 一致（当前 1.1.0）
+; 版本对齐：AppVersion 必须与 pyproject.toml [project].version 一致（当前 1.2.0）
 ; AppId（GUID）一经发布固定不变，升级安装时 Inno Setup 据此识别同一应用
 
 [Setup]
 AppName=串口调试助手
-AppVersion=1.1.0
+AppVersion=1.2.0
 AppId={{B8F3A1D2-7E5C-4F9A-9B6E-3D2C1A0B5E7F}
 AppPublisher=Ninebot
 AppPublisherURL=https://www.ninebot.com
@@ -41,8 +41,8 @@ ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\serial_debug.exe
 UninstallDisplayName=串口调试助手
-VersionInfoVersion=1.1.0.0
-VersionInfoProductVersion=1.1.0.0
+VersionInfoVersion=1.2.0.0
+VersionInfoProductVersion=1.2.0.0
 LicenseFile=
 InfoBeforeFile=
 
