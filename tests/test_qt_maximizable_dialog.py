@@ -224,3 +224,58 @@ def test_replay_zero_hit_rate():
     assert rep['found'] == {}
     assert rep['hit_lines'] == 0
     assert rep['total_lines'] == 3
+
+
+# ---- 功能 2 扩展：LOG_TS 封装宏样例（源码+日志 → 推导回放）--------------
+
+LOG_TS_SOURCE = (
+    'LOG_TS(AM_LOG_LEVEL_FATAL, "LIFT", '
+    '"liftup hall %x -> %x\\n", '
+    'pre_state.hall.value, cur_state.hall.value);\n'
+)
+
+LOG_TS_LOG = '''1794062959017 F LIFT liftup hall 0 -> 1
+1794062959020 F LIFT liftup hall 3a -> 1f
+noise line
+'''
+
+
+def test_infer_log_ts_source_replay_extract_hall():
+    """用户真实 LOG_TS 样例：推导 parse_line 回放提取 pre/cur hall 值。
+
+    变量名规则：参数表达式最后两段标识符（pre_state.hall.value → hall_value），
+    重名加 _2 后缀。%x 带字母十六进制（3a→58, 1f→31）正确解析。
+    """
+    code, lang, n = infer_parse_line_from_source(LOG_TS_SOURCE, 'c')
+    assert n == 1
+    assert 'def parse_line(line):' in code
+    rep = replay_parse_line_draft(code, LOG_TS_LOG)
+    assert rep['error'] is None
+    found = rep['found']
+    assert 'hall_value' in found and 'hall_value_2' in found, found
+    # 第一行 0→1
+    assert found['hall_value']['rows'][0] == 0.0
+    assert found['hall_value_2']['rows'][0] == 1.0
+    # 第二行 hex 3a→58, 1f→31
+    assert found['hall_value']['rows'][1] == 58.0
+    assert found['hall_value_2']['rows'][1] == 31.0
+    # 命中 2 行（噪声行不命中）；级别字母 F / TAG 不产字段
+    assert rep['hit_lines'] == 2
+    assert 'F' not in found and 'LIFT' not in found
+
+
+def test_infer_log_ts_multi_macro_multi_var():
+    """多 LOG_TS（不同 TAG/格式串）→ 回放按行匹配各自变量。"""
+    src = ('LOG_TS(AM_LOG_LEVEL_FATAL, "LIFT", "hall %x\\n", a.value);\n'
+           'LOG_TS(AM_LOG_LEVEL_INFO, "PWR", "vbus %d temp %d\\n", vbus, temp);\n')
+    code, _, n = infer_parse_line_from_source(src, 'c')
+    assert n == 2
+    rep = replay_parse_line_draft(
+        code,
+        '1794062959017 F LIFT hall 1f\n'
+        '1794062959018 I PWR vbus 230 temp 25\n')
+    assert rep['error'] is None
+    found = rep['found']
+    assert found['a_value']['first'] == 31.0
+    assert found['vbus']['first'] == 230.0
+    assert found['temp']['first'] == 25.0

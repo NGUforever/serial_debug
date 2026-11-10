@@ -84,9 +84,11 @@ def test_extract_c_log_macros(parser_mod):
     # format 应含 ts+level 占位 + MODULE + 用户 fmt
     assert 'MOTOR' in s.format_str
     assert 'rpm=' in s.format_str
-    # args 含 ts + level_var + 原 args
+    # args 含 ts + level + 原 args；级别变量在 skip_names（不产数据字段）
     assert 'ts' in s.args
-    assert 'g_level' in s.args
+    assert 'g_level' not in s.args
+    assert 'g_level' in s.skip_names
+    assert 'level' in s.skip_names
 
 
 def test_extract_c_printf(parser_mod):
@@ -277,3 +279,115 @@ def test_extract_print_statements_js(parser_mod):
     stmts = parser_mod.extract_print_statements(code, 'js')
     assert len(stmts) == 1
     assert stmts[0].language == 'js'
+
+
+# ---- 封装日志宏（LOG_TS / LOGI / ESP_LOGI）增强推导 --------------------
+
+def test_log_ts_user_sample_hex_replay(parser_mod):
+    """用户真实样例：LOG_TS(级别, "TAG", "fmt %x", a.hall.value, b.hall.value)
+    → 日志行 `1794062959017 F LIFT liftup hall 0 -> 1` 提取 0→1。
+    %x 带字母十六进制值（3a→58）也能提取。
+    """
+    code = ('LOG_TS(AM_LOG_LEVEL_FATAL, "LIFT", '
+            '"liftup hall %x -> %x\\n", '
+            'pre_state.hall.value, cur_state.hall.value);\n')
+    stmts = parser_mod.extract_print_statements(code, 'c')
+    assert len(stmts) == 1
+    s = stmts[0]
+    # TAG 字面量拼入格式串
+    assert 'LIFT' in s.format_str
+    # 两个 hall 参数按占位符顺序绑定，变量名取最后两段标识符
+    assert 'hall_value' in s.args and 'hall_value_2' in s.args
+    gen = parser_mod.generate_parse_line(stmts)
+    ns: dict = {}
+    exec(compile(gen, '<t>', 'exec'), ns)
+    got0 = list(ns['parse_line']('1794062959017 F LIFT liftup hall 0 -> 1'))
+    assert [(n, v) for _, n, v in got0] == [('hall_value', 0.0),
+                                            ('hall_value_2', 1.0)]
+    # 级别字母 F / TAG 不产字段；ts 正确
+    assert all(abs(ts - 1794062959.017) < 0.01 for ts, _, _ in got0)
+    # 带字母 hex 值：0x3a → 58，0x1f → 31
+    got_hex = list(ns['parse_line']('1794062959020 F LIFT liftup hall 3a -> 1f'))
+    vals = {n: v for _, n, v in got_hex}
+    assert vals == {'hall_value': 58.0, 'hall_value_2': 31.0}
+
+
+def test_log_ts_multiple_calls_multi_var(parser_mod):
+    """同一源码多个 LOG_TS（不同 TAG / 格式串）→ 多条 stmt，各自变量，
+    回放按格式串（含 TAG）匹配对应行。"""
+    code = ('LOG_TS(AM_LOG_LEVEL_FATAL, "LIFT", "hall %x\\n", a.value);\n'
+            'LOG_TS(AM_LOG_LEVEL_INFO, "PWR", "vbus %d temp %d\\n", vbus, temp);\n')
+    stmts = parser_mod.extract_print_statements(code, 'c')
+    assert len(stmts) == 2
+    fmts = [s.format_str for s in stmts]
+    assert any('LIFT' in f for f in fmts) and any('PWR' in f for f in fmts)
+    gen = parser_mod.generate_parse_line(stmts)
+    ns: dict = {}
+    exec(compile(gen, '<t>', 'exec'), ns)
+    r1 = list(ns['parse_line']('1794062959017 F LIFT hall 1f'))
+    assert [(n, v) for _, n, v in r1] == [('a_value', 31.0)]
+    r2 = list(ns['parse_line']('1794062959018 I PWR vbus 230 temp 25'))
+    assert [(n, v) for _, n, v in r2] == [('vbus', 230.0), ('temp', 25.0)]
+
+
+def test_log_macro_level_letter_not_captured(parser_mod):
+    """级别字母（F/E/W/I/D）与级别常量不误捕为数据字段。
+
+    行内级别字母 `E` 也不能匹配进任何 %d/%x 捕获组。
+    """
+    code = 'LOG_TS(AM_LOG_LEVEL_ERROR, "E", "err %d\\n", code);\n'
+    stmts = parser_mod.extract_print_statements(code, 'c')
+    s = stmts[0]
+    # skip_names 含级别表达式；args 不含 AM_LOG_LEVEL_ERROR
+    assert 'AM_LOG_LEVEL_ERROR' not in s.args
+    assert 'level' in s.skip_names
+    gen = parser_mod.generate_parse_line(stmts)
+    ns: dict = {}
+    exec(compile(gen, '<t>', 'exec'), ns)
+    got = list(ns['parse_line']('1794062959017 E E err 42'))
+    names = [n for _, n, _ in got]
+    assert names == ['code']
+    assert got[0][2] == 42.0
+
+
+def test_log_macro_extensible_other_macro_names(parser_mod):
+    """宏名不写死 LOG_TS：LOGI / LOGD / ESP_LOGI 等模式均可识别；
+    新封装宏在 C_LOG_MACRO_PATTERNS 加一项即可扩展。"""
+    # LOGI（无级别参数、无 TAG）：fmt 为第 0 个字符串字面量
+    stmts = parser_mod.extract_print_statements('LOGI("count %d\\n", cnt);\n', 'c')
+    assert len(stmts) == 1
+    assert 'cnt' in stmts[0].args
+    # ESP_LOGI(TAG变量, fmt, args)：TAG 是变量（非字面量）→ 跳过 TAG 段，
+    # fmt 为最后一个字符串字面量
+    stmts2 = parser_mod.extract_print_statements(
+        'ESP_LOGI(TAG, "wifi rssi %d\\n", rssi);\n', 'c')
+    assert len(stmts2) == 1
+    assert 'rssi' in stmts2[0].args
+    # LOGD 同样可识别
+    assert len(parser_mod.extract_print_statements(
+        'LOGD("v=%d\\n", v);\n', 'c')) == 1
+
+
+def test_log_macro_pattern_registry_extensible(parser_mod):
+    """C_LOG_MACRO_PATTERNS 注册表可扩展：加一项新宏模式即可识别。"""
+    parser_mod.C_LOG_MACRO_PATTERNS.append(
+        {'name': 'MY_LOG', 'macro_re': r'MY_LOG', 'has_level': False,
+         'has_tag': True})
+    try:
+        stmts = parser_mod.extract_print_statements(
+            'MY_LOG("MOD", "val %d\\n", x);\n', 'c')
+        assert len(stmts) == 1
+        assert 'x' in stmts[0].args
+    finally:
+        parser_mod.C_LOG_MACRO_PATTERNS.pop()
+
+
+def test_log_macro_arg_with_parens_and_addr(parser_mod):
+    """带括号 / 取地址的参数表达式：取最后一个标识符做变量名，不丢参数。"""
+    stmts = parser_mod.extract_print_statements(
+        'LOG_TS(AM_LOG_LEVEL_INFO, "PWR", "vbus %d\\n", get_vbus(1, 2));\n'
+        'LOG_TS(AM_LOG_LEVEL_INFO, "T", "v %d\\n", &val);\n', 'c')
+    assert len(stmts) == 2
+    all_args = [a for s in stmts for a in s.args]
+    assert 'get_vbus' in all_args
+    assert 'val' in all_args
