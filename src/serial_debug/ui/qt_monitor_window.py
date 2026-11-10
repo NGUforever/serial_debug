@@ -708,7 +708,7 @@ class _QtParserConfigDialog:
 
         dlg = MaximizableDialog(self.parent)
         dlg.setWindowTitle('解析器配置')
-        dlg.resize(800, 720)
+        dlg.resize(800, 640)
         dlg.setMinimumSize(600, 480)
         self._dlg = dlg
 
@@ -3707,6 +3707,7 @@ class QtMonitorWindow:
             return
         header['legend_box'].setVisible(True)
         font_size = int(p.get('legend_font_size', 9))
+        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QWidget
 
         from serial_debug.ui import qt_theme
@@ -3758,11 +3759,15 @@ class QtMonitorWindow:
             else:
                 chip = QWidget()
                 chip.setStyleSheet("background: transparent; border: none;")
+                # header_frame 是 OpenHandCursor（拖拽交换用），子控件会继承
+                # 手掌光标——chip/勾选框/名称显式恢复箭头。
+                chip.setCursor(Qt.CursorShape.ArrowCursor)
                 cl = QHBoxLayout(chip)
                 cl.setContentsMargins(0, 0, 0, 0)
                 cl.setSpacing(4)
                 cb = QCheckBox()
                 cb.setChecked(checked)
+                cb.setCursor(Qt.CursorShape.ArrowCursor)
                 cb.setStyleSheet(self._legend_checkbox_qss(color, muted))
                 # 关联 toggled 信号到 plot 索引（_visible_plots 中的下标）
                 # 不能直接闭包 plot_idx——_visible_plots 后续可能增删导致
@@ -3770,6 +3775,7 @@ class QtMonitorWindow:
                 cb.stateChanged.connect(
                     self._make_legend_toggled_cb(name, chip))
                 txt = QLabel(label)
+                txt.setCursor(Qt.CursorShape.ArrowCursor)
                 txt.setStyleSheet(
                     f"color: {fg};"
                     f"font-size: {font_size}pt;"

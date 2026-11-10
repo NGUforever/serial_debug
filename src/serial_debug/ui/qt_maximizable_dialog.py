@@ -100,25 +100,10 @@ class MaximizableDialog(_QDialogBase, _MaximizeMixin):
         _QDialogBase.__init__(self, *args, **kwargs)
         self._apply_hints(self)
 
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        """双击标题栏 / 客户区空隙切换最大化 / 还原。
-
-        子控件（表格、画布、输入框）上的双击由子控件自己消费，
-        不会传播到这里；只有点到对话框自身空白区才触发切换。
-        """
-        try:
-            from PySide6.QtCore import Qt
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.toggle_maximize()
-                event.accept()
-                return
-        except Exception:
-            pass
-        try:
-            from PySide6.QtWidgets import QDialog
-            QDialog.mouseDoubleClickEvent(self, event)
-        except Exception:
-            pass
+    # 设计取舍（2026-11-10）：不重写 mouseDoubleClickEvent——旧实现连
+    # "客户区空白处"双击也会切换最大化，表单类对话框里双击空白是常见
+    # 操作（选中文本/连点），误触后窗口突然全屏像"默认就最大化"。
+    # 现在只保留标题栏系统按钮 + 系统标题栏双击（WM 原生行为）切换。
 
     # ---- 状态持久化（可选接入 config 层）----------------------------
     def save_state(self) -> dict:

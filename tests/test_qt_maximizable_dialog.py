@@ -57,7 +57,8 @@ def test_maximizable_dialog_toggle_roundtrip(qapp):
 
 
 def test_maximizable_dialog_double_click_no_crash(qapp):
-    """双击（合成事件）切换不崩。"""
+    """双击客户区空白不再切换最大化（2026-11-10 行为变更：防表单误触），
+    事件被正常消费、不崩。"""
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtCore import QEvent
@@ -68,9 +69,13 @@ def test_maximizable_dialog_double_click_no_crash(qapp):
     ev = QMouseEvent(QEvent.MouseButtonDblClick, pos, pos,
                      Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
                      Qt.KeyboardModifier.NoModifier)
-    # 发给对话框自身（客户区空白）——应触发 toggle，不抛异常
+    # 发给对话框自身（客户区空白）——不应触发 toggle（只留标题栏双击），
+    # 仅验证不抛异常
     was_max = dlg.isMaximized()
     dlg.mouseDoubleClickEvent(ev)
+    assert dlg.isMaximized() == was_max
+    # 切换路径仍由 toggle_maximize 保留（标题栏按钮）
+    dlg.toggle_maximize()
     assert dlg.isMaximized() != was_max
     dlg.close()
 
