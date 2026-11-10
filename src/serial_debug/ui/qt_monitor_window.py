@@ -374,10 +374,10 @@ class _QtPlotDialog:
 
     def _build(self):
         from PySide6.QtCore import Qt
+        from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
         from PySide6.QtWidgets import (
             QCheckBox,
             QComboBox,
-            QDialog,
             QDialogButtonBox,
             QFormLayout,
             QGroupBox,
@@ -390,7 +390,7 @@ class _QtPlotDialog:
             QVBoxLayout,
         )
 
-        dlg = QDialog(self.parent)
+        dlg = MaximizableDialog(self.parent)
         dlg.setWindowTitle(self.title)
         dlg.resize(640, 560)
         dlg.setMinimumSize(480, 360)
@@ -657,11 +657,11 @@ class _QtParserConfigDialog:
 
     def _build(self):
         from PySide6.QtGui import QFont
+        from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
         from PySide6.QtWidgets import (
             QButtonGroup,
             QCheckBox,
             QComboBox,
-            QDialog,
             QDialogButtonBox,
             QFormLayout,
             QGroupBox,
@@ -676,7 +676,7 @@ class _QtParserConfigDialog:
             QVBoxLayout,
         )
 
-        dlg = QDialog(self.parent)
+        dlg = MaximizableDialog(self.parent)
         dlg.setWindowTitle('解析器配置')
         dlg.resize(800, 720)
         dlg.setMinimumSize(600, 480)
@@ -894,23 +894,27 @@ class _QtParserConfigDialog:
             pass
 
     def _on_infer(self):
-        """从源码提取 print 语句 → 生成 parse_line → 填入代码区。"""
+        """从源码 + 样本日志自动推导 parse_line：
+
+        源码 → print 语句 → 生成 parse_line 草稿 → 回放样本日志 →
+        预览表（变量名 / 首末值 / 命中数）。填入代码区供确认/手改后保存。
+        """
         try:
-            from serial_debug.ui.qt_parser_inference import (
-                detect_language,
-                extract_print_statements,
-                generate_parse_line,
-            )
+            from serial_debug.ui.qt_parser_inference import detect_language
         except Exception as e:
             self._result_label.setText(f'❌ 推导模块不可用：{e!r}')
             return
         src = self._src_edit.toPlainText()
         if not src.strip():
-            self._result_label.setText('⚠ 源码为空')
+            self._result_label.setText('⚠ 源码为空——请先在"设备源码"区贴入固件源码')
             return
         lang_data = self._lang_combo.currentData()
         if lang_data == 'auto':
-            lang = detect_language(src)
+            try:
+                lang = detect_language(src)
+            except Exception as e:
+                self._result_label.setText(f'❌ 语言识别失败：{e!r}')
+                return
             # 找到下拉里的对应项并切换（保留用户能再次切回 auto）
             for i in range(self._lang_combo.count()):
                 if self._lang_combo.itemData(i) == lang:
@@ -920,28 +924,59 @@ class _QtParserConfigDialog:
                     break
         else:
             lang = lang_data
-        if lang == 'html':
-            self._result_label.setText(
-                '⚠ HTML 不产生日志，不支持推导。请贴 C/C++/Python/Java/Rust/JS 源码')
-            return
+        # 1) 源码 → parse_line 草稿（纯逻辑 helper，ValueError 带可读原因）
         try:
-            stmts = extract_print_statements(src, lang)
-        except Exception as e:
-            self._result_label.setText(f'❌ 提取失败：{e!r}')
+            gen, lang, n_stmts = infer_parse_line_from_source(src, lang)
+        except ValueError as e:
+            self._result_label.setText(f'❌ {e}')
+            self._result_table.setVisible(False)
             return
-        if not stmts:
+        except Exception as e:
+            self._result_label.setText(f'❌ 推导失败：{e!r}')
+            self._result_table.setVisible(False)
+            return
+        # 2) 回放样本日志 → 预览命中情况
+        sample = self._sample_edit.toPlainText()
+        rep = replay_parse_line_draft(gen, sample)
+        if rep['error']:
             self._result_label.setText(
-                f'⚠ 未从源码识别到 print 语句（语言={lang}）')
+                f'❌ 推导出的 parse_line 无法验证：{rep["error"]}')
+            self._result_table.setVisible(False)
             return
-        try:
-            gen = generate_parse_line(stmts)
-        except Exception as e:
-            self._result_label.setText(f'❌ 生成失败：{e!r}')
+        if not rep['found'] or rep['hit_lines'] == 0:
+            self._result_label.setText(
+                f'❌ 命中率为 0：生成的解析器在样本日志（{rep["total_lines"]} 行）'
+                '里没有提取到任何变量。请核对源码与日志是否对应、'
+                '或手动微调代码。草稿已填入下方代码区供检查。')
+            self._code_edit.setPlainText(gen)
+            self._result_table.setVisible(False)
             return
+        # 3) 预览表：变量名 + 提取到的值（前若干行）+ 命中行数
+        self._fill_infer_preview(rep)
+        # 4) 用户确认：草稿填入自定义代码框（可再手改 → 保存走既有通道）
         self._code_edit.setPlainText(gen)
+        rate = rep['hit_lines'] / max(1, rep['total_lines'])
         self._result_label.setText(
-            f'✓ 推导完成：识别 {len(stmts)} 条 print 语句（语言={lang}）'
-            '，已填入"解析器代码"区，可点"测试解析"验证')
+            f'✓ 推导完成：{n_stmts} 条 print 语句（语言={lang}），'
+            f'{len(rep["found"])} 个变量，'
+            f'命中 {rep["hit_lines"]}/{rep["total_lines"]} 行'
+            f'（{rate:.0%}）。已填入"解析器代码"区，可手改后保存。')
+
+    def _fill_infer_preview(self, rep: dict):
+        """把回放结果填进测试结果表（复用 _result_table，4 列）。"""
+        from PySide6.QtWidgets import QTableWidgetItem
+        found = rep['found']
+        self._result_table.setRowCount(len(found))
+        for i, (name, info) in enumerate(sorted(found.items())):
+            self._result_table.setItem(i, 0, QTableWidgetItem(str(name)))
+            self._result_table.setItem(i, 1, QTableWidgetItem(
+                _fmt_val(info['first'])))
+            self._result_table.setItem(i, 2, QTableWidgetItem(
+                _fmt_val(info['last'])))
+            self._result_table.setItem(i, 3, QTableWidgetItem(
+                f'{info["count"]}（{rep["hit_lines"]}/'
+                f'{rep["total_lines"]} 行）'))
+        self._result_table.setVisible(True)
 
     def _on_load_source_file(self):
         """从 .c/.cpp/.py/.java/.rs/.js/.md/.txt 文件读源码。"""
@@ -1126,6 +1161,92 @@ def _fmt_val(v) -> str:
         return f'{f:.3f}'
     except Exception:
         return str(v)
+
+
+# ---- 源码 + 日志 → parse_line 自动推导（纯逻辑，便于单测）--------------
+
+def infer_parse_line_from_source(source_code: str, language: str = 'auto'):
+    """从设备源码推导 parse_line Python 代码草稿。
+
+    :param source_code: 固件里打日志的源码（C/C++/Python/Java/Rust/JS）
+    :param language: 'auto' 或具体语言代码（与 detect_language 输出一致）
+    :return: (parse_line_code, language, n_statements)
+    :raises ValueError: 语言不支持 / 未识别到 print 语句 / 生成失败
+    """
+    from serial_debug.ui.qt_parser_inference import (
+        detect_language,
+        extract_print_statements,
+        generate_parse_line,
+    )
+    if not (source_code or '').strip():
+        raise ValueError('源码为空——请先在"设备源码"区贴入固件源码')
+    if language == 'auto':
+        language = detect_language(source_code)
+    if language == 'html':
+        raise ValueError('HTML 不产生日志，不支持推导。'
+                         '请贴 C/C++/Python/Java/Rust/JS 源码')
+    stmts = extract_print_statements(source_code, language)
+    if not stmts:
+        raise ValueError(
+            f'未从源码识别到 print 语句（语言={language}）——请确认源码里'
+            '确实有 printf / print / println! / console.log 等打印调用')
+    try:
+        code = generate_parse_line(stmts)
+    except Exception as e:
+        raise ValueError(f'生成 parse_line 失败：{e!r}') from e
+    return code, language, len(stmts)
+
+
+def replay_parse_line_draft(code: str, sample_log: str,
+                            max_rows: int = 50) -> dict:
+    """用生成的 parse_line 代码回放样本日志，统计每个变量的命中情况。
+
+    :return: {'found': {name: {'first','last','count','rows':[前几个值]}},
+              'total_lines': int, 'hit_lines': int, 'error': str|None}
+      error 非 None 表示代码本身无法执行（语法错误 / 无 parse_line 等）。
+    """
+    out: dict = {'found': {}, 'total_lines': 0, 'hit_lines': 0,
+                 'error': None}
+    try:
+        ns: dict = {}
+        exec(compile(code, '<inferred_parse_line>', 'exec'), ns)
+        func = ns.get('parse_line')
+        if not callable(func):
+            out['error'] = '生成的代码未定义 parse_line(line) 函数'
+            return out
+    except SyntaxError as e:
+        out['error'] = f'生成代码语法错误（行 {e.lineno}）：{e.msg}'
+        return out
+    except Exception as e:
+        out['error'] = f'生成代码执行失败：{e!r}'
+        return out
+    lines = [l for l in (sample_log or '').splitlines() if l.strip()]
+    out['total_lines'] = len(lines)
+    if not lines:
+        out['error'] = '样本日志为空——请贴几行对应的原始打印日志'
+        return out
+    for line in lines:
+        try:
+            result = func(line)
+            if result is None:
+                continue
+            got = False
+            for item in result:
+                if not item or len(item) != 3:
+                    continue
+                _, name, val = item
+                got = True
+                info = out['found'].setdefault(
+                    name, {'first': val, 'last': val, 'count': 0, 'rows': []})
+                info['last'] = val
+                info['count'] += 1
+                if len(info['rows']) < max_rows:
+                    info['rows'].append(val)
+            if got:
+                out['hit_lines'] += 1
+        except Exception:
+            continue  # 单行异常吞掉，继续回放
+    return out
 
 
 def _discover_vars_from_sample(func, sample_log: str) -> list:
@@ -2020,10 +2141,11 @@ class QtMonitorWindow:
                 QMessageBox.critical(win, '导出失败', str(e))
 
         def _connect_serial():
-            from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox
+            from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QFormLayout, QMessageBox
+            from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
             import serial.tools.list_ports
             from serial_debug.core.serial_backend import SerialBackend
-            dlg = QDialog(win)
+            dlg = MaximizableDialog(win)
             dlg.setWindowTitle('连接串口（实时 feed）')
             form = QFormLayout(dlg)
             port_edit = QComboBox()
@@ -2068,7 +2190,8 @@ class QtMonitorWindow:
             form.addRow(btns)
             btns.accepted.connect(dlg.accept)
             btns.rejected.connect(dlg.reject)
-            if dlg.exec() != QDialog.Accepted:
+            from PySide6.QtWidgets import QDialog as _QDlg
+            if dlg.exec() != _QDlg.Accepted:
                 return
             port = port_edit.currentText().strip()
             baud = int(baud_box.currentText())
@@ -2758,7 +2881,6 @@ class QtMonitorWindow:
         """弹窗显示每变量统计信息。"""
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
-            QDialog,
             QDialogButtonBox,
             QHeaderView,
             QLabel,
@@ -2766,7 +2888,9 @@ class QtMonitorWindow:
             QTableWidgetItem,
             QVBoxLayout,
         )
-        dlg = QDialog(parent_win)
+
+        from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
+        dlg = MaximizableDialog(parent_win)
         dlg.setWindowTitle('统计信息')
         dlg.resize(720, 480)
         v = QVBoxLayout(dlg)
@@ -2884,11 +3008,13 @@ class QtMonitorWindow:
             QLabel,
             QVBoxLayout,
         )
+
+        from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
         if not self._visible_plots:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.information(parent, title, '没有可操作的图表')
             return None
-        dlg = QDialog(parent)
+        dlg = MaximizableDialog(parent)
         dlg.setWindowTitle(title)
         dlg.setMinimumWidth(320)
         v = QVBoxLayout(dlg)
@@ -4274,6 +4400,8 @@ class QtMonitorWindow:
         """
         from PySide6.QtWidgets import QDialog, QVBoxLayout
 
+        from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
+
         from serial_debug.ui import qt_theme
         t = qt_theme.palette(self.theme_name)
         if not self._visible_plots:
@@ -4288,7 +4416,7 @@ class QtMonitorWindow:
                 dlg.activateWindow()
                 return
         p = self._visible_plots[idx]
-        dlg = QDialog(self._win if hasattr(self, '_win') else None)
+        dlg = MaximizableDialog(self._win if hasattr(self, '_win') else None)
         dlg.setWindowTitle(f'{p.get("title", "数据曲线")} - 单独显示')
         dlg.resize(900, 560)
         v = QVBoxLayout(dlg)

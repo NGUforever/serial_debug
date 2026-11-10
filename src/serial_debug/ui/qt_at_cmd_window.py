@@ -508,8 +508,10 @@ class AtCmdWindowQt:
         self._dlg = None
 
     def _build(self, parent=None):
-        from PySide6.QtWidgets import QDialog, QVBoxLayout
-        dlg = QDialog(parent)
+        from PySide6.QtWidgets import QVBoxLayout
+
+        from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
+        dlg = MaximizableDialog(parent)
         dlg.setWindowTitle(self.TITLE)
         dlg.resize(800, 500)
         dlg.setMinimumSize(600, 400)
