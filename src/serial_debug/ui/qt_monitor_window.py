@@ -644,12 +644,30 @@ def _make_collapsible(groupbox, expanded: bool = True):
     """把 QGroupBox 做成可折叠显示/隐藏（通用小工具，可复用）。
 
     实现：setCheckable(True)——标题左侧出现 checkbox，勾选=展开、
-    取消勾选=收起（Qt 原生隐藏内容区，只留标题行），再勾选恢复。
+    取消勾选=收起。注意：仅 setCheckable 不够——GroupBox 被布局以
+    stretch 拉伸时 Qt 不会自动收缩隐藏内容区，必须显式对子控件
+    setVisible 联动（toggled → 遍历 childWidgets），收起才真正生效。
     :param groupbox: QGroupBox 实例
     :param expanded: 初始是否展开（默认展开）
     :return: 同一个 groupbox（便于链式使用）
     """
+    from PySide6.QtWidgets import QWidget
+
     groupbox.setCheckable(True)
+
+    def _apply(visible: bool):
+        for child in groupbox.findChildren(QWidget):
+            child.setVisible(visible)
+        # 布局以 stretch 拉伸 GroupBox 时，仅隐藏子控件高度不会收缩，
+        # 收起时把最大高度钉在标题行高度，展开恢复无上限。
+        groupbox.setMaximumHeight(
+            16777215 if visible else groupbox.sizeHint().height())
+        groupbox.updateGeometry()
+
+    def _on_toggled(on: bool):
+        _apply(on)
+
+    groupbox.toggled.connect(_on_toggled)
     groupbox.setChecked(bool(expanded))
     return groupbox
 
@@ -850,9 +868,9 @@ class _QtParserConfigDialog:
         # 测试结果表
         self._result_label = QLabel('（点"测试解析"查看结果）')
         v.addWidget(self._result_label)
-        self._result_table = QTableWidget(0, 4)
+        self._result_table = QTableWidget(0, 3)
         self._result_table.setHorizontalHeaderLabels(
-            ['变量名', '首次值', '末次值', '出现次数'])
+            ['变量名', '出现次数', '命中行号（前10）'])
         self._result_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch)
         self._result_table.setVisible(False)
@@ -951,19 +969,17 @@ class _QtParserConfigDialog:
             f'（{rate:.0%}）。已填入"解析器代码"区，可手改后保存。')
 
     def _fill_infer_preview(self, rep: dict):
-        """把回放结果填进测试结果表（复用 _result_table，4 列）。"""
+        """把回放结果填进测试结果表（复用 _result_table，3 列）。"""
         from PySide6.QtWidgets import QTableWidgetItem
         found = rep['found']
         self._result_table.setRowCount(len(found))
         for i, (name, info) in enumerate(sorted(found.items())):
             self._result_table.setItem(i, 0, QTableWidgetItem(str(name)))
             self._result_table.setItem(i, 1, QTableWidgetItem(
-                _fmt_val(info['first'])))
-            self._result_table.setItem(i, 2, QTableWidgetItem(
-                _fmt_val(info['last'])))
-            self._result_table.setItem(i, 3, QTableWidgetItem(
                 f'{info["count"]}（{rep["hit_lines"]}/'
                 f'{rep["total_lines"]} 行）'))
+            self._result_table.setItem(i, 2, QTableWidgetItem(
+                ', '.join(str(n) for n in info.get('line_nos', [])[:10])))
         self._result_table.setVisible(True)
 
     def _on_load_source_file(self):
@@ -1041,10 +1057,10 @@ class _QtParserConfigDialog:
             self._result_table.setVisible(False)
             return
 
-        # name -> {first, last, count}
+        # name -> {count, line_nos}（1 起的行号，只记前 10 个展示用）
         found: dict[str, dict] = {}
         err_count = 0
-        for line in lines:
+        for line_no, line in enumerate(lines, start=1):
             try:
                 result = func(line)
                 if result is None:
@@ -1053,10 +1069,11 @@ class _QtParserConfigDialog:
                     if not item or len(item) != 3:
                         continue
                     _, name, val = item
-                    if name not in found:
-                        found[name] = {'first': val, 'last': val, 'count': 0}
-                    found[name]['last'] = val
-                    found[name]['count'] += 1
+                    info = found.setdefault(
+                        name, {'count': 0, 'line_nos': []})
+                    info['count'] += 1
+                    if len(info['line_nos']) < 10:
+                        info['line_nos'].append(line_no)
             except Exception:
                 err_count += 1
 
@@ -1064,11 +1081,9 @@ class _QtParserConfigDialog:
         for i, (name, info) in enumerate(sorted(found.items())):
             self._result_table.setItem(i, 0, QTableWidgetItem(str(name)))
             self._result_table.setItem(i, 1, QTableWidgetItem(
-                _fmt_val(info['first'])))
-            self._result_table.setItem(i, 2, QTableWidgetItem(
-                _fmt_val(info['last'])))
-            self._result_table.setItem(i, 3, QTableWidgetItem(
                 str(info['count'])))
+            self._result_table.setItem(i, 2, QTableWidgetItem(
+                ', '.join(str(n) for n in info['line_nos'])))
         self._result_table.setVisible(True)
         msg = (f'✓ 解析成功：{len(found)} 个变量，{len(lines)} 行'
                f'（{err_count} 行解析失败）')
@@ -1190,7 +1205,8 @@ def replay_parse_line_draft(code: str, sample_log: str,
                             max_rows: int = 50) -> dict:
     """用生成的 parse_line 代码回放样本日志，统计每个变量的命中情况。
 
-    :return: {'found': {name: {'first','last','count','rows':[前几个值]}},
+    :return: {'found': {name: {'first','last','count',
+                               'rows':[值], 'line_nos':[前若干命中行号(1起)]}},
               'total_lines': int, 'hit_lines': int, 'error': str|None}
       error 非 None 表示代码本身无法执行（语法错误 / 无 parse_line 等）。
     """
@@ -1214,7 +1230,7 @@ def replay_parse_line_draft(code: str, sample_log: str,
     if not lines:
         out['error'] = '样本日志为空——请贴几行对应的原始打印日志'
         return out
-    for line in lines:
+    for line_no, line in enumerate(lines, start=1):
         try:
             result = func(line)
             if result is None:
@@ -1226,11 +1242,14 @@ def replay_parse_line_draft(code: str, sample_log: str,
                 _, name, val = item
                 got = True
                 info = out['found'].setdefault(
-                    name, {'first': val, 'last': val, 'count': 0, 'rows': []})
+                    name, {'first': val, 'last': val, 'count': 0, 'rows': [],
+                           'line_nos': []})
                 info['last'] = val
                 info['count'] += 1
                 if len(info['rows']) < max_rows:
                     info['rows'].append(val)
+                if len(info['line_nos']) < 10:
+                    info['line_nos'].append(line_no)
             if got:
                 out['hit_lines'] += 1
         except Exception:
