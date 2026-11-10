@@ -268,9 +268,8 @@ def test_iter_panel_vars_no_ts_uses_fallback():
         assert item[0] == 12345.0
 
 
-def test_iter_panel_vars_custom_mode(monkeypatch):
-    """mode=custom 时应只跑用户 parse_line。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
+def test_iter_panel_vars_custom_func_runs_without_mode(monkeypatch):
+    """func 存在即跑（模式已废弃，不再 gate）。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
                         lambda line: [(1.0, 'custom.var', 5.0)])
     out = list(mod._iter_panel_vars('1234567890 I some line',
@@ -278,9 +277,8 @@ def test_iter_panel_vars_custom_mode(monkeypatch):
     assert any(name == 'custom.var' for _, name, _ in out)
 
 
-def test_iter_panel_vars_both_mode_dedup(monkeypatch):
-    """mode=both 时 built-in + custom 同名应取 custom 的（覆盖）。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'both')
+def test_iter_panel_vars_builtin_plus_custom_dedup(monkeypatch):
+    """内置 + custom 始终并集，同名应取 custom 的（覆盖）。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
                         lambda line: [(2.0, 'motor.Vx', 99.0)])
     line = '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0'
@@ -292,7 +290,6 @@ def test_iter_panel_vars_both_mode_dedup(monkeypatch):
 
 def test_iter_panel_vars_custom_func_exception_swallowed(monkeypatch):
     """用户 parse_line 抛异常应被吞。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
     def bad(line):
         raise RuntimeError('boom')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', bad)
@@ -302,7 +299,6 @@ def test_iter_panel_vars_custom_func_exception_swallowed(monkeypatch):
 
 def test_iter_panel_vars_custom_func_returns_none(monkeypatch):
     """parse_line 返 None 应被跳过。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
                         lambda line: None)
     out = list(mod._iter_panel_vars('1234567890 I line', ts_fallback=1.0))
@@ -311,7 +307,6 @@ def test_iter_panel_vars_custom_func_returns_none(monkeypatch):
 
 def test_iter_panel_vars_custom_func_invalid_tuple_skipped(monkeypatch):
     """parse_line yield 非 3 元组项应被跳过。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
                         lambda line: [(1.0, 'only_two'), None, (2.0, 'ok', 1.0)])
     out = list(mod._iter_panel_vars('1234567890 I line', ts_fallback=1.0))
@@ -572,8 +567,8 @@ def _mem_config(monkeypatch):
     return mem
 
 
-def test_load_custom_parser_state_bad_mode_falls_back(monitor, monkeypatch):
-    """config 里 mode 非法应回退 built-in。"""
+def test_load_custom_parser_state_legacy_mode_ignored(monitor, monkeypatch):
+    """旧 config 里的 mode 字段应被忽略（废弃，不再 gate）。"""
     _mem_config(monkeypatch)
     from serial_debug.infra import config
     cfg = config.load()
@@ -584,28 +579,29 @@ def test_load_custom_parser_state_bad_mode_falls_back(monitor, monkeypatch):
     }
     config.save(cfg)
     monitor._load_custom_parser_state()
-    assert mod._CUSTOM_PARSER_STATE['mode'] == 'built-in'
+    # mode 不再写回 state（废弃）；读取不报错即可
+    assert 'mode' not in mod._CUSTOM_PARSER_STATE
 
 
 def test_load_custom_parser_state_valid_code_compiles(monitor, monkeypatch):
-    """mode=custom + 合法 code 应 exec 出 parse_line。"""
+    """code 合法即编译出 parse_line（不再要求 mode）。"""
     _mem_config(monkeypatch)
     from serial_debug.infra import config
     code = 'def parse_line(line):\n    yield 1.0, "x", 2.0\n'
     cfg = config.load()
     cfg['qt_monitor_custom_parser'] = {
-        'mode': 'custom', 'code': code, 'sample_log': '',
+        'mode': 'built-in',  # 旧字段，应被忽略
+        'code': code, 'sample_log': '',
         'source_code': '', 'source_language': 'auto',
         'discovered_vars': [], 'validation': {},
     }
     config.save(cfg)
     monitor._load_custom_parser_state()
-    assert mod._CUSTOM_PARSER_STATE['mode'] == 'custom'
     assert callable(mod._CUSTOM_PARSER_STATE['func'])
 
 
 def test_load_custom_parser_state_bad_code_func_none(monitor, monkeypatch):
-    """mode=custom + 坏 code 应让 func=None。"""
+    """坏 code 应让 func=None。"""
     _mem_config(monkeypatch)
     from serial_debug.infra import config
     cfg = config.load()
@@ -620,7 +616,7 @@ def test_load_custom_parser_state_bad_code_func_none(monitor, monkeypatch):
 
 
 def test_load_custom_parser_state_validation_compat(monitor, monkeypatch):
-    """validation 配置应兼容 min_parsed_count。"""
+    """validation 配置应兼容 min_parsed_count；sample_lines 废弃（忽略旧值）。"""
     _mem_config(monkeypatch)
     from serial_debug.infra import config
     cfg = config.load()
@@ -636,7 +632,8 @@ def test_load_custom_parser_state_validation_compat(monitor, monkeypatch):
     v = mod._CUSTOM_PARSER_STATE['validation']
     assert v['enabled'] is False
     assert v['min_parsed_count'] == 25
-    assert v['sample_lines'] == 500
+    # sample_lines 已废弃：旧值被忽略，恒 None（不限扫描行数）
+    assert v['sample_lines'] is None
 
 
 def test_load_custom_parser_state_invalid_src_language(monitor, monkeypatch):
@@ -663,8 +660,9 @@ def test_load_custom_parser_state_raw_not_dict_returns(monitor, monkeypatch):
     config.save(cfg)
     # 不应抛
     monitor._load_custom_parser_state()
-    # state 应保持初始（mode 默认 built-in）
-    assert mod._CUSTOM_PARSER_STATE['mode'] in ('built-in', 'custom', 'both')
+    # state 应保持初始（mode 已废弃，state 里不再有 mode 键）
+    assert 'mode' not in mod._CUSTOM_PARSER_STATE
+    assert mod._CUSTOM_PARSER_STATE['code'] == ''
 
 
 def test_load_custom_parser_state_discovered_vars_non_list(monitor, monkeypatch):
@@ -694,13 +692,13 @@ def test_load_custom_parser_state_config_failure_swallowed(monitor, monkeypatch)
 # ---- _save_custom_parser_state ----
 
 def test_save_custom_parser_state_writes_config(monitor, monkeypatch):
-    """save 应把 _CUSTOM_PARSER_STATE 写回 config。"""
+    """save 应把 _CUSTOM_PARSER_STATE 写回 config（mode 占位废弃）。"""
     mem = _mem_config(monkeypatch)
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'code', 'def parse_line(l): pass')
     monitor._save_custom_parser_state()
     saved = mem.get('qt_monitor_custom_parser', {})
-    assert saved.get('mode') == 'custom'
+    # mode 字段保留写入但恒为占位 'built-in'（废弃不生效）
+    assert saved.get('mode') == 'built-in'
     assert saved.get('code') == 'def parse_line(l): pass'
 
 
@@ -1529,7 +1527,6 @@ def _mock_ui(monitor):
 
 def test_iter_panel_vars_plain_text_fallback_no_header(monkeypatch):
     """built-in 模式，内置不认的纯数值行 → plain-text 兜底用 colN 命名。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
     # 13 位毫秒时间戳 + 6 列数值（WeatherInfo.txt 格式）
     line = '1788418270935 0 27 0 83 800 -2147483648\n'
@@ -1544,7 +1541,6 @@ def test_iter_panel_vars_plain_text_fallback_no_header(monkeypatch):
 def test_iter_panel_vars_plain_text_fallback_with_header(monkeypatch):
     """built-in 模式，# 头文件纯数值行 → 用头名（多维展开）。"""
     header = ['timestamp', 'seq', 'position.xyz', 'orientation.xyzw']
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', header)
     # 8 列：ts + seq + position.xyz×3 + orientation.xyzw×4 = 9 头名，给 8 数据列
     line = '1234567890 0 0.1 0.2 0.3 0.4 0.5 0.6 0.7\n'
@@ -1559,7 +1555,6 @@ def test_iter_panel_vars_plain_text_fallback_with_header(monkeypatch):
 
 def test_iter_panel_vars_builtin_motor_not_fallback(monkeypatch):
     """内置认了 motor 行 → 不走 plain-text 兜底（motor.* 前缀）。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
     line = '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0'
     out = list(mod._iter_panel_vars(line))
@@ -1568,23 +1563,22 @@ def test_iter_panel_vars_builtin_motor_not_fallback(monkeypatch):
     assert not any(n.startswith('col') for _, n, _ in out)
 
 
-def test_iter_panel_vars_custom_mode_no_plain_text(monkeypatch):
-    """custom 模式 → 不走 plain-text 兜底，只跑用户 parse_line。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
+def test_iter_panel_vars_custom_func_yields_custom_and_fallback(monkeypatch):
+    """custom func 与 plain-text 兜底并集（模式已废弃，func 不再抑制兜底）。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
                         lambda line: [(1.0, 'custom.var', 5.0)])
     line = '1234567890 0 27 0 83\n'  # 纯数值行
     out = list(mod._iter_panel_vars(line, ts_fallback=1.0))
-    # 只有 custom.var，无 colN
     names = [n for _, n, _ in out]
-    assert names == ['custom.var']
+    # 内置无 yield → plain-text 兜底出 colN + custom.var 并集
+    assert 'custom.var' in names
+    assert 'col2' in names and 'col5' in names
 
 
-def test_iter_panel_vars_both_mode_custom_overrides_plain_text(monkeypatch):
-    """both 模式：内置无 yield → plain-text 兜底 → custom 覆盖同名。"""
+def test_iter_panel_vars_custom_overrides_plain_text(monkeypatch):
+    """内置无 yield → plain-text 兜底 → custom 覆盖同名（模式已废弃）。"""
     header = None
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'both')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', header)
 
     def parse_line(line):
@@ -1604,7 +1598,6 @@ def test_iter_panel_vars_both_mode_custom_overrides_plain_text(monkeypatch):
 
 def test_iter_panel_vars_plain_text_no_ts_skips(monkeypatch):
     """纯数值行但首列无法提时间戳（如相对 0）且无 fallback → 不 yield。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
     # '0 0.1 0.2' — 首列 0 是 1 位数，_extract_log_ts 需 10~13 位 → None
     line = '0 0.1 0.2\n'
@@ -1614,7 +1607,6 @@ def test_iter_panel_vars_plain_text_no_ts_skips(monkeypatch):
 
 def test_iter_panel_vars_plain_text_with_ts_fallback(monkeypatch):
     """纯数值行首列无法提 ts，但有 ts_fallback → 用 fallback 出曲线。"""
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
     line = '0 0.1 0.2\n'
     out = list(mod._iter_panel_vars(line, ts_fallback=100.0))
@@ -1664,7 +1656,6 @@ def test_iter_panel_vars_mixed_line_no_plain_text_fallback(monkeypatch):
     首列后有文本 'TICKS' → _is_plain_numeric_line 返回 False →
     不兜底，不生成 col 变量。
     """
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
     line = '1788417573020 I TICKS -372 243 42 0\n'
     out = list(mod._iter_panel_vars(line))
@@ -1755,9 +1746,9 @@ def test_load_log_motor_not_broken_by_plain_text(monitor, tmp_path):
     assert not any(nm.startswith('col') for nm in monitor._data)
 
 
-def test_load_log_custom_parser_not_broken_by_plain_text(monitor, tmp_path,
-                                                          monkeypatch):
-    """custom 模式：用户配的 parse_line 优先，不走 plain-text 兜底。"""
+def test_load_log_custom_parser_plus_plain_text_union(monitor, tmp_path,
+                                                      monkeypatch):
+    """模式已废弃：内置无 yield → plain-text 兜底 + custom func 并集。"""
     p = tmp_path / 'plain.txt'
     p.write_text('1234567890 1 2 3\n' * 3, encoding='utf-8')
 
@@ -1765,14 +1756,13 @@ def test_load_log_custom_parser_not_broken_by_plain_text(monitor, tmp_path,
         if '1234567890' in line:
             yield 1.0, 'myvar', 42.0
 
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'custom')
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', parse_line)
     _mock_ui(monitor)
     n = monitor.load_log(str(p))
     assert n == 3
     assert 'myvar' in monitor._data
-    # 无 colN 变量（custom 模式不走 plain-text）
-    assert not any(nm.startswith('col') for nm in monitor._data)
+    # plain-text 兜底 + custom 并集：colN 与 myvar 共存
+    assert any(nm.startswith('col') for nm in monitor._data)
 
 
 def test_load_log_plain_text_clears_old_header(monitor, tmp_path):
@@ -2119,7 +2109,7 @@ def test_validate_log_format_disabled_returns(monitor, monkeypatch):
     """validation.enabled=False 应早 return。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
                         {'enabled': False, 'min_parsed_count': 10,
-                         'sample_lines': 200})
+                         'sample_lines': None})
     monitor._win = None
     monitor._validate_log_format(['some line'], 'test')  # 不应抛
 
@@ -2128,7 +2118,7 @@ def test_validate_log_format_no_win_returns(monitor, monkeypatch):
     """_win=None 应早 return 不弹警告。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
                         {'enabled': True, 'min_parsed_count': 10,
-                         'sample_lines': 200})
+                         'sample_lines': None})
     monitor._win = None
     monitor._validate_log_format([], 'test')  # 不应抛
 
@@ -2137,7 +2127,7 @@ def test_validate_log_format_empty_lines_returns(monitor, monkeypatch):
     """空 lines 应早 return。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
                         {'enabled': True, 'min_parsed_count': 10,
-                         'sample_lines': 200})
+                         'sample_lines': None})
     monitor._win = None
     monitor._validate_log_format([], 'test')
 
@@ -2146,8 +2136,7 @@ def test_validate_log_format_high_parsed_rate(monitor, monkeypatch):
     """parsed >= min_count 应显示通过消息（statusBar 调用）。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
                         {'enabled': True, 'min_parsed_count': 1,
-                         'sample_lines': 10})
-    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'mode', 'built-in')
+                         'sample_lines': None})
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', None)
     # 用真 motor 行让 _iter_panel_vars 解析成功
     lines = ['1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0']
@@ -2168,7 +2157,7 @@ def test_validate_log_format_low_parsed_triggers_warning(monitor, monkeypatch):
     """parsed < min_count 应调 _show_validation_warning。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
                         {'enabled': True, 'min_parsed_count': 10,
-                         'sample_lines': 100})
+                         'sample_lines': None})
     called = []
     monkeypatch.setattr(monitor, '_show_validation_warning',
                         lambda *a: called.append(a))
@@ -2186,10 +2175,10 @@ def test_validate_log_format_low_parsed_triggers_warning(monitor, monkeypatch):
 
 
 def test_validate_log_format_invalid_count_falls_back(monitor, monkeypatch):
-    """min_parsed_count 非 int 应回退默认 200/10。"""
+    """min_parsed_count 非 int 应回退默认 10。"""
     monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
                         {'enabled': True, 'min_parsed_count': 'bad',
-                         'sample_lines': 'bad'})
+                         'sample_lines': None})
     monitor._win = None  # 早 return (no _win)
     monitor._validate_log_format(['1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0'],
                                   'test')  # 不应抛
@@ -2447,16 +2436,16 @@ def test_reparse_after_config_change_reloads_log(monitor, tmp_path):
     monitor.log_path = str(p)
     monitor.load_log(str(p))
     assert any(name.startswith('motor.') for name in monitor._data)
-    # 改解析器为 custom 模式，自定义 parse_line 产出 different 变量名
+    # 配自定义 parse_line 产出 different 变量名（模式已废弃，func 即生效）
     def parse_line(line):
         if '3wd1t_1' in line:
             ts = 1.0
             yield ts, 'custom.var', 42.0
-    mod._CUSTOM_PARSER_STATE.update({'mode': 'custom', 'func': parse_line})
+    mod._CUSTOM_PARSER_STATE.update({'func': parse_line})
     monitor._reparse_after_config_change()
-    # 重解析后应含 custom.var，不含 motor.*
+    # 重解析后应含 custom.var + 内置 motor.*（并集，不再互斥）
     assert 'custom.var' in monitor._data
-    assert not any(name.startswith('motor.') for name in monitor._data)
+    assert any(name.startswith('motor.') for name in monitor._data)
 
 
 def test_open_parser_config_reparse_on_save(monitor, tmp_path, monkeypatch):
@@ -2482,7 +2471,7 @@ def test_open_parser_config_reparse_on_save(monitor, tmp_path, monkeypatch):
     def parse_line(line):
         if '3wd1t_1' in line:
             yield 1.0, 'new.var', 1.0
-    mod._CUSTOM_PARSER_STATE.update({'mode': 'custom', 'func': parse_line,
+    mod._CUSTOM_PARSER_STATE.update({'func': parse_line,
                                      'discovered_vars': [{'name': 'new.var',
                                                          'label': 'new.var'}]})
 
@@ -2491,7 +2480,7 @@ def test_open_parser_config_reparse_on_save(monitor, tmp_path, monkeypatch):
         def __init__(self, *a, **kw):
             pass
         def exec(self):
-            return {'mode': 'custom'}  # truthy → 进入重解析
+            return {'code': 'x'}  # truthy → 进入重解析
     monkeypatch.setattr(mod, '_QtParserConfigDialog', _FakeDlg)
     monitor._open_parser_config()
     assert 'new.var' in monitor._data
@@ -2513,9 +2502,6 @@ def test_save_invalid_parser_shows_warning(monitor, monkeypatch):
     dlg._build()  # 构造内部控件（_code_edit 等）
     # 填一段无 parse_line 的代码 → callable(ns.get('parse_line')) is False
     dlg._code_edit.setPlainText('def x():\n  pass')
-    dlg._mode_built.setChecked(False)
-    dlg._mode_custom.setChecked(True)
-    # mode both 也走 custom 分支，这里用 custom 即可
 
     monkeypatch.setattr(QMessageBox, 'warning',
                         lambda *a, **kw: calls.append(a))
@@ -3983,3 +3969,130 @@ def test_on_load_sample_file_filter_all_files_first(qtbot, monkeypatch):
     for ext in ('*.txt', '*.log', '*.md', '*.csv', '*.json'):
         assert ext in second
     win.deleteLater()
+
+
+# ---- 2026-11-04 修复：折叠 / 模式不限 / 校验不限行数 / 推导保存 E2E ----
+
+def test_make_collapsible_toggle_hides_content(qtbot):
+    """_make_collapsible：收起应隐藏内容区（只留标题），展开恢复。"""
+    import os
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    from PySide6.QtWidgets import QApplication, QGroupBox, QLabel, QVBoxLayout
+    _ = QApplication.instance() or QApplication([])
+    box = QGroupBox('解析器代码')
+    lay = QVBoxLayout(box)
+    lay.addWidget(QLabel('content'))
+    ret = mod._make_collapsible(box, expanded=True)
+    assert ret is box
+    assert box.isChecked() is True
+    assert box.isCheckable() is True
+    # 收起：checkbox 取消勾选 → Qt 原生隐藏内容区
+    box.setChecked(False)
+    assert box.isChecked() is False
+    # 标题保留
+    assert box.title() == '解析器代码'
+    # 展开恢复
+    box.setChecked(True)
+    assert box.isChecked() is True
+
+
+def test_make_collapsible_default_collapsed(qtbot):
+    """_make_collapsible(expanded=False)：初始应收起。"""
+    import os
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    from PySide6.QtWidgets import QApplication, QGroupBox
+    _ = QApplication.instance() or QApplication([])
+    box = QGroupBox('设备源码')
+    mod._make_collapsible(box, expanded=False)
+    assert box.isChecked() is False
+
+
+def test_iter_panel_vars_mode_gate_removed_union(monkeypatch):
+    """模式不限：内置 motor 行 + custom func 变量并集去重（custom 覆盖同名）。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'plain_text_header', None)
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func',
+                        lambda line: [(2.0, 'motor.Vx', 99.0),
+                                      (2.0, 'custom.only', 7.0)])
+    line = '1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0'
+    out = {n: v for _, n, v in mod._iter_panel_vars(line, ts_fallback=1.0)}
+    # 内置变量仍在（不再被 mode gate）
+    assert 'motor.Vx' in out
+    assert 'custom.only' in out
+    # 同名 custom 覆盖内置
+    assert out['motor.Vx'] == 99.0
+
+
+def test_validate_log_format_scans_all_lines(monitor, monkeypatch):
+    """校验不限行数：数据行在末尾也应被扫到（不再截断前 N 行）。"""
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'validation',
+                        {'enabled': True, 'min_parsed_count': 1,
+                         'sample_lines': None})
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', None)
+    # 500 行噪声 + 末尾 1 行 motor 数据行
+    lines = ['noise line %d' % i for i in range(500)]
+    lines.append('1783996615491 I model 3wd1t_1 0 0 0|0 0 0#0 0 0')
+    sb_calls = []
+    class _SB:
+        def showMessage(self, msg, ms=0):
+            sb_calls.append(msg)
+    class _Win:
+        def statusBar(self):
+            return _SB()
+    monitor._win = _Win()
+    monitor._validate_log_format(lines, '日志 test')
+    # 若仍截断前 200 行，parsed=0 < 1 → 走警告；全量扫描 → 通过
+    assert any('通过' in s for s in sb_calls)
+
+
+def test_e2e_infer_save_then_load_log_no_mode_gate(monitor, tmp_path,
+                                                   monkeypatch):
+    """E2E：推导→保存（无 mode）→ load_log 用户 LOG_TS 日志。
+
+    修复验证：保存推导解析器后（旧版 mode 默认 built-in 导致 func 不跑、
+    曲线无数据），现在 func 存在即跑，_data 中应有 hall_value/hall_value_2
+    且 X 为 unix 秒 1794062959.017。
+    """
+    from serial_debug.ui.qt_monitor_window import (
+        infer_parse_line_from_source,
+        replay_parse_line_draft,
+    )
+    src = ('LOG_TS(AM_LOG_LEVEL_FATAL, "LIFT", '
+           '"liftup hall %x -> %x\\n", '
+           'pre_state.hall.value, cur_state.hall.value);\n')
+    log_text = ('1794062959017 F LIFT liftup hall 0 -> 1\n'
+                '1794062959020 F LIFT liftup hall 3a -> 1f\n')
+    p = tmp_path / 'lift.log'
+    p.write_text(log_text, encoding='utf-8')
+
+    # 1) 推导
+    code, lang, n = infer_parse_line_from_source(src, 'c')
+    assert n == 1
+    # 生成的代码带时间戳语义注释
+    assert 'unix' in code or 'HH:MM:SS' in code
+
+    # 2) 保存（模拟 _on_save 的 func 编译路径——无 mode 参与）
+    ns: dict = {}
+    exec(compile(code, '<custom_parser>', 'exec'), ns)
+    func = ns['parse_line']
+    assert callable(func)
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'code', code)
+    monkeypatch.setitem(mod._CUSTOM_PARSER_STATE, 'func', func)
+
+    # 3) load_log（旧版 mode=built-in 时 hall_* 无数据）
+    monitor._refresh_plot = lambda: None
+    monitor._refresh_sidebar = lambda: None
+    monitor._refresh_sidebar_visibility = lambda: None
+    monitor._file_label = None
+    monitor._win = None
+    monitor.load_log(str(p))
+
+    assert 'hall_value' in monitor._data
+    assert 'hall_value_2' in monitor._data
+    pts1 = monitor._data['hall_value']
+    pts2 = monitor._data['hall_value_2']
+    # X 轴为 unix 秒（13 位 ms / 1000）
+    assert pts1[0][0] == pytest.approx(1794062959.017)
+    assert pts2[0][0] == pytest.approx(1794062959.017)
+    # 值正确（0→1，hex 3a→58）
+    assert pts1[0][1] == 0.0 and pts2[0][1] == 1.0
+    assert pts1[1][1] == 58.0 and pts2[1][1] == 31.0

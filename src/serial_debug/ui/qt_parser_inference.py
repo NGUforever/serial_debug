@@ -877,6 +877,8 @@ def generate_parse_line(stmts: list[PrintStmt]) -> str:
     lines.append('                break')
     lines.append('        if ts is None:')
     lines.append('            # 用行首 13 位毫秒 / 1000')
+    lines.append('            # 说明：ts 为 unix 秒——由行首 13 位毫秒时间戳自动')
+    lines.append('            # 映射（/1000），曲线 X 轴会格式化为 HH:MM:SS 时间显示。')
     lines.append('            import re as _re2')
     lines.append('            _m = _re2.match(r\'(\\d{10,13})\', line)')
     lines.append('            if _m:')

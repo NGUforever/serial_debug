@@ -72,7 +72,8 @@ _ALL_VARS = _build_var_registry()
 
 # ---- 自定义解析器状态（用户在"解析器配置"对话框贴 Python 代码）---------
 _CUSTOM_PARSER_STATE = {
-    'mode': 'built-in',   # built-in / custom / both
+    # 2026-11-04：'mode' 字段已废弃（不再 gate 解析）——旧 config 里保留
+    # 读取但不生效；内置解析器 + 自定义 func 始终并集运行。
     'code': '',           # 用户原始 Python 源码（用于 dialog 回填 + 持久化）
     'sample_log': '',     # 用户贴的样本日志（dialog 回填 + 持久化）
     'source_code': '',    # 设备源码（C/C++/Python/Java/Rust/JS）用于自动推导
@@ -82,7 +83,7 @@ _CUSTOM_PARSER_STATE = {
     'validation': {       # 加载/连串口时格式校验配置
         'enabled': True,
         'min_parsed_count': 10,
-        'sample_lines': 200,
+        'sample_lines': None,   # 已废弃：不再限制扫描行数（全量扫描）
     },
     # 纯文本日志注释头列名（load_log 从首行 # 解析）。None=无头/未知。
     # _iter_panel_vars 在内置解析无 yield 时用它做 plain-text 兜底命名。
@@ -223,12 +224,10 @@ def _is_plain_numeric_line(line: str) -> bool:
 def _iter_panel_vars(line: str, ts_fallback: float | None = None):
     """从一行日志中提取所有 (ts, name, value) 三元组。
 
-    按 `_CUSTOM_PARSER_STATE['mode']` 分发：
-      - ``built-in``：内置 motor/BMS/IMU 解析器；若无 yield 则尝试
-        plain-text 兜底（纯数值多列日志，如 WeatherInfo.txt / lio.txt）。
-      - ``custom``：仅用户自定义 `parse_line(line)` 函数。
-      - ``both``：内置 + plain-text 兜底 + 自定义，yield 项取并集
-        （同 name 重复时取最后一次，自定义优先覆盖 plain-text）。
+    不做模式限制（2026-11-04）：内置 motor/BMS/IMU 解析器始终跑（无
+    yield 时尝试 plain-text 兜底——纯数值多列日志，如 WeatherInfo.txt /
+    lio.txt）；用户自定义 `parse_line(line)` 函数只要存在（func 非 None）
+    就跑。yield 项取并集，同 name 重复时取最后一次（自定义覆盖内置）。
 
     :param ts_fallback: 行内提取不到时间戳时用此值。实时串口 feed 的
         设备原始行（如 ``783587 I model ...`` 只有 6 位、``OK,0%`` 无时间戳）
@@ -241,28 +240,28 @@ def _iter_panel_vars(line: str, ts_fallback: float | None = None):
             return
         ts = ts_fallback
 
-    mode = _CUSTOM_PARSER_STATE.get('mode', 'built-in')
     seen_names: dict[str, tuple] = {}  # name -> (ts, name, val)（dedup 用）
 
-    if mode in ('built-in', 'both'):
-        builtin_hit = False
-        for item in _iter_builtin_panel_vars(line, ts):
-            if len(item) == 3:
-                seen_names[item[1]] = tuple(item)
-                builtin_hit = True
-        # 内置没认 → plain-text 兜底（纯数值多列日志）
-        # 仅当该行为纯数值行（首列时间戳外其余列全可 float）或 # 头内联
-        # 数据行时才兜底，避免混合文本+数值的日志行（如 motor 日志的
-        # 'TICKS -372 243 42 0' / 'BOARD_MON [...]')误生成 col 变量。
-        if not builtin_hit and _is_plain_numeric_line(line):
-            header_cols = _CUSTOM_PARSER_STATE.get('plain_text_header')
-            try:
-                for item in _iter_plain_text_vars(line, ts, header_cols):
-                    if len(item) == 3:
-                        seen_names[item[1]] = tuple(item)
-            except Exception:
-                pass  # plain-text 兜底异常吞掉，留 log_exc 在调用方处理
-    if mode in ('custom', 'both') and _CUSTOM_PARSER_STATE.get('func') is not None:
+    # 内置解析器始终跑（不做模式 gate）
+    builtin_hit = False
+    for item in _iter_builtin_panel_vars(line, ts):
+        if len(item) == 3:
+            seen_names[item[1]] = tuple(item)
+            builtin_hit = True
+    # 内置没认 → plain-text 兜底（纯数值多列日志）
+    # 仅当该行为纯数值行（首列时间戳外其余列全可 float）或 # 头内联
+    # 数据行时才兜底，避免混合文本+数值的日志行（如 motor 日志的
+    # 'TICKS -372 243 42 0' / 'BOARD_MON [...]')误生成 col 变量。
+    if not builtin_hit and _is_plain_numeric_line(line):
+        header_cols = _CUSTOM_PARSER_STATE.get('plain_text_header')
+        try:
+            for item in _iter_plain_text_vars(line, ts, header_cols):
+                if len(item) == 3:
+                    seen_names[item[1]] = tuple(item)
+        except Exception:
+            pass  # plain-text 兜底异常吞掉，留 log_exc 在调用方处理
+    # 自定义解析器：func 存在即跑（不再要求模式）
+    if _CUSTOM_PARSER_STATE.get('func') is not None:
         try:
             result = _CUSTOM_PARSER_STATE['func'](line)
             if result is not None:
@@ -641,6 +640,20 @@ class _ValidationBridge:
                 pass
 
 
+def _make_collapsible(groupbox, expanded: bool = True):
+    """把 QGroupBox 做成可折叠显示/隐藏（通用小工具，可复用）。
+
+    实现：setCheckable(True)——标题左侧出现 checkbox，勾选=展开、
+    取消勾选=收起（Qt 原生隐藏内容区，只留标题行），再勾选恢复。
+    :param groupbox: QGroupBox 实例
+    :param expanded: 初始是否展开（默认展开）
+    :return: 同一个 groupbox（便于链式使用）
+    """
+    groupbox.setCheckable(True)
+    groupbox.setChecked(bool(expanded))
+    return groupbox
+
+
 class _QtParserConfigDialog:
     """解析器配置对话框：贴 Python 代码 + 样本日志 → 测试 → 保存。
 
@@ -659,7 +672,6 @@ class _QtParserConfigDialog:
         from PySide6.QtGui import QFont
         from serial_debug.ui.qt_maximizable_dialog import MaximizableDialog
         from PySide6.QtWidgets import (
-            QButtonGroup,
             QCheckBox,
             QComboBox,
             QDialogButtonBox,
@@ -670,9 +682,9 @@ class _QtParserConfigDialog:
             QLabel,
             QPlainTextEdit,
             QPushButton,
-            QRadioButton,
             QSpinBox,
             QTableWidget,
+            QToolButton,
             QVBoxLayout,
         )
 
@@ -693,29 +705,8 @@ class _QtParserConfigDialog:
         v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(8)
 
-        # 模式选择
-        mode_box = QGroupBox('解析模式')
-        mode_l = QHBoxLayout(mode_box)
-        mode_l.setContentsMargins(8, 8, 8, 8)
-        self._mode_built = QRadioButton('内置（motor/BMS/IMU）')
-        self._mode_custom = QRadioButton('仅自定义代码')
-        self._mode_both = QRadioButton('同时（两者都跑，并集）')
-        cur_mode = _CUSTOM_PARSER_STATE.get('mode', 'built-in')
-        if cur_mode == 'custom':
-            self._mode_custom.setChecked(True)
-        elif cur_mode == 'both':
-            self._mode_both.setChecked(True)
-        else:
-            self._mode_built.setChecked(True)
-        self._mode_group = QButtonGroup(mode_box)
-        self._mode_group.addButton(self._mode_built)
-        self._mode_group.addButton(self._mode_custom)
-        self._mode_group.addButton(self._mode_both)
-        mode_l.addWidget(self._mode_built)
-        mode_l.addWidget(self._mode_custom)
-        mode_l.addWidget(self._mode_both)
-        mode_l.addStretch(1)
-        v.addWidget(mode_box)
+        # 模式选择已移除（2026-11-04）：解析不加限制——内置解析器 +
+        # 自定义 func 始终并集运行，同名时自定义覆盖内置。
 
         # 设备源码区 + 语言下拉 + 推导按钮
         src_box = QGroupBox('设备源码（贴实际打印日志的源码——C/C++/Python/Java/Rust/JS，'
@@ -760,7 +751,7 @@ class _QtParserConfigDialog:
             '贴设备/固件里实际打印日志的代码，例如：\n'
             '    printf("ts=%ld rpm=%d vbus=%.2f\\n", ts, rpm, vbus);')
         src_l_v.addWidget(self._src_edit)
-        v.addWidget(src_box, 2)
+        v.addWidget(_make_collapsible(src_box, expanded=True), 2)
 
         # 解析器代码（Python，由推导生成或手动编写）
         code_box = QGroupBox(
@@ -799,7 +790,8 @@ class _QtParserConfigDialog:
             '        ...\n'
             '        yield ts, "motor.rpm", float(parts[4])')
         code_l.addWidget(self._code_edit)
-        v.addWidget(code_box, 2)
+        # 解析器代码区可折叠（默认展开）：对话框内容长，收起省空间
+        v.addWidget(_make_collapsible(code_box, expanded=True), 2)
 
         # 样本日志
         sample_box = QGroupBox('样本日志（贴几行真实日志用于发现变量）')
@@ -822,11 +814,12 @@ class _QtParserConfigDialog:
         v.addWidget(sample_box, 1)
 
         # 校验设置：≥ N 条成功解析即视为规则正确
+        # 2026-11-04：扫描行数不再限制——校验时扫描整份日志/缓冲直到扫完
         val_box = QGroupBox('加载/连串口时格式校验')
         val_form = QFormLayout(val_box)
         val_form.setContentsMargins(8, 8, 8, 8)
         val_cfg = _CUSTOM_PARSER_STATE.get('validation', {})
-        self._val_enabled = QCheckBox('启用（打开日志 / 连串口时扫前 N 行，'
+        self._val_enabled = QCheckBox('启用（打开日志 / 连串口时扫描全部行，'
                                        '成功解析 ≥ M 条即视为规则正确）')
         self._val_enabled.setChecked(bool(val_cfg.get('enabled', True)))
         val_form.addRow('', self._val_enabled)
@@ -834,14 +827,9 @@ class _QtParserConfigDialog:
         self._val_min_count.setRange(1, 1000)
         self._val_min_count.setValue(int(val_cfg.get('min_parsed_count', 10)))
         self._val_min_count.setToolTip(
-            '只要扫描的前 N 行里成功解析出 ≥ M 条，就视为规则正确。'
+            '扫描全部行里成功解析出 ≥ M 条，就视为规则正确。'
             '默认 10 条——比成功率阈值更宽松，容忍日志中混入非数据行')
         val_form.addRow('最低成功解析条数', self._val_min_count)
-        self._val_lines = QSpinBox()
-        self._val_lines.setRange(50, 5000)
-        self._val_lines.setSingleStep(50)
-        self._val_lines.setValue(int(val_cfg.get('sample_lines', 200)))
-        val_form.addRow('扫描行数', self._val_lines)
         v.addWidget(val_box)
 
         # 按钮区
@@ -1087,10 +1075,11 @@ class _QtParserConfigDialog:
         self._result_label.setText(msg)
 
     def _on_save(self):
-        """保存：写 _CUSTOM_PARSER_STATE + 持久化 + 跑变量发现。"""
-        mode = ('built-in' if self._mode_built.isChecked()
-                else 'custom' if self._mode_custom.isChecked()
-                else 'both')
+        """保存：写 _CUSTOM_PARSER_STATE + 持久化 + 跑变量发现。
+
+        2026-11-04：解析不再按模式 gate——只要有有效代码就编译 func，
+        内置解析器 + 自定义 func 始终并集运行。
+        """
         code = self._code_edit.toPlainText()
         sample = self._sample_edit.toPlainText()
         src_code = self._src_edit.toPlainText()
@@ -1098,14 +1087,15 @@ class _QtParserConfigDialog:
         val_cfg = {
             'enabled': self._val_enabled.isChecked(),
             'min_parsed_count': int(self._val_min_count.value()),
-            'sample_lines': int(self._val_lines.value()),
+            # sample_lines 已废弃（不限制扫描行数）；保留 None 占位兼容旧字段
+            'sample_lines': None,
         }
 
-        # exec + 发现变量
+        # exec + 发现变量（不再要求 mode）
         func = None
         discovered: list = []
         exec_error: str = ''
-        if code and mode in ('custom', 'both'):
+        if code.strip():
             try:
                 ns: dict = {}
                 exec(compile(code, '<custom_parser>', 'exec'), ns)
@@ -1121,17 +1111,16 @@ class _QtParserConfigDialog:
                 discovered = _discover_vars_from_sample(func, sample)
             else:
                 # 代码无效：保存配置但提示用户，避免静默接受坏解析器。
-                # 仍写入 code/mode（用户意图保留），func=None 让 custom 模式不
-                # 运行坏代码，用户应回头改。
+                # 仍写入 code（用户意图保留），func=None 让解析不运行坏
+                # 代码，用户应回头改。
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self._dlg, '解析器代码无效',
                     f'代码无法执行：{exec_error}\n\n'
-                    '配置已保存（代码 + 模式），但解析器未启用。'
+                    '配置已保存（代码），但解析器未启用。'
                     '请修正代码后再次保存，或先点"测试解析"验证。')
 
         new_state = {
-            'mode': mode,
             'code': code,
             'sample_log': sample,
             'source_code': src_code,
@@ -1340,7 +1329,7 @@ class QtMonitorWindow:
         self._data_lock = threading.Lock()  # 保护 _data 的线程安全
         # 自定义解析器状态（模块级 _CUSTOM_PARSER_STATE 在启动时加载一次）
         self._load_custom_parser_state()
-        # 串口校验缓冲（reader 线程攒够 sample_lines 或 2 秒后触发一次校验）
+        # 串口校验缓冲（reader 线程攒 2 秒后触发一次校验，不限行数）
         self._serial_validated: bool = False
         self._serial_validation_buf: list[str] = []
         self._serial_start_ts: float = 0.0
@@ -1349,7 +1338,11 @@ class QtMonitorWindow:
 
     # ---- 配置持久化 -------------------------------------------------
     def _load_custom_parser_state(self) -> None:
-        """启动时读 config → exec 代码拿 parse_line → 写入 _CUSTOM_PARSER_STATE。"""
+        """启动时读 config → exec 代码拿 parse_line → 写入 _CUSTOM_PARSER_STATE。
+
+        2026-11-04：mode 字段已废弃——旧 config 里的 mode 读取后忽略
+        （字段保留但不生效），只要 code 有效就编译 func。
+        """
         global _CUSTOM_PARSER_STATE
         from serial_debug.infra import config
         try:
@@ -1357,20 +1350,17 @@ class QtMonitorWindow:
             raw = cfg.get('qt_monitor_custom_parser', {})
             if not isinstance(raw, dict):
                 return
-            mode = raw.get('mode', 'built-in')
-            if mode not in ('built-in', 'custom', 'both'):
-                mode = 'built-in'
             code = raw.get('code', '') or ''
             sample_log = raw.get('sample_log', '') or ''
             func = None
-            if code and mode in ('custom', 'both'):
+            if code.strip():
                 try:
                     ns: dict = {}
                     exec(compile(code, '<custom_parser>', 'exec'), ns)
                     if callable(ns.get('parse_line')):
                         func = ns['parse_line']
                 except Exception:
-                    func = None  # 代码坏掉时退回 built-in，下次 dialog 修
+                    func = None  # 代码坏掉时退回内置解析，下次 dialog 修
             disc = raw.get('discovered_vars', []) or []
             if not isinstance(disc, list):
                 disc = []
@@ -1385,7 +1375,8 @@ class QtMonitorWindow:
             validation = {
                 'enabled': bool(val_cfg.get('enabled', True)),
                 'min_parsed_count': min_count,
-                'sample_lines': int(val_cfg.get('sample_lines', 200)),
+                # sample_lines 已废弃（不限制扫描行数），旧值忽略
+                'sample_lines': None,
             }
             src_code = raw.get('source_code', '') or ''
             src_lang = raw.get('source_language', 'auto') or 'auto'
@@ -1393,7 +1384,6 @@ class QtMonitorWindow:
                                  'rust', 'html', 'js'):
                 src_lang = 'auto'
             _CUSTOM_PARSER_STATE.update({
-                'mode': mode,
                 'code': code,
                 'sample_log': sample_log,
                 'source_code': src_code,
@@ -1406,12 +1396,15 @@ class QtMonitorWindow:
             pass
 
     def _save_custom_parser_state(self) -> None:
-        """把 _CUSTOM_PARSER_STATE 持久化到 config。"""
+        """把 _CUSTOM_PARSER_STATE 持久化到 config。
+
+        mode 字段保留写入（恒 'built-in' 占位）以兼容旧版本回读，但不生效。
+        """
         from serial_debug.infra import config
         try:
             cfg = config.load()
             cfg['qt_monitor_custom_parser'] = {
-                'mode': _CUSTOM_PARSER_STATE.get('mode', 'built-in'),
+                'mode': 'built-in',  # 已废弃，占位兼容旧版本回读
                 'code': _CUSTOM_PARSER_STATE.get('code', ''),
                 'sample_log': _CUSTOM_PARSER_STATE.get('sample_log', ''),
                 'source_code': _CUSTOM_PARSER_STATE.get('source_code', ''),
@@ -1419,7 +1412,7 @@ class QtMonitorWindow:
                 'discovered_vars': _CUSTOM_PARSER_STATE.get('discovered_vars', []),
                 'validation': _CUSTOM_PARSER_STATE.get('validation', {
                     'enabled': True, 'min_parsed_count': 10,
-                    'sample_lines': 200,
+                    'sample_lines': None,
                 }),
             }
             config.save(cfg)
@@ -1827,8 +1820,7 @@ class QtMonitorWindow:
         self._data_cache.clear()
         n = 0
         sample_lines: list[str] = []
-        sample_n = max(10, int(_CUSTOM_PARSER_STATE.get(
-            'validation', {}).get('sample_lines', 200)))
+        # 校验不再限制扫描行数——扫描整份日志（sample_lines 已废弃）
         try:
             with open(path, encoding='utf-8', errors='replace') as f:
                 # 首行检测纯文本注释头（# 开头）
@@ -1841,8 +1833,7 @@ class QtMonitorWindow:
                 _CUSTOM_PARSER_STATE['plain_text_header'] = header_cols
                 f.seek(0)
                 for line in f:
-                    if len(sample_lines) < sample_n:
-                        sample_lines.append(line)
+                    sample_lines.append(line)
                     hit = False
                     for ts, name, val in _iter_panel_vars(line):
                         self._data.setdefault(name, []).append((ts, val))
@@ -1852,7 +1843,7 @@ class QtMonitorWindow:
                         n += 1
         except Exception:
             pass
-        # 加载完成后跑格式校验（前 sample_lines 行）
+        # 加载完成后跑格式校验（全部行）
         self._validate_log_format(sample_lines, f'日志 {path}')
         # 更新工具栏文件名显示
         self._update_file_label(path)
@@ -3546,8 +3537,7 @@ class QtMonitorWindow:
             n = len(_CUSTOM_PARSER_STATE.get('discovered_vars', []))
             try:
                 win.statusBar().showMessage(
-                    f'解析器配置已保存：mode={_CUSTOM_PARSER_STATE["mode"]}'
-                    f'，{n} 个发现变量', 5000)
+                    f'解析器配置已保存：{n} 个发现变量', 5000)
             except Exception:
                 pass
             # 重解析：让用户改完立即看到曲线变化
@@ -3602,22 +3592,22 @@ class QtMonitorWindow:
                 pass
 
     def _validate_log_format(self, lines: list, source_label: str) -> None:
-        """扫前 sample_lines 行，成功解析 ≥ min_count 条即视为规则正确；
-        否则弹非模态警告。
+        """扫描全部给定行（不限行数），成功解析 ≥ min_count 条即视为规则
+        正确；否则弹非模态警告。
 
-        :param lines: 已读到的日志行（日志文件场景）或串口缓冲行
-            （feed 场景）。仅取前 N 行做样本
+        :param lines: 日志行（日志文件场景为整份日志）或串口缓冲行
+            （feed 场景，受 2 秒窗口自然限制）
         :param source_label: '日志 /tmp/xxx.log' 或 '串口 /dev/ttyUSB0@921600'
         """
         cfg = _CUSTOM_PARSER_STATE.get('validation', {})
         if not cfg.get('enabled', True):
             return
         try:
-            sample_n = max(10, int(cfg.get('sample_lines', 200)))
             min_count = max(1, int(cfg.get('min_parsed_count', 10)))
         except (TypeError, ValueError):
-            sample_n, min_count = 200, 10
-        scan = list(lines)[:sample_n]
+            min_count = 10
+        # 不限制扫描行数：全量扫描直到扫完
+        scan = list(lines)
         if not scan:
             return
         total = len(scan)
@@ -3944,14 +3934,11 @@ class QtMonitorWindow:
                     line = line.rstrip('\r')
                     if not line:
                         continue
-                    # 攒缓冲用于一次性格式校验（前 N 行 或 2 秒到）
+                    # 攒缓冲用于一次性格式校验（2 秒窗口，不限行数）
                     if not self._serial_validated:
                         self._serial_validation_buf.append(line)
-                        cfg_n = max(10, int(_CUSTOM_PARSER_STATE.get(
-                            'validation', {}).get('sample_lines', 200)))
                         elapsed = time.time() - self._serial_start_ts
-                        if (len(self._serial_validation_buf) >= cfg_n or
-                                elapsed > 2.0):
+                        if elapsed > 2.0:
                             self._serial_validated = True
                             buf_snapshot = list(self._serial_validation_buf)
                             self._validation_bridge.emit(buf_snapshot, port_label)
