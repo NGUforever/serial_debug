@@ -273,13 +273,15 @@ def _smoke_parser_inference() -> list[str]:
                 errors.append('LOG_TS 推导后 parse_line 未产出变量')
             else:
                 names = {item[1] for item in got if len(item) == 3}
-                if 'BMS_Data.bat_cap_cc' not in names:
+                # v1.2.1 命名规则：表达式中点号转下划线（Python 变量名合法），
+                # BMS_Data.bat_cap_cc → BMS_Data_bat_cap_cc
+                if 'BMS_Data_bat_cap_cc' not in names:
                     errors.append(
-                        f'LOG_TS 推导未产出 BMS_Data.bat_cap_cc，'
+                        f'LOG_TS 推导未产出 BMS_Data_bat_cap_cc，'
                         f'实际产出 names={names}')
-                if 'BMS_Data.bat_cap_vol' not in names:
+                if 'BMS_Data_bat_cap_vol' not in names:
                     errors.append(
-                        f'LOG_TS 推导未产出 BMS_Data.bat_cap_vol')
+                        f'LOG_TS 推导未产出 BMS_Data_bat_cap_vol')
                 # level 变量 g_bms_log_level 不应被产出（'F' 不能 float）
                 if 'g_bms_log_level' in names:
                     errors.append(
