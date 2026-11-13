@@ -517,18 +517,28 @@ class _QtPlotDialog:
         vb = QVBoxLayout(vars_box)
         vb.setContentsMargins(8, 8, 8, 8)
 
-        # 已加载变量 + 静态注册表（去重，已加载的优先）
+        # 已加载变量 + 静态注册表 + 自定义解析器发现的变量（去重，
+        # 已加载的优先——与 _loaded_var_meta 的合并语义一致）
         # NOTE: 循环变量不能取 v（会遮蔽外层 QVBoxLayout 的 v）
         init_vars = set(self.initial.get('vars', []))
         loaded_names = [var['name'] for var in self.all_vars]
         seen = set(loaded_names)
-        all_names = list(loaded_names) + [
-            var['name'] for var in _ALL_VARS if var['name'] not in seen
+        reg_names = [var['name'] for var in _ALL_VARS
+                     if var['name'] not in seen]
+        seen.update(reg_names)
+        disc_names = [
+            dv.get('name') for dv in _CUSTOM_PARSER_STATE.get(
+                'discovered_vars', [])
+            if dv.get('name') and dv.get('name') not in seen
         ]
+        all_names = list(loaded_names) + reg_names + disc_names
         labels = {var['name']: var.get('label', var['name'])
                   for var in self.all_vars}
         for var in _ALL_VARS:
             labels.setdefault(var['name'], var.get('label', var['name']))
+        for dv in _CUSTOM_PARSER_STATE.get('discovered_vars', []):
+            if dv.get('name'):
+                labels.setdefault(dv['name'], dv.get('label', dv['name']))
 
         lw = QListWidget()
         for name in all_names:
