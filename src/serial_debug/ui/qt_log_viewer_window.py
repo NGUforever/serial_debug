@@ -1606,20 +1606,34 @@ class QtLogViewerWindow(QMainWindow):
         CHUNK=5000 行/批，QTimer.singleShot(0) 让出主线程，避免一次性
         喂数十万行卡 UI。日志查看器实时新行也会通过 _feed_monitor_from_line
         喂给监视窗口（Phase 1 已接）。
+
+        复审 Major 1 修复：append 持 monitor._data_lock（与串口 reader
+        线程互斥，防 _get_xy 锁内 asarray 读到撕裂 list）；每批校验
+        replay 代数 + monitor 可见性——关窗后旧 replay 链自动终止，
+        不会与新开的 monitor 双写。
         """
         CHUNK = 5000
         lines = tab.all_lines()
         total = len(lines)
+        # replay 代数：monitor 每次 load_log/清数据自增，旧链检测到代数
+        # 变化即退出（防止关窗重开后双写）
+        gen = getattr(monitor, '_replay_generation', 0)
 
         def _replay_batch(start):
             if start >= total:
+                return
+            # 取消条件：monitor 已关（isVisible False）或数据被重置（代数变）
+            if (not monitor._win.isVisible()
+                    or getattr(monitor, '_replay_generation', 0) != gen):
                 return
             end = min(start + CHUNK, total)
             for i in range(start, end):
                 try:
                     for ts, name, val in _iter_panel_vars(lines[i] + '\n'):
                         monitor._register_var(name)
-                        monitor._data.setdefault(name, []).append((ts, val))
+                        with monitor._data_lock:
+                            monitor._data.setdefault(name, []).append(
+                                (ts, val))
                 except Exception:
                     pass
             # 性能：分批期间不调 _refresh_plot（每次全量 _get_xy + setData

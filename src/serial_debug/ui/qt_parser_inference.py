@@ -857,7 +857,9 @@ def generate_parse_line(stmts: list[PrintStmt]) -> str:
     lines.append('    # 多条 print 语句任一匹配即产出')
     lines.append('    for _re, _vars, _skip in (')
     for i, vl in enumerate(var_lists):
-        lines.append(f'        (_re_{i + 1}, {vl!r}, {st.skip_names!r}),')
+        # skip_names 必须取本条 stmt 的——st 是上循环残留值，
+        # 会让所有 regex 行共用最后一条 stmt 的 skip 列表（复审 Major 2）
+        lines.append(f'        (_re_{i + 1}, {vl!r}, {stmts[i].skip_names!r}),')
     lines.append('    ):')
     lines.append('        m = _re.search(line)')
     lines.append('        if not m:')

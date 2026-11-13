@@ -1356,6 +1356,9 @@ class QtMonitorWindow:
         self._refresh_timer = None
         self._max_points = 60_000
         self._data_lock = threading.Lock()  # 保护 _data 的线程安全
+        # replay 代数：日志查看器 _replay_to_monitor 据此取消旧链
+        # （数据被 load_log/清空重置时 +1，旧 replay 检测到代数变化即退出）
+        self._replay_generation = 0
         # 自定义解析器状态（模块级 _CUSTOM_PARSER_STATE 在启动时加载一次）
         self._load_custom_parser_state()
         # 串口校验缓冲（reader 线程攒 2 秒后触发一次校验，不限行数）
@@ -1844,7 +1847,8 @@ class QtMonitorWindow:
         首行若为 ``#header#data`` 内联格式，数据部分仍由 _iter_panel_vars
         解析（行首 ``#`` 时取最后一个 ``#`` 后的数据）。
         """
-        # 清数据点（保留 var_meta 配置）
+        # 清数据点（保留 var_meta 配置）；代数 +1 取消仍在跑的旧 replay 链
+        self._replay_generation += 1
         self._data.clear()
         self._data_cache.clear()
         n = 0
@@ -3932,7 +3936,8 @@ class QtMonitorWindow:
 
         import serial
         self.stop_serial()
-        # 清数据点（保留 var_meta 配置）
+        # 清数据点（保留 var_meta 配置）；代数 +1 取消仍在跑的旧 replay 链
+        self._replay_generation += 1
         self._data.clear()
         self._data_cache.clear()
         ser = serial.Serial(port, baudrate, timeout=0.1)
