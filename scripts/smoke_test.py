@@ -143,11 +143,10 @@ def _smoke_parser_config_dialog() -> list[str]:
         win = mon._create()
         win.show()
         QApplication.processEvents()
-        # 构造 dialog
+        # 构造 dialog（v1.2.1 起模式单选已移除——解析不按模式 gate，
+        # 代码有效即生效，直接测代码+样本即可）
         dlg = _QtParserConfigDialog(win, callback_save=mon._save_custom_parser_state)
         built = dlg._build()
-        # 切 mode：custom
-        dlg._mode_custom.setChecked(True)
         # 代码区用模板 + 样本日志塞几行 motor 日志
         dlg._code_edit.setPlainText(_PARSER_TEMPLATE_CODE)
         dlg._sample_edit.setPlainText(
